@@ -1,0 +1,6 @@
+{
+  "name": "Crownbreaker: Battle Chess Arena",
+  "description": "A 3D tactical chess and fighting game hybrid where every capture transitions smoothly into a real-time 3D martial duel with archetype combos, parries, and tactical-value special moves.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
