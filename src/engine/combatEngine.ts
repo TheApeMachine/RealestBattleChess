@@ -16,10 +16,14 @@ const COMBO_CHAIN_WINDOW_MS = 650;
 export function createFighterRuntime(
   piece: ChessPiece,
   isAttacker: boolean,
-  isAI: boolean
+  isAI: boolean,
+  entangledPartnerName?: string
 ): FighterRuntime {
   const spec = ARCHETYPES[piece.type];
-  const initialMeter = Math.min(100, piece.meter + (isAttacker ? 20 : 10));
+  const initialMeter = Math.min(
+    100,
+    piece.meter + (isAttacker ? 20 : 10) + (entangledPartnerName ? 15 : 0)
+  );
 
   return {
     piece,
@@ -58,6 +62,9 @@ export function createFighterRuntime(
     temporalEchoX: 0,
     temporalEchoFacing: 1,
     temporalEchoHasStruck: false,
+    clashLockTimerMs: 0,
+    clashPower: 0,
+    entangledPartnerName,
   };
 }
 
@@ -169,6 +176,13 @@ export function triggerFighterAttack(
   input: AttackInput,
   onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
 ): boolean {
+  // During a Blade Clash Lock, pressing Attack surges Clash Power to overpower the enemy's weapon!
+  if (fighter.action === 'blade_clash' && fighter.clashLockTimerMs > 0) {
+    fighter.clashPower += input === 'H' ? 1.35 : input === 'S' ? 1.75 : 1.0;
+    soundEngine.playBladeClashLock();
+    return true;
+  }
+
   if (
     fighter.action === 'hitstun' ||
     fighter.action === 'knockdown' ||
@@ -321,6 +335,7 @@ export function triggerFighterJump(fighter: FighterRuntime) {
 export interface CombatStepEvents {
   cameraShake: number;
   hitstopMs: number;
+  slowMoDurationMs: number;
   sparkWorldPos: { x: number; y: number; color: number } | null;
 }
 
@@ -335,10 +350,77 @@ export function stepCombatSimulation(
   const events: CombatStepEvents = {
     cameraShake: 0,
     hitstopMs: 0,
+    slowMoDurationMs: 0,
     sparkWorldPos: null,
   };
 
   const fighters = [f1, f2];
+
+  // 0. Handle Active Blade Clash Lock ("BLADE BIND!")
+  if (f1.action === 'blade_clash' && f2.action === 'blade_clash') {
+    f1.clashLockTimerMs = Math.max(0, f1.clashLockTimerMs - dtMs);
+    f2.clashLockTimerMs = f1.clashLockTimerMs;
+
+    // AI mashes during Blade Clash
+    for (const f of fighters) {
+      if (f.isAI && Math.random() < dtSeconds * 4.2) {
+        f.clashPower += 1.0;
+      }
+    }
+
+    // Continuous spark shower while weapons grind
+    if (Math.random() < dtSeconds * 18) {
+      events.sparkWorldPos = {
+        x: (f1.x + f2.x) * 0.5,
+        y: 1.18,
+        color: 0xfde047,
+      };
+    }
+
+    if (f1.clashLockTimerMs <= 0 || Math.abs(f1.clashPower - f2.clashPower) >= 3.2) {
+      const f1Wins =
+        f1.clashPower > f2.clashPower ||
+        (f1.clashPower === f2.clashPower && !f1.isAI);
+      const winner = f1Wins ? f1 : f2;
+      const loser = f1Wins ? f2 : f1;
+
+      winner.clashLockTimerMs = 0;
+      loser.clashLockTimerMs = 0;
+      winner.clashPower = 0;
+      loser.clashPower = 0;
+
+      winner.action = 'combo_finisher';
+      winner.actionTimerMs = 0;
+      winner.actionDurationMs = 340;
+      winner.hasHitThisAction = true;
+      winner.meter = Math.min(100, winner.meter + 25);
+
+      loser.hp = Math.max(1, loser.hp - 22);
+      loser.action = 'knockdown';
+      loser.actionTimerMs = 0;
+      loser.actionDurationMs = 580;
+      loser.vx = winner.facing * 5.6;
+      loser.vy = 5.4;
+      loser.hitFlashTimerMs = 180;
+
+      soundEngine.playHit('special');
+      events.cameraShake = 0.42;
+      events.slowMoDurationMs = 260;
+      events.sparkWorldPos = {
+        x: (f1.x + f2.x) * 0.5,
+        y: 1.25,
+        color: 0xf59e0b,
+      };
+      onCallout({
+        text: `${winner.spec.chessName.toUpperCase()} WINS BLADE BIND!`,
+        subtext: 'GUARD SHATTERED · -22 HP · +25% METER',
+        x: loser.x,
+        y: 2.25,
+        color: '#fde047',
+      });
+    }
+    return events;
+  }
 
   // 1. Update timers, 4D phase timers, physics, and facing
   for (let i = 0; i < 2; i++) {
@@ -408,6 +490,12 @@ export function stepCombatSimulation(
 
     if (f.recoverableHp > f.hp) {
       f.recoverableHp = Math.max(f.hp, f.recoverableHp - dtSeconds * 8);
+    }
+
+    // Quantum Bell-State Entanglement Resonance: passive shielding & vitality transfer from entangled partner!
+    if (f.entangledPartnerName && f.hp > 0 && f.hp < f.maxHp) {
+      f.hp = Math.min(f.maxHp, f.hp + dtSeconds * 1.8);
+      f.guardGauge = Math.min(100, f.guardGauge + dtSeconds * 6);
     }
 
     if (f.action !== 'block') {
@@ -556,9 +644,49 @@ export function stepCombatSimulation(
         const effectiveRange = isFinisher ? baseMove.range * 1.22 : baseMove.range;
 
         if (dist <= effectiveRange && inFront && def.invulnerableTimerMs <= 0) {
+          // Check if Defender is ALSO in active attack frames -> Trigger a Simultaneous BLADE CLASH LOCK!
+          const defIsAttacking =
+            def.action.startsWith('light') ||
+            def.action.startsWith('heavy') ||
+            def.action === 'combo_finisher';
+          if (defIsAttacking && !def.hasHitThisAction) {
+            const defBase = def.action.startsWith('heavy') ? def.spec.heavy : def.spec.light;
+            if (
+              def.actionTimerMs >= defBase.startupMs * 0.65 &&
+              def.actionTimerMs <= defBase.startupMs + defBase.activeMs * 1.25
+            ) {
+              atk.action = 'blade_clash';
+              def.action = 'blade_clash';
+              atk.clashLockTimerMs = 580;
+              def.clashLockTimerMs = 580;
+              atk.clashPower = 1;
+              def.clashPower = 1;
+              atk.hasHitThisAction = true;
+              def.hasHitThisAction = true;
+              atk.vx = 0;
+              def.vx = 0;
+              soundEngine.playBladeClashLock();
+              events.cameraShake = 0.3;
+              events.sparkWorldPos = {
+                x: (atk.x + def.x) * 0.5,
+                y: 1.18,
+                color: 0xfde047,
+              };
+              onCallout({
+                text: 'BLADE BIND CLASH!',
+                subtext: 'MASH STRIKE (J / K) TO SHATTER ENEMY GUARD!',
+                x: (atk.x + def.x) * 0.5,
+                y: 2.25,
+                color: '#fde047',
+              });
+              return events;
+            }
+          }
+
           atk.hasHitThisAction = true;
           const mult = isFinisher && atk.activeComboRecipe ? atk.activeComboRecipe.finisherMultiplier : 1.0;
-          const dmg = Math.round(baseMove.damage * mult);
+          const entangledBonus = isFinisher && atk.entangledPartnerName ? 7 : 0;
+          const dmg = Math.round(baseMove.damage * mult) + entangledBonus;
 
           atk.meter = Math.min(100, atk.meter + baseMove.meterGain);
 
@@ -582,6 +710,16 @@ export function stepCombatSimulation(
             events,
             onCallout
           );
+
+          if (entangledBonus > 0 && atk.entangledPartnerName) {
+            onCallout({
+              text: `|Φ⁺⟩ ENTANGLED ASSIST: +${entangledBonus} DMG!`,
+              subtext: `BELL RESONANCE WITH ${atk.entangledPartnerName.toUpperCase()}`,
+              x: def.x,
+              y: 2.35,
+              color: '#38bdf8',
+            });
+          }
         }
       }
     }
@@ -613,10 +751,11 @@ function resolveStrikeImpact(
   // Check if Defender is shifted into the 4th spatial dimension (W != 0)!
   if (def.wPhaseTimerMs > 0 && !strike.canHit4DPhase) {
     def.meter = Math.min(100, def.meter + 14);
-    soundEngine.playSwing(false);
+    events.slowMoDurationMs = 210;
+    soundEngine.playBulletTimeParry();
     onCallout({
-      text: '4D PHASE EVASION!',
-      subtext: '3D ATTACK PASSED THROUGH W-FOLD · +14% METER',
+      text: '4D QUANTUM TUNNEL EVASION!',
+      subtext: 'TIME DILATED · +14% METER · COUNTER WINDOW',
       x: def.x,
       y: 2.05,
       color: '#c084fc',
@@ -630,17 +769,18 @@ function resolveStrikeImpact(
   if (isBlocking && nowMs - def.lastBlockPressTime <= PARRY_WINDOW_MS) {
     def.action = 'parry_flash';
     def.actionTimerMs = 0;
-    def.actionDurationMs = 220;
+    def.actionDurationMs = 260;
     def.meter = Math.min(100, def.meter + 24);
     def.hp = Math.min(def.maxHp, def.hp + 5);
     atk.vx = -atk.facing * 3.5;
 
-    soundEngine.playBlock(true);
-    events.cameraShake = 0.25;
+    soundEngine.playBulletTimeParry();
+    events.cameraShake = 0.28;
+    events.slowMoDurationMs = 280;
     events.sparkWorldPos = { x: (atk.x + def.x) * 0.5, y: 1.1, color: 0xfef08a };
     onCallout({
-      text: 'PERFECT PARRY!',
-      subtext: '+24% TACTICAL METER · FRAME ADVANTAGE',
+      text: 'HIGH-NOON PERFECT PARRY!',
+      subtext: 'BULLET-TIME RIPOSTE · +24% METER',
       x: def.x,
       y: 2.1,
       color: '#fde047',

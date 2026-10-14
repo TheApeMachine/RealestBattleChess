@@ -330,6 +330,87 @@ class SoundEngine {
       osc.stop(start + 0.48);
     });
   }
+
+  public playBladeClashLock() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // High-tension metallic blade bind screech + ring
+    const freqs = [1180, 1760, 2480];
+    freqs.forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = idx === 0 ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(f, now);
+      osc.frequency.exponentialRampToValueAtTime(f * 1.18, now + 0.25);
+
+      gain.gain.setValueAtTime(0.11 / (idx + 1), now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.35);
+    });
+  }
+
+  public playBulletTimeParry() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // 1. Sub-bass time-dilation drop
+    const sub = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(160, now);
+    sub.frequency.exponentialRampToValueAtTime(38, now + 0.38);
+    subGain.gain.setValueAtTime(0.28, now);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+    sub.connect(subGain);
+    subGain.connect(ctx.destination);
+    sub.start(now);
+    sub.stop(now + 0.4);
+
+    // 2. High-noon crystalline bell harmonic
+    [880, 1318.5].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + i * 0.04);
+      g.gain.setValueAtTime(0.12, now + i * 0.04);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.start(now + i * 0.04);
+      osc.stop(now + 0.45);
+    });
+  }
+
+  public playQuantumEntangle(isRewind = false) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    const chord = isRewind ? [783.99, 587.33, 440, 293.66] : [440, 659.25, 880, 1174.66];
+    chord.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const t0 = now + idx * 0.045;
+      osc.frequency.setValueAtTime(freq, t0);
+      osc.frequency.exponentialRampToValueAtTime(isRewind ? freq * 0.85 : freq * 1.06, t0 + 0.32);
+
+      gain.gain.setValueAtTime(0.09, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.36);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.36);
+    });
+  }
 }
 
 export const soundEngine = new SoundEngine();

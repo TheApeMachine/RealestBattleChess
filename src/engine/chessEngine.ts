@@ -88,6 +88,20 @@ export function createInitialBoard(): ChessPiece[] {
     });
   }
 
+  // Establish initial Royal Quantum Bell-State Entanglement (|Φ⁺⟩) between Queen & King of each order
+  const wQ = pieces.find((p) => p.id === 'w_q_3');
+  const wK = pieces.find((p) => p.id === 'w_k_4');
+  if (wQ && wK) {
+    wQ.entangledWithId = wK.id;
+    wK.entangledWithId = wQ.id;
+  }
+  const bQ = pieces.find((p) => p.id === 'b_q_3');
+  const bK = pieces.find((p) => p.id === 'b_k_4');
+  if (bQ && bK) {
+    bQ.entangledWithId = bK.id;
+    bK.entangledWithId = bQ.id;
+  }
+
   return pieces;
 }
 

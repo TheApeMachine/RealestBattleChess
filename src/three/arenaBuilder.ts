@@ -20,6 +20,12 @@ export interface BoardArenaRig {
   tesseractEdgeIndices: [number, number][];
   quantumLatticeGroup: THREE.Group;
   quantumWaveRings: THREE.Mesh[];
+  quantumShaderUniforms: {
+    uTime: { value: number };
+    uIntensity: { value: number };
+    uSliceW: { value: number };
+  };
+  entanglementHelixLines: THREE.LineSegments;
 }
 
 export const TILE_SIZE = 1.35;
@@ -503,6 +509,78 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     quantumWaveRings.push(waveRing);
   }
 
+  // Real-Time GLSL Quantum Schrödinger Wavefunction Interference Plane (|ψ(x,z,t)|²)
+  const quantumShaderUniforms = {
+    uTime: { value: 0 },
+    uIntensity: { value: 0 },
+    uSliceW: { value: 0 },
+  };
+
+  const quantumShaderMat = new THREE.ShaderMaterial({
+    uniforms: quantumShaderUniforms,
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vLocalPos;
+      void main() {
+        vUv = uv;
+        vLocalPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uIntensity;
+      uniform float uSliceW;
+      varying vec2 vUv;
+      varying vec3 vLocalPos;
+
+      void main() {
+        if (uIntensity <= 0.01) discard;
+        vec2 p = (vUv - 0.5) * 16.0;
+        float r = length(p);
+        // 4D Schrödinger standing wave interference pattern
+        float psi1 = cos(p.x * 2.35 + uTime * 2.2) * cos(p.y * 2.35 - uTime * 1.8);
+        float psi2 = sin(r * 2.8 - uTime * 3.6 + uSliceW * 1.57);
+        float probDensity = abs(psi1 * 0.55 + psi2 * 0.45);
+        float contour = smoothstep(0.62, 0.92, probDensity);
+        float edgeFade = smoothstep(8.2, 4.5, r);
+
+        vec3 cyanEigen = vec3(0.22, 0.74, 0.97);
+        vec3 violetEigen = vec3(0.75, 0.52, 0.99);
+        vec3 col = mix(cyanEigen, violetEigen, 0.5 + 0.5 * sin(r - uTime * 2.0 + uSliceW));
+        float alpha = contour * edgeFade * uIntensity * 0.34;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+
+  const quantumShaderPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(TILE_SIZE * 8.2, TILE_SIZE * 8.2, 1, 1),
+    quantumShaderMat
+  );
+  quantumShaderPlane.rotation.x = -Math.PI / 2;
+  quantumShaderPlane.position.y = 0.008;
+  quantumLatticeGroup.add(quantumShaderPlane);
+
+  // 3D Quantum Entanglement Double-Helix Beams (connects |Φ⁺⟩ Entangled Bell Pairs across the board!)
+  const maxHelixSegments = 160;
+  const helixPositions = new Float32Array(maxHelixSegments * 2 * 3);
+  const helixGeo = new THREE.BufferGeometry();
+  helixGeo.setAttribute('position', new THREE.BufferAttribute(helixPositions, 3));
+  const helixMat = new THREE.LineBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+  });
+  const entanglementHelixLines = new THREE.LineSegments(helixGeo, helixMat);
+  entanglementHelixLines.frustumCulled = false;
+  group.add(entanglementHelixLines);
+
   return {
     group,
     tiles,
@@ -523,6 +601,8 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     tesseractEdgeIndices,
     quantumLatticeGroup,
     quantumWaveRings,
+    quantumShaderUniforms,
+    entanglementHelixLines,
   };
 }
 
@@ -615,4 +695,67 @@ export function update4DTesseractProjection(
       rMat.opacity = THREE.MathUtils.lerp(rMat.opacity, 0.0, 0.12);
     }
   }
+
+  // Update GLSL Quantum Schrödinger Wavefunction Uniforms
+  rig.quantumShaderUniforms.uTime.value = elapsedTime;
+  rig.quantumShaderUniforms.uSliceW.value = activeW;
+  rig.quantumShaderUniforms.uIntensity.value = THREE.MathUtils.lerp(
+    rig.quantumShaderUniforms.uIntensity.value,
+    isQuantumMode ? 1.0 : 0.18,
+    0.1
+  );
+}
+
+/**
+ * Renders 3D Double-Helix Quantum Entanglement Arcs between |Φ⁺⟩ Bell-Entangled pairs on the board!
+ */
+export function updateQuantumEntanglementBeams(
+  rig: BoardArenaRig,
+  entangledPairs: { a: THREE.Vector3; b: THREE.Vector3 }[],
+  elapsedTime: number
+) {
+  const posAttr = rig.entanglementHelixLines.geometry.attributes.position as THREE.BufferAttribute;
+  let segIndex = 0;
+  const maxSegs = 160;
+  const stepsPerPair = 24;
+
+  for (const pair of entangledPairs) {
+    for (let strand = 0; strand < 2; strand++) {
+      const phaseOffset = strand * Math.PI;
+      for (let s = 0; s < stepsPerPair; s++) {
+        if (segIndex >= maxSegs) break;
+        const t0 = s / stepsPerPair;
+        const t1 = (s + 1) / stepsPerPair;
+
+        const calcPoint = (t: number) => {
+          const x = THREE.MathUtils.lerp(pair.a.x, pair.b.x, t);
+          const z = THREE.MathUtils.lerp(pair.a.z, pair.b.z, t);
+          const baseArcY =
+            THREE.MathUtils.lerp(pair.a.y, pair.b.y, t) +
+            Math.sin(t * Math.PI) * 1.45 +
+            0.75;
+          const twistAngle = t * Math.PI * 5.0 - elapsedTime * 6.5 + phaseOffset;
+          const radius = Math.sin(t * Math.PI) * 0.18;
+          return [
+            x + Math.cos(twistAngle) * radius,
+            baseArcY + Math.sin(twistAngle) * radius,
+            z + Math.sin(twistAngle) * radius,
+          ];
+        };
+
+        const p0 = calcPoint(t0);
+        const p1 = calcPoint(t1);
+        posAttr.setXYZ(segIndex * 2, p0[0], p0[1], p0[2]);
+        posAttr.setXYZ(segIndex * 2 + 1, p1[0], p1[1], p1[2]);
+        segIndex++;
+      }
+    }
+  }
+
+  // Zero out unused segments
+  for (let i = segIndex; i < maxSegs; i++) {
+    posAttr.setXYZ(i * 2, 0, -100, 0);
+    posAttr.setXYZ(i * 2 + 1, 0, -100, 0);
+  }
+  posAttr.needsUpdate = true;
 }

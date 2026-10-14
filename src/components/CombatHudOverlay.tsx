@@ -124,19 +124,43 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
             <div className="fixed inset-x-4 top-[56px] bottom-4 rounded-3xl border-2 border-purple-500/45 shadow-[inset_0_0_50px_rgba(168,85,247,0.22)] pointer-events-none" />
           )}
 
-          {/* First-Person Center Tactical Combat Reticle & Incoming Strike Telegraph */}
+          {/* First-Person Center Tactical Combat Reticle & Incoming Strike / Blade Clash Telegraph */}
           <div className="fixed inset-0 top-[53px] flex flex-col items-center justify-center pointer-events-none z-10">
-            {isEnemyAttacking && (
-              <div className="mb-16 px-4 py-1 bg-rose-950/90 border-2 border-rose-400 rounded-md shadow-xl animate-pulse">
-                <span className="font-mono text-xs font-extrabold tracking-widest text-rose-200">
-                  ⚠ INCOMING {opponentFighter.spec.chessName.toUpperCase()} STRIKE — HOLD / TAP [S] TO PARRY!
-                </span>
+            {humanFighter.action === 'blade_clash' ? (
+              <div className="mb-12 px-5 py-2.5 bg-amber-950/95 border-2 border-amber-400 rounded-xl shadow-2xl text-center">
+                <div className="font-display text-sm font-extrabold tracking-widest text-amber-300">
+                  ⚔ BLADE BIND LOCK! MASH [J] OR [K] TO SHATTER ENEMY GUARD!
+                </div>
+                <div className="mt-1.5 h-2.5 w-64 bg-slate-900 rounded-full overflow-hidden border border-amber-400/60 mx-auto">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-400 to-yellow-200 transition-all duration-75"
+                    style={{
+                      width: `${Math.max(
+                        10,
+                        Math.min(
+                          90,
+                          50 + (humanFighter.clashPower - opponentFighter.clashPower) * 14
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
               </div>
+            ) : (
+              isEnemyAttacking && (
+                <div className="mb-16 px-4 py-1 bg-rose-950/90 border-2 border-rose-400 rounded-md shadow-xl animate-pulse">
+                  <span className="font-mono text-xs font-extrabold tracking-widest text-rose-200">
+                    ⚠ INCOMING {opponentFighter.spec.chessName.toUpperCase()} STRIKE — HOLD / TAP [S] TO PARRY!
+                  </span>
+                </div>
+              )
             )}
 
             <div
               className={`relative flex items-center justify-center w-14 h-14 rounded-full border transition-all duration-100 ${
-                isEnemyAttacking
+                humanFighter.action === 'blade_clash'
+                  ? 'border-amber-300 scale-125'
+                  : isEnemyAttacking
                   ? 'border-rose-400/90 scale-110'
                   : inStrikeRange
                   ? 'border-amber-400/80 scale-100'
@@ -145,7 +169,9 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
             >
               <Crosshair
                 className={`w-5 h-5 ${
-                  isEnemyAttacking
+                  humanFighter.action === 'blade_clash'
+                    ? 'text-amber-300'
+                    : isEnemyAttacking
                     ? 'text-rose-400'
                     : inStrikeRange
                     ? 'text-amber-400'
@@ -192,14 +218,19 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
                 <span className="text-[11px] font-mono text-slate-400 whitespace-nowrap">
                   {attacker.piece.faction === 'w' ? 'SOLARIS' : 'OBSIDIAN'} · {attacker.spec.chessName.toUpperCase()} · |W={attacker.piece.w}⟩
                 </span>
-                {attacker.wPhaseTimerMs > 0 && (
+                {attacker.entangledPartnerName && (
                   <span className="text-[10px] font-mono font-bold text-cyan-300">
+                    · |Φ⁺⟩ {attacker.entangledPartnerName.toUpperCase()}
+                  </span>
+                )}
+                {attacker.wPhaseTimerMs > 0 && (
+                  <span className="text-[10px] font-mono font-bold text-purple-300">
                     · |ψ⟩ PHASED
                   </span>
                 )}
               </div>
               <span className="font-mono text-xs font-semibold tabular-nums text-slate-100 shrink-0">
-                {attacker.hp}/{attacker.maxHp} HP
+                {Math.round(attacker.hp)}/{attacker.maxHp} HP
               </span>
             </div>
 
@@ -273,12 +304,17 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
           <div className="col-span-5 flex flex-col gap-1">
             <div className="flex items-baseline justify-between gap-2">
               <span className="font-mono text-xs font-semibold tabular-nums text-slate-100 shrink-0">
-                {defender.hp}/{defender.maxHp} HP
+                {Math.round(defender.hp)}/{defender.maxHp} HP
               </span>
               <div className="flex items-baseline gap-2 truncate justify-end">
                 {defender.wPhaseTimerMs > 0 && (
-                  <span className="text-[10px] font-mono font-bold text-cyan-300">
+                  <span className="text-[10px] font-mono font-bold text-purple-300">
                     |ψ⟩ PHASED ·
+                  </span>
+                )}
+                {defender.entangledPartnerName && (
+                  <span className="text-[10px] font-mono font-bold text-cyan-300">
+                    |Φ⁺⟩ {defender.entangledPartnerName.toUpperCase()} ·
                   </span>
                 )}
                 <span className="text-[11px] font-mono text-slate-400 whitespace-nowrap">

@@ -521,6 +521,17 @@ export function animateFighterRig(
       targetCapeX = 0.75;
       break;
     }
+    case 'blade_clash': {
+      const grindJitter = Math.sin(elapsedTime * 55) * 0.08;
+      targetBodyRotX = 0.34 + grindJitter * 0.5;
+      targetBodyRotY = -0.22;
+      targetRightArmX = -1.42 + grindJitter;
+      targetRightArmY = -0.35;
+      targetLeftArmX = -1.05 - grindJitter;
+      targetLeftArmY = 0.42;
+      targetCapeX = 0.68;
+      break;
+    }
     case 'light_1':
     case 'light_3': {
       const thrustArc = Math.sin(p * Math.PI);
@@ -613,11 +624,12 @@ export function animateFighterRig(
   headGroup.rotation.x = THREE.MathUtils.damp(headGroup.rotation.x, targetHeadX, k, dt);
   capePivot.rotation.x = THREE.MathUtils.damp(capePivot.rotation.x, targetCapeX, 14, dt);
 
-  // 4D W-Phase Shift visual displacement & Quantum Superposition Rings
+  // 4D W-Phase Shift visual displacement & Quantum Superposition / Bell-Entanglement Rings
   const isPhased4D = fighter.wPhaseTimerMs > 0;
+  const hasQuantumLink = isPhased4D || fighter.temporalEchoTimerMs > 0 || Boolean(fighter.entangledPartnerName);
   rig.tesseractBadge.visible = isPhased4D || fighter.temporalEchoTimerMs > 0;
-  rig.quantumWaveGroup.visible = isPhased4D || fighter.temporalEchoTimerMs > 0;
-  if (rig.tesseractBadge.visible) {
+  rig.quantumWaveGroup.visible = hasQuantumLink;
+  if (hasQuantumLink) {
     rig.tesseractBadge.rotation.y += dt * 4.5;
     rig.tesseractBadge.rotation.x += dt * 3.2;
     rig.quantumWaveGroup.rotation.y += dt * 3.8;
@@ -750,6 +762,19 @@ export function animateFirstPersonViewmodel(
       lPosY = -0.12 + bash * 0.08;
       lPosZ = -0.46 - bash * 0.25;
       lRotY = 0.85;
+      break;
+    }
+    case 'blade_clash': {
+      const grind = Math.sin(elapsedTime * 60) * 0.032;
+      rPosX = 0.08 + grind;
+      rPosY = -0.14 + Math.cos(elapsedTime * 50) * 0.025;
+      rPosZ = -0.48;
+      rRotX = -0.42;
+      rRotZ = 0.58 + grind * 1.5;
+      lPosX = -0.14 - grind;
+      lPosY = -0.16;
+      lPosZ = -0.48;
+      lRotY = 0.72;
       break;
     }
     case 'hitstun': {

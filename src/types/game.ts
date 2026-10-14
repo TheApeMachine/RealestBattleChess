@@ -88,6 +88,14 @@ export interface ChessPiece {
   kills: number;
   hasMoved: boolean;
   history: SpacetimeWaypoint[];
+  entangledWithId?: string; // Quantum Bell-State Entanglement Partner ID (|Φ⁺⟩)
+}
+
+export interface TimelineSnapshot {
+  turnNumber: number;
+  turnFaction: Faction;
+  branchName: string;
+  pieces: ChessPiece[];
 }
 
 export type MoveDimensionType =
@@ -133,6 +141,7 @@ export type FighterAction =
   | 'jump'
   | 'block'
   | 'parry_flash'
+  | 'blade_clash'
   | 'light_1'
   | 'light_2'
   | 'light_3'
@@ -175,7 +184,7 @@ export interface FighterRuntime {
   superArmorActive: boolean;
   invulnerableTimerMs: number;
   hitFlashTimerMs: number;
-  // 4D Combat Mechanics: W-Axis Phase Shift & Temporal Echo Clone
+  // 4D Combat Mechanics: W-Axis Phase Shift, Temporal Echo Clone, Blade Clash Lock & Bell Entanglement
   wPhaseOffset: number; // 0 = Prime plane, +1 = Ana Phase, -1 = Kata Phase
   wPhaseTimerMs: number;
   wPhaseCooldownMs: number;
@@ -183,6 +192,9 @@ export interface FighterRuntime {
   temporalEchoX: number;
   temporalEchoFacing: 1 | -1;
   temporalEchoHasStruck: boolean;
+  clashLockTimerMs: number;
+  clashPower: number;
+  entangledPartnerName?: string;
 }
 
 export interface CombatCallout {

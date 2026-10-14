@@ -18,6 +18,7 @@ import {
   GamePhase,
   MoveOption,
   PieceType,
+  TimelineSnapshot,
   UnseenThreatVector,
 } from './types/game';
 import { ARCHETYPES } from './data/archetypes';
@@ -52,6 +53,7 @@ import {
   createBoardArena,
   BoardArenaRig,
   update4DTesseractProjection,
+  updateQuantumEntanglementBeams,
 } from './three/arenaBuilder';
 import {
   animateFighterRig,
@@ -120,6 +122,8 @@ export default function App() {
   const [targetMoveW, setTargetMoveW] = useState<number>(0);
   const [targetMoveZ, setTargetMoveZ] = useState<number>(0);
   const [unseenThreats, setUnseenThreats] = useState<UnseenThreatVector[]>([]);
+  const [canRewindTimeline, setCanRewindTimeline] = useState<boolean>(false);
+  const [timelineBranchLabel, setTimelineBranchLabel] = useState<string>('Timeline α');
 
   const [selectedPiece, setSelectedPiece] = useState<ChessPiece | null>(null);
   const [hoveredCaptureMove, setHoveredCaptureMove] = useState<MoveOption | null>(null);
@@ -182,6 +186,9 @@ export default function App() {
     fightTimer: number;
     cameraShake: number;
     hitstopTimer: number;
+    slowMoTimer: number;
+    timelineSnapshots: TimelineSnapshot[];
+    timelineBranchCount: number;
     keysHeld: Record<string, boolean>;
     pieceRigs: Map<string, ArticulatedPieceRig>;
     firstPersonRig: FirstPersonViewmodelRig | null;
@@ -219,6 +226,9 @@ export default function App() {
     fightTimer: 60,
     cameraShake: 0,
     hitstopTimer: 0,
+    slowMoTimer: 0,
+    timelineSnapshots: [],
+    timelineBranchCount: 0,
     keysHeld: {},
     pieceRigs: new Map(),
     firstPersonRig: null,
@@ -228,6 +238,130 @@ export default function App() {
     controls: null,
     currentLookAt: new THREE.Vector3(0, 0.4, 0),
   });
+
+  const saveTimelineSnapshot = useCallback(() => {
+    const sim = simRef.current;
+    const clonedPieces: ChessPiece[] = sim.pieces.map((p) => ({
+      ...p,
+      history: p.history.map((h) => ({ ...h })),
+    }));
+    const branches = ['α', 'β', 'γ', 'δ', 'ε', 'ζ'];
+    const branchSym = branches[sim.timelineBranchCount % branches.length];
+    sim.timelineSnapshots.push({
+      turnNumber: sim.turnNumber,
+      turnFaction: sim.turnFaction,
+      branchName: `Timeline ${branchSym}`,
+      pieces: clonedPieces,
+    });
+    if (sim.timelineSnapshots.length > 12) {
+      sim.timelineSnapshots.shift();
+    }
+    setCanRewindTimeline(sim.timelineSnapshots.length > 0);
+  }, []);
+
+  // Spacetime Causality Rewind (Δt - 1): Fork a parallel timeline branch and restore prior board state!
+  const handleChronoRewind = useCallback(() => {
+    const sim = simRef.current;
+    if (sim.phase !== 'CHESS_VIEW' || sim.timelineSnapshots.length === 0) return;
+
+    const snap = sim.timelineSnapshots.pop()!;
+    sim.timelineBranchCount += 1;
+    const branches = ['α', 'β', 'γ', 'δ', 'ε', 'ζ'];
+    const newBranchName = `Timeline ${branches[sim.timelineBranchCount % branches.length]}`;
+    setTimelineBranchLabel(newBranchName);
+    setCanRewindTimeline(sim.timelineSnapshots.length > 0);
+
+    const scene = sim.arenaRig?.group.parent;
+    sim.pieceRigs.forEach((rig) => {
+      rig.root.parent?.remove(rig.root);
+    });
+    sim.pieceRigs.clear();
+
+    sim.pieces = snap.pieces;
+    sim.turnNumber = snap.turnNumber;
+    sim.turnFaction = 'w';
+    sim.selectedPieceId = null;
+    sim.validMoves = [];
+
+    if (scene) {
+      for (const p of sim.pieces) {
+        const rig = createArticulatedPiece(p.type, p.faction);
+        boardToWorld(p.row, p.col, rig.root.position);
+        rig.root.rotation.y = p.faction === 'w' ? Math.PI : 0;
+        scene.add(rig.root);
+        sim.pieceRigs.set(p.id, rig);
+      }
+    }
+
+    if (sim.vfxPool) {
+      spawnShockwave(sim.vfxPool, 0, 0.1, 0, 0x38bdf8, 8.5);
+    }
+    soundEngine.playQuantumEntangle(true);
+    setTurnNumber(sim.turnNumber);
+    setTurnFaction('w');
+    syncBoardHighlights();
+    setBattleLogs((prev) => [
+      {
+        id: `rewind_${Date.now()}`,
+        turnNumber: sim.turnNumber,
+        summary: `Causality Rewound (Δt = -1) → Branched into ${newBranchName}`,
+        detail: `Quantum wavefunction collapsed back to Turn ${snap.turnNumber} before the timeline diverged.`,
+        wasUpset: false,
+        winnerFaction: 'w',
+      },
+      ...prev.slice(0, 7),
+    ]);
+  }, []);
+
+  // Quantum Bell-State Entanglement (|Φ⁺⟩): Link the selected piece with your highest-value allied warrior!
+  const handleEntangleSelectedPiece = useCallback(() => {
+    const sim = simRef.current;
+    if (!sim.selectedPieceId) return;
+    const sel = sim.pieces.find((p) => p.id === sim.selectedPieceId);
+    if (!sel) return;
+
+    // Find best allied partner to entangle with
+    const allies = sim.pieces.filter(
+      (p) => p.faction === sel.faction && p.id !== sel.id && p.id !== sel.entangledWithId
+    );
+    if (allies.length === 0) return;
+
+    allies.sort(
+      (a, b) => ARCHETYPES[b.type].tacticalValue - ARCHETYPES[a.type].tacticalValue
+    );
+    const partner = allies[0];
+
+    // Clear old entanglement links for these two pieces
+    for (const p of sim.pieces) {
+      if (p.entangledWithId === sel.id || p.entangledWithId === partner.id) {
+        p.entangledWithId = undefined;
+      }
+    }
+
+    sel.entangledWithId = partner.id;
+    partner.entangledWithId = sel.id;
+
+    soundEngine.playQuantumEntangle(false);
+    if (sim.vfxPool) {
+      const posA = boardToWorld(sel.row, sel.col);
+      const posB = boardToWorld(partner.row, partner.col);
+      spawnShockwave(sim.vfxPool, posA.x, 0.08, posA.z, 0x38bdf8, 3.2);
+      spawnShockwave(sim.vfxPool, posB.x, 0.08, posB.z, 0xc084fc, 3.2);
+    }
+
+    setSelectedPiece({ ...sel });
+    setBattleLogs((prev) => [
+      {
+        id: `entangle_${Date.now()}`,
+        turnNumber: sim.turnNumber,
+        summary: `|Φ⁺⟩ Bell-State Entanglement: ${ARCHETYPES[sel.type].chessName} ⇄ ${ARCHETYPES[partner.type].chessName}`,
+        detail: `Connected by a 3D Quantum Double-Helix! Grants +15% starting meter, passive Bell Shielding, and Entangled Assist Strikes in combat.`,
+        wasUpset: false,
+        winnerFaction: sel.faction,
+      },
+      ...prev.slice(0, 7),
+    ]);
+  }, []);
 
   const handleToggleCombatCameraMode = useCallback(() => {
     const sim = simRef.current;
@@ -359,11 +493,29 @@ export default function App() {
       const atkIsAI = sim.gameMode === 'vs_ai' && attackerPiece.faction === 'b';
       const defIsAI = sim.gameMode === 'vs_ai' && defenderPiece.faction === 'b';
 
-      sim.attackerRuntime = createFighterRuntime(attackerPiece, true, atkIsAI);
-      sim.defenderRuntime = createFighterRuntime(defenderPiece, false, defIsAI);
+      const atkPartner = attackerPiece.entangledWithId
+        ? sim.pieces.find((p) => p.id === attackerPiece.entangledWithId)
+        : undefined;
+      const defPartner = defenderPiece.entangledWithId
+        ? sim.pieces.find((p) => p.id === defenderPiece.entangledWithId)
+        : undefined;
+
+      sim.attackerRuntime = createFighterRuntime(
+        attackerPiece,
+        true,
+        atkIsAI,
+        atkPartner ? ARCHETYPES[atkPartner.type].chessName : undefined
+      );
+      sim.defenderRuntime = createFighterRuntime(
+        defenderPiece,
+        false,
+        defIsAI,
+        defPartner ? ARCHETYPES[defPartner.type].chessName : undefined
+      );
       sim.prevAtkAction = 'idle';
       sim.prevDefAction = 'idle';
       sim.fightTimer = 60;
+      sim.slowMoTimer = 0;
       sim.phase = 'TRANSITION_TO_FIGHT';
       sim.phaseTimer = 0;
       sim.introShotIndex = -1;
@@ -421,6 +573,10 @@ export default function App() {
   const executeChessMove = useCallback(
     (piece: ChessPiece, move: MoveOption) => {
       const sim = simRef.current;
+
+      if (piece.faction === 'w') {
+        saveTimelineSnapshot();
+      }
 
       if (move.isCapture && move.targetPiece) {
         initiateCombatDuel(piece, move, false);
@@ -1272,8 +1428,9 @@ export default function App() {
           rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, targetYaw, 8, rawDelta);
 
           rig.surpriseGroup.visible = false;
-          const showQuantumOrbits = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
-          rig.tesseractBadge.visible = showQuantumOrbits;
+          const showQuantumOrbits =
+            piece.w !== 0 || piece.z !== 0 || !isSameSlice || Boolean(piece.entangledWithId);
+          rig.tesseractBadge.visible = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
           rig.quantumWaveGroup.visible = showQuantumOrbits;
           if (showQuantumOrbits) {
             rig.tesseractBadge.rotation.y += rawDelta * 2.5;
@@ -1309,6 +1466,29 @@ export default function App() {
           ringMat.opacity = isSelected ? 0.95 : piece.hp < piece.maxHp ? 0.7 : 0.35;
         }
 
+        // Render 3D Double-Helix Quantum Entanglement Arcs between |Φ⁺⟩ Bell Pairs!
+        arenaRig.entanglementHelixLines.visible = true;
+        const entangledPairs: { a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+        const visitedIds = new Set<string>();
+        for (const p of sim.pieces) {
+          if (p.entangledWithId && !visitedIds.has(p.id)) {
+            const partner = sim.pieces.find((x) => x.id === p.entangledWithId);
+            if (partner) {
+              visitedIds.add(p.id);
+              visitedIds.add(partner.id);
+              const rigA = sim.pieceRigs.get(p.id);
+              const rigB = sim.pieceRigs.get(partner.id);
+              if (rigA && rigB) {
+                entangledPairs.push({
+                  a: rigA.root.position,
+                  b: rigB.root.position,
+                });
+              }
+            }
+          }
+        }
+        updateQuantumEntanglementBeams(arenaRig, entangledPairs, elapsed);
+
         controls.update();
       } else if (
         sim.phase === 'TRANSITION_TO_FIGHT' ||
@@ -1321,6 +1501,7 @@ export default function App() {
 
         if (atk && def) {
           arenaRig.tesseractLines.visible = false;
+          arenaRig.entanglementHelixLines.visible = false;
           sim.phaseTimer += rawDelta;
 
           const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
@@ -1609,11 +1790,16 @@ export default function App() {
             }
           }
 
-          // 3. Step Active Combat Simulation
+          // 3. Step Active Combat Simulation (with High-Noon Bullet-Time Dilation!)
+          if (sim.slowMoTimer > 0) {
+            sim.slowMoTimer = Math.max(0, sim.slowMoTimer - rawDelta);
+          }
+          const combatDelta = sim.slowMoTimer > 0 ? rawDelta * 0.24 : rawDelta;
+
           if (sim.hitstopTimer > 0) {
             sim.hitstopTimer = Math.max(0, sim.hitstopTimer - rawDelta);
           } else if (sim.phase === 'FIGHT_ACTIVE') {
-            sim.fightTimer = Math.max(0, sim.fightTimer - rawDelta);
+            sim.fightTimer = Math.max(0, sim.fightTimer - combatDelta);
 
             const human = !atk.isAI ? atk : !def.isAI ? def : atk;
             if (
@@ -1649,15 +1835,18 @@ export default function App() {
               }
             }
 
-            if (atk.isAI) updateFighterAI(atk, def, rawDelta, nowMs, addCallout);
-            if (def.isAI) updateFighterAI(def, atk, rawDelta, nowMs, addCallout);
+            if (atk.isAI) updateFighterAI(atk, def, combatDelta, nowMs, addCallout);
+            if (def.isAI) updateFighterAI(def, atk, combatDelta, nowMs, addCallout);
 
             checkFighterActionVFX(atk, sim.prevAtkAction);
             checkFighterActionVFX(def, sim.prevDefAction);
             sim.prevAtkAction = atk.action;
             sim.prevDefAction = def.action;
 
-            const stepEvents = stepCombatSimulation(atk, def, rawDelta, nowMs, addCallout);
+            const stepEvents = stepCombatSimulation(atk, def, combatDelta, nowMs, addCallout);
+            if (stepEvents.slowMoDurationMs > 0) {
+              sim.slowMoTimer = Math.max(sim.slowMoTimer, stepEvents.slowMoDurationMs / 1000);
+            }
             if (stepEvents.cameraShake > 0) {
               sim.cameraShake = Math.max(sim.cameraShake, stepEvents.cameraShake);
             }
@@ -2192,7 +2381,9 @@ export default function App() {
             }`}
           >
             <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-              <span>TURN {turnNumber} · {gameMode === 'vs_ai' ? 'VS AI' : '2P LOCAL'}</span>
+              <span>
+                {timelineBranchLabel.toUpperCase()} · TURN {turnNumber}
+              </span>
               <span className={activeSliceW !== 0 || activeSliceZ !== 0 ? 'text-cyan-300 font-bold' : 'text-amber-300'}>
                 |ψ⟩ = |W={activeSliceW}, Z={activeSliceZ}⟩
               </span>
@@ -2207,14 +2398,25 @@ export default function App() {
             <div className="text-xs text-slate-300 mt-1">
               {activeSliceW !== 0 || activeSliceZ !== 0 ? (
                 <>
-                  Observing <span className="text-cyan-300 font-semibold">Quantum 4D Eigenstate</span>. Standing-wave rings mark probability fields; translucent pieces in <span className="text-purple-300">|W=0⟩</span> exist in superposition!
+                  Observing <span className="text-cyan-300 font-semibold">Quantum 4D Eigenstate</span>. Schrödinger probability waves &amp; <span className="text-cyan-300">|Φ⁺⟩ Double-Helix Beams</span> link entangled allies!
                 </>
               ) : (
                 <>
-                  Classical Prime Sanctuary (<span className="text-amber-300">|W=0, Z=0⟩</span>). Shift slices below or project moves into <span className="text-cyan-300">Quantum 4D (-W / +W)</span>!
+                  Classical Prime Sanctuary (<span className="text-amber-300">|W=0, Z=0⟩</span>). Cyan <span className="text-cyan-300">|Φ⁺⟩ Double-Helix Arcs</span> mark Quantum Entangled Bell Pairs!
                 </>
               )}
             </div>
+
+            {canRewindTimeline && (
+              <button
+                onClick={handleChronoRewind}
+                className="mt-2 w-full px-3 py-1.5 bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-400/50 rounded-lg text-[11px] font-mono font-semibold text-cyan-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                title="Rewind spacetime causality by 1 turn (Δt = -1) and fork a parallel multiverse timeline branch!"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-cyan-300" />
+                Chrono-Rewind Causality (Δt = -1 · Fork Timeline)
+              </button>
+            )}
           </div>
 
           {/* Unseen 4D Cross-Dimensional Threat Alert */}
@@ -2242,7 +2444,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Selected Piece + 4D Quantum Tunneling Projector */}
+          {/* Selected Piece + 4D Quantum Tunneling Projector & Bell-State Entanglement */}
           {selectedPiece && (
             <div className="bg-[#0B0E17]/95 border border-cyan-500/50 rounded-xl px-4 py-3 shadow-xl">
               <div className="flex items-center justify-between text-xs font-mono text-cyan-300">
@@ -2253,8 +2455,17 @@ export default function App() {
                   {selectedPiece.hp}/{selectedPiece.maxHp} HP
                 </span>
               </div>
-              <div className="font-display text-sm font-bold text-white mt-0.5">
-                {ARCHETYPES[selectedPiece.type].warriorTitle}
+              <div className="flex items-center justify-between mt-0.5">
+                <div className="font-display text-sm font-bold text-white">
+                  {ARCHETYPES[selectedPiece.type].warriorTitle}
+                </div>
+                <button
+                  onClick={handleEntangleSelectedPiece}
+                  className="px-2 py-0.5 bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-400/50 rounded text-[10px] font-mono text-cyan-200 transition-colors cursor-pointer"
+                  title="Entangle this warrior in a |Φ⁺⟩ Quantum Bell Pair with your highest-value ally for +15% starting meter, passive regeneration, and Entangled Assist Strikes!"
+                >
+                  {selectedPiece.entangledWithId ? '|Φ⁺⟩ Re-Entangle' : '+ |Φ⁺⟩ Entangle Pair'}
+                </button>
               </div>
 
               {/* 4D Move Projection Selector */}
