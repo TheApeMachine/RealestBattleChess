@@ -2,6 +2,10 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import confetti from 'canvas-confetti';
 import {
   AttackInput,
@@ -10,6 +14,7 @@ import {
   ChessPiece,
   CombatCallout,
   Faction,
+  FighterAction,
   FighterRuntime,
   GamePhase,
   MoveOption,
@@ -40,8 +45,11 @@ import {
 import {
   animateFighterRig,
   createVFXPool,
+  spawnAuraPillar,
+  spawnGroundDebris,
   spawnHitSparks,
   spawnShockwave,
+  spawnSlashArc,
   updateVFXPool,
   VFXPool,
 } from './three/combatAnimator';
@@ -52,11 +60,20 @@ import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles } from 'lucide-react
 
 // Pre-allocated math helpers at module scope (Zero GC in render loop)
 const _vec3A = new THREE.Vector3();
-const _vec3B = new THREE.Vector3();
 const _camTargetPos = new THREE.Vector3();
 const _camLookTarget = new THREE.Vector3();
 
 type CameraPreset = 'white_orbit' | 'top_tactical' | 'cinematic_angle';
+
+interface BystanderPhysics {
+  offsetX: number;
+  offsetZ: number;
+  vx: number;
+  vz: number;
+  y: number;
+  vy: number;
+  panickedTimer: number;
+}
 
 export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
@@ -116,9 +133,13 @@ export default function App() {
     exhibitionTempRigs: ArticulatedPieceRig[];
     attackerRuntime: FighterRuntime | null;
     defenderRuntime: FighterRuntime | null;
+    prevAtkAction: FighterAction;
+    prevDefAction: FighterAction;
+    bystanders: Map<string, BystanderPhysics>;
     duelCenterWorld: THREE.Vector3;
     fightTimer: number;
     cameraShake: number;
+    hitstopTimer: number;
     keysHeld: Record<string, boolean>;
     pieceRigs: Map<string, ArticulatedPieceRig>;
     arenaRig: BoardArenaRig | null;
@@ -140,9 +161,13 @@ export default function App() {
     exhibitionTempRigs: [],
     attackerRuntime: null,
     defenderRuntime: null,
+    prevAtkAction: 'idle',
+    prevDefAction: 'idle',
+    bystanders: new Map(),
     duelCenterWorld: new THREE.Vector3(0, 0, 0),
     fightTimer: 60,
     cameraShake: 0,
+    hitstopTimer: 0,
     keysHeld: {},
     pieceRigs: new Map(),
     arenaRig: null,
@@ -225,6 +250,8 @@ export default function App() {
 
       sim.attackerRuntime = createFighterRuntime(attackerPiece, true, atkIsAI);
       sim.defenderRuntime = createFighterRuntime(defenderPiece, false, defIsAI);
+      sim.prevAtkAction = 'idle';
+      sim.prevDefAction = 'idle';
       sim.fightTimer = 60;
       sim.phase = 'TRANSITION_TO_FIGHT';
       sim.phaseTimer = 0;
@@ -258,14 +285,13 @@ export default function App() {
       piece.row = move.to.row;
       piece.col = move.to.col;
       piece.hasMoved = true;
-      piece.meter = Math.min(100, piece.meter + 8); // Moving builds +8% tactical meter
+      piece.meter = Math.min(100, piece.meter + 8);
 
       // Check Pawn Promotion on reaching far rank
       if (move.isPromotion && piece.type === 'p') {
         piece.type = 'q';
         piece.maxHp = ARCHETYPES.q.maxHp;
         piece.hp = ARCHETYPES.q.maxHp;
-        // Rebuild 3D rig as a Queen
         const oldRig = sim.pieceRigs.get(piece.id);
         if (oldRig && oldRig.root.parent) {
           const parent = oldRig.root.parent;
@@ -288,7 +314,6 @@ export default function App() {
       setTurnFaction(nextFaction);
       setTurnNumber(sim.turnNumber);
 
-      // If vs AI and it's now Black's turn, schedule AI move
       if (sim.gameMode === 'vs_ai' && nextFaction === 'b') {
         setTimeout(() => {
           const currentSim = simRef.current;
@@ -303,17 +328,15 @@ export default function App() {
     [initiateCombatDuel, syncBoardHighlights]
   );
 
-  // Instant Exhibition Duel (e.g., Queen vs Pawn or Pawn vs Queen) from anywhere
+  // Instant Exhibition Duel from anywhere
   const handleLaunchExhibitionDuel = useCallback(
     (attackerType: PieceType, defenderType: PieceType) => {
       const sim = simRef.current;
-      // Clean up any prior exhibition rigs
       for (const rig of sim.exhibitionTempRigs) {
         rig.root.parent?.remove(rig.root);
       }
       sim.exhibitionTempRigs = [];
 
-      // Try to find an actual matchup on the board first, or spawn an exhibition clash at E4 (row 4, col 4)
       const atkSpec = ARCHETYPES[attackerType];
       const defSpec = ARCHETYPES[defenderType];
 
@@ -369,12 +392,11 @@ export default function App() {
     [initiateCombatDuel]
   );
 
-  // Trigger an immediate canonical board clash (e.g. Queen tries to take a Pawn, or Pawn challenges Queen!)
+  // Trigger an immediate canonical board clash (e.g. Pawn vs Queen surrounded by lively spectator pieces!)
   const handleTriggerFeaturedBoardClash = useCallback(() => {
     const sim = simRef.current;
     if (sim.phase !== 'CHESS_VIEW') return;
 
-    // Look for any available capture move on the board first
     for (const p of sim.pieces.filter((x) => x.faction === sim.turnFaction)) {
       const moves = getValidMovesForPiece(p, sim.pieces);
       const cap = moves.find((m) => m.isCapture && m.targetPiece);
@@ -384,8 +406,8 @@ export default function App() {
       }
     }
 
-    // If no pieces are currently in capture range (e.g. Turn 1), advance an Obsidian Queen & Solaris Pawn into D4/E5 and clash!
-    const whitePawn = sim.pieces.find((p) => p.faction === 'w' && p.type === 'p');
+    const whitePawn = sim.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4) ||
+      sim.pieces.find((p) => p.faction === 'w' && p.type === 'p');
     const blackQueen = sim.pieces.find((p) => p.faction === 'b' && p.type === 'q');
 
     if (whitePawn && blackQueen) {
@@ -394,8 +416,6 @@ export default function App() {
       blackQueen.row = 3;
       blackQueen.col = 3;
 
-      // In this scenario, the Obsidian Queen (or Solaris Pawn) initiates the capture!
-      // Let's let the human player control the Solaris Pawn defending against the attacking Obsidian Queen (or attacking her)!
       const move: MoveOption = {
         from: { row: 4, col: 4 },
         to: { row: 3, col: 3 },
@@ -411,11 +431,11 @@ export default function App() {
     const sim = simRef.current;
     const scene = sim.arenaRig?.group.parent;
 
-    // Remove existing piece meshes
     sim.pieceRigs.forEach((rig) => {
       rig.root.parent?.remove(rig.root);
     });
     sim.pieceRigs.clear();
+    sim.bystanders.clear();
     sim.exhibitionTempRigs = [];
 
     const freshPieces = createInitialBoard();
@@ -461,7 +481,7 @@ export default function App() {
     ]);
   }, [syncBoardHighlights]);
 
-  // Player combat input handler (works for both Keyboard and On-Screen Arcade Buttons)
+  // Player combat input handler
   const handlePlayerCombatInput = useCallback(
     (
       action:
@@ -511,7 +531,7 @@ export default function App() {
     [addCallout]
   );
 
-  // Initialize Three.js Scene, Studio Lighting, Board, Pieces, and Animation Loop
+  // Initialize Three.js Scene, Post-Processing Bloom, Studio & Cinematic Fight Lighting, Board, Pieces, and Loop
   useEffect(() => {
     const container = canvasMountRef.current;
     if (!container) return;
@@ -520,8 +540,8 @@ export default function App() {
       navigator.webdriver || /HeadlessChrome/i.test(navigator.userAgent);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x090b10);
-    scene.fog = new THREE.FogExp2(0x090b10, 0.022);
+    scene.background = new THREE.Color(0x07090e);
+    scene.fog = new THREE.FogExp2(0x07090e, 0.022);
 
     const camera = new THREE.PerspectiveCamera(
       45,
@@ -537,7 +557,7 @@ export default function App() {
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.12;
+    renderer.toneMappingExposure = 1.1;
     renderer.setPixelRatio(isHeadless ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = !isHeadless;
@@ -546,18 +566,33 @@ export default function App() {
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
-    // WebGL context loss safety listeners
+    // Post-Processing Composer with subtle HDR UnrealBloomPass
+    let composer: EffectComposer | null = null;
+    let bloomPass: UnrealBloomPass | null = null;
+    if (!isHeadless) {
+      composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(container.clientWidth, container.clientHeight),
+        0.44, // strength
+        0.35, // radius
+        0.8 // threshold
+      );
+      composer.addPass(bloomPass);
+      composer.addPass(new OutputPass());
+    }
+
     const onContextLost = (e: Event) => {
       e.preventDefault();
     };
     renderer.domElement.addEventListener('webglcontextlost', onContextLost);
 
-    // Studio Environment Map (RoomEnvironment + PMREMGenerator)
+    // Studio Environment Map
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
 
-    // 3-Point Studio Lighting Rig + Warm/Cool Hemisphere Fill
+    // 3-Point Board Studio Lighting Rig (dims dramatically during fights so the SpotLights take center stage!)
     const hemiLight = new THREE.HemisphereLight(0xdbeafe, 0x1e1b4b, 0.65);
     scene.add(hemiLight);
 
@@ -595,7 +630,7 @@ export default function App() {
     controls.target.set(0, 0.3, 0);
     simRef.current.controls = controls;
 
-    // Build 3D Chessboard & Duel Colosseum Arena
+    // Build 3D Chessboard, Cinematic Spotlights & Duel Colosseum Arena
     const arenaRig = createBoardArena(renderer);
     scene.add(arenaRig.group);
     simRef.current.arenaRig = arenaRig;
@@ -608,15 +643,24 @@ export default function App() {
     // Populate all 32 articulated 3D chess warriors
     const sim = simRef.current;
     sim.pieceRigs.clear();
+    sim.bystanders.clear();
     for (const piece of sim.pieces) {
       const rig = createArticulatedPiece(piece.type, piece.faction);
       boardToWorld(piece.row, piece.col, rig.root.position);
       rig.root.rotation.y = piece.faction === 'w' ? Math.PI : 0;
       scene.add(rig.root);
       sim.pieceRigs.set(piece.id, rig);
+      sim.bystanders.set(piece.id, {
+        offsetX: 0,
+        offsetZ: 0,
+        vx: 0,
+        vz: 0,
+        y: 0,
+        vy: 0,
+        panickedTimer: 0,
+      });
     }
 
-    // Pre-warm shaders
     renderer.compile(scene, camera);
 
     // Raycasting for Chessboard Clicks & Hover Preview
@@ -637,7 +681,6 @@ export default function App() {
         return { row, col };
       }
 
-      // Also check clicking directly on a piece mesh
       for (const [pieceId, rig] of sim.pieceRigs.entries()) {
         const pieceHits = raycaster.intersectObject(rig.root, true);
         if (pieceHits.length > 0) {
@@ -667,17 +710,14 @@ export default function App() {
 
     const onPointerUp = (ev: PointerEvent) => {
       if (sim.phase !== 'CHESS_VIEW') return;
-      // Ignore if dragging camera
       const dragDist = Math.hypot(ev.clientX - pointerDownPos.x, ev.clientY - pointerDownPos.y);
       if (dragDist > 8) return;
 
-      // In vs_ai mode, only allow selecting White on White's turn
       if (sim.gameMode === 'vs_ai' && sim.turnFaction === 'b') return;
 
       const coord = getBoardCoordsFromEvent(ev);
       if (!coord) return;
 
-      // 1. Check if clicked square is a valid move for currently selected piece
       if (sim.selectedPieceId) {
         const activePiece = sim.pieces.find((p) => p.id === sim.selectedPieceId);
         const chosenMove = sim.validMoves.find(
@@ -689,7 +729,6 @@ export default function App() {
         }
       }
 
-      // 2. Otherwise select friendly piece on that square
       const clickedPiece = getPieceAt(sim.pieces, coord.row, coord.col);
       if (clickedPiece && clickedPiece.faction === sim.turnFaction) {
         soundEngine.playChessSelect();
@@ -707,7 +746,6 @@ export default function App() {
     renderer.domElement.addEventListener('pointermove', onPointerMove);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
 
-    // Keyboard Event Listeners for Real-Time Combat & Shortcut 'H'
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'h' || e.key === 'H') {
         setDockCollapsed((prev) => !prev);
@@ -765,14 +803,39 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    // Resize Handler
     const onResize = () => {
       if (!container) return;
-      camera.aspect = container.clientWidth / container.clientHeight;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setSize(w, h);
+      if (composer) composer.setSize(w, h);
+      if (bloomPass) bloomPass.resolution.set(w, h);
     };
     window.addEventListener('resize', onResize);
+
+    // Helper to trigger 3D Slash Arcs & Aura Pillars when a fighter starts an attack
+    const checkFighterActionVFX = (f: FighterRuntime, prevAction: FighterAction) => {
+      if (f.action === prevAction) return;
+      const worldX = sim.duelCenterWorld.x + f.x * 0.72;
+      const worldY = 0.85 + f.y * 0.72;
+      const worldZ = sim.duelCenterWorld.z;
+      const colorHex = f.piece.faction === 'w' ? 0x38bdf8 : 0xf43f5e;
+
+      if (f.action.startsWith('light')) {
+        spawnSlashArc(vfxPool, worldX, worldY, worldZ, f.facing, colorHex, 'horizontal');
+      } else if (f.action.startsWith('heavy')) {
+        spawnSlashArc(vfxPool, worldX, worldY + 0.15, worldZ, f.facing, 0xf59e0b, 'overhead');
+      } else if (f.action === 'combo_finisher') {
+        spawnSlashArc(vfxPool, worldX, worldY, worldZ, f.facing, 0xfef08a, 'cyclone');
+      } else if (f.action === 'special') {
+        spawnAuraPillar(vfxPool, worldX, worldZ, 0xf59e0b);
+        spawnSlashArc(vfxPool, worldX, worldY, worldZ, f.facing, 0xf59e0b, 'cyclone');
+      } else if (f.action === 'parry_flash') {
+        spawnAuraPillar(vfxPool, worldX, worldZ, 0xfef08a);
+      }
+    };
 
     // Master Animation Loop
     const clock = new THREE.Clock();
@@ -785,11 +848,34 @@ export default function App() {
       const elapsed = clock.getElapsedTime();
       const nowMs = performance.now();
 
+      // Drift ambient sanctuary embers upward gently
+      const emberPos = arenaRig.ambientParticles.geometry.attributes.position as THREE.BufferAttribute;
+      for (let i = 0; i < emberPos.count; i++) {
+        let py = emberPos.getY(i) + rawDelta * (0.35 + (i % 3) * 0.18);
+        if (py > 6.5) py = 0.1;
+        emberPos.setY(i, py);
+      }
+      emberPos.needsUpdate = true;
+
       updateVFXPool(vfxPool, rawDelta);
 
       // Update Phase Machine
       if (sim.phase === 'CHESS_VIEW') {
-        // Smoothly restore duel ring below board
+        // Restore warm/cool broad studio lighting for Chessboard View
+        keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 2.2, 5, rawDelta);
+        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.65, 5, rawDelta);
+        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 1.35, 5, rawDelta);
+        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 1.4, 5, rawDelta);
+
+        // Turn off focused fight spotlights & volumetric cones smoothly
+        arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 0, 8, rawDelta);
+        arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 0, 8, rawDelta);
+        arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 0, 10, rawDelta);
+        (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity =
+          THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0, 8, rawDelta);
+        (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity =
+          THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0, 8, rawDelta);
+
         arenaRig.duelRingGroup.position.y = THREE.MathUtils.damp(
           arenaRig.duelRingGroup.position.y,
           -2.5,
@@ -804,10 +890,21 @@ export default function App() {
             rawDelta
           );
 
-        // Smoothly position all pieces on their chess squares
+        // Smoothly return all chess pieces (including any displaced bystanders) to their exact chess squares
         for (const piece of sim.pieces) {
           const rig = sim.pieceRigs.get(piece.id);
           if (!rig) continue;
+
+          const bys = sim.bystanders.get(piece.id);
+          if (bys) {
+            bys.offsetX = THREE.MathUtils.damp(bys.offsetX, 0, 8, rawDelta);
+            bys.offsetZ = THREE.MathUtils.damp(bys.offsetZ, 0, 8, rawDelta);
+            bys.y = THREE.MathUtils.damp(bys.y, 0, 10, rawDelta);
+            bys.vx = 0;
+            bys.vz = 0;
+            bys.vy = 0;
+            bys.panickedTimer = 0;
+          }
 
           boardToWorld(piece.row, piece.col, _vec3A);
           rig.root.position.x = THREE.MathUtils.damp(rig.root.position.x, _vec3A.x, 10, rawDelta);
@@ -818,19 +915,19 @@ export default function App() {
           const targetYaw = piece.faction === 'w' ? Math.PI : 0;
           rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, targetYaw, 8, rawDelta);
 
-          // Subtle idle breathing on board
+          rig.surpriseGroup.visible = false;
           rig.bodyPivot.rotation.x = Math.sin(elapsed * 2.2 + piece.col) * 0.03;
           rig.bodyPivot.rotation.y = 0;
           rig.bodyPivot.rotation.z = 0;
           rig.rightArmPivot.rotation.set(-0.1, 0, 0);
           rig.leftArmPivot.rotation.set(-0.08, 0, 0);
+          rig.capePivot.rotation.x = 0.14 + Math.sin(elapsed * 2.5 + piece.row) * 0.04;
 
           if (piece.type === 'q') {
             rig.specialOrbitGroup.rotation.y += rawDelta * 1.6;
             rig.specialOrbitGroup.scale.setScalar(1.0);
           }
 
-          // Update HP ring opacity based on selection or damage
           const isSelected = piece.id === sim.selectedPieceId;
           const ringMat = rig.hpRingMesh.material as THREE.MeshBasicMaterial;
           ringMat.opacity = isSelected ? 0.95 : piece.hp < piece.maxHp ? 0.7 : 0.35;
@@ -849,7 +946,6 @@ export default function App() {
         if (atk && def) {
           sim.phaseTimer += rawDelta;
 
-          // Advance phase transitions smoothly
           if (sim.phase === 'TRANSITION_TO_FIGHT' && sim.phaseTimer >= 0.95) {
             sim.phase = 'FIGHT_INTRO';
             sim.phaseTimer = 0;
@@ -859,6 +955,46 @@ export default function App() {
             sim.phaseTimer = 0;
             setPhase('FIGHT_ACTIVE');
           }
+
+          // 1. CINEMATIC FIGHT LIGHTING: Dim ambient board lights into moody shadow & lock twin SpotLights onto the duelists!
+          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.24, 6, rawDelta);
+          hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.14, 6, rawDelta);
+          rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.45, 6, rawDelta);
+          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.2, 6, rawDelta);
+
+          const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
+          const atkWorldY = atk.y * 0.72;
+          const atkWorldZ = sim.duelCenterWorld.z;
+
+          const defWorldX = sim.duelCenterWorld.x + def.x * 0.72;
+          const defWorldY = def.y * 0.72;
+          const defWorldZ = sim.duelCenterWorld.z;
+
+          const midWorldX = (atkWorldX + defWorldX) * 0.5;
+
+          // Position SpotLights and Volumetric God-Ray Cones directly above the two fighters
+          arenaRig.spotAttacker.position.set(atkWorldX - 0.6, 8.2, atkWorldZ + 1.2);
+          arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.6, atkWorldZ);
+          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 32.0, 6, rawDelta);
+
+          arenaRig.spotDefender.position.set(defWorldX + 0.6, 8.2, defWorldZ + 1.2);
+          arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.6, defWorldZ);
+          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 32.0, 6, rawDelta);
+
+          arenaRig.volumetricConeAttacker.position.copy(arenaRig.spotAttacker.position);
+          arenaRig.volumetricConeAttacker.lookAt(arenaRig.spotAttacker.target.position);
+          arenaRig.volumetricConeAttacker.rotateX(Math.PI / 2);
+          (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity =
+            THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0.065, 5, rawDelta);
+
+          arenaRig.volumetricConeDefender.position.copy(arenaRig.spotDefender.position);
+          arenaRig.volumetricConeDefender.lookAt(arenaRig.spotDefender.target.position);
+          arenaRig.volumetricConeDefender.rotateX(Math.PI / 2);
+          (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity =
+            THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0.065, 5, rawDelta);
+
+          arenaRig.clashPointLight.position.set(midWorldX, 1.35, sim.duelCenterWorld.z + 0.4);
+          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 1.2, 8, rawDelta);
 
           // Elevate Duel Colosseum Ring around the contested square
           arenaRig.duelRingGroup.position.x = sim.duelCenterWorld.x;
@@ -872,24 +1008,120 @@ export default function App() {
           (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity =
             THREE.MathUtils.damp(
               (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity,
-              0.12,
+              0.08,
               5,
               rawDelta
             );
 
-          // Sink non-combatant chess pieces smoothly below the board so the Duel Stage is 100% clear
+          // 2. COMEDIC BYSTANDER PIECES: All other pieces stay on the board, watch the fight, and jump out of the way if the fighters get too close!
           for (const piece of sim.pieces) {
             if (piece.id === atk.piece.id || piece.id === def.piece.id) continue;
             const rig = sim.pieceRigs.get(piece.id);
             if (!rig) continue;
-            rig.root.position.y = THREE.MathUtils.damp(rig.root.position.y, -2.2, 8, rawDelta);
+
+            let bys = sim.bystanders.get(piece.id);
+            if (!bys) {
+              bys = { offsetX: 0, offsetZ: 0, vx: 0, vz: 0, y: 0, vy: 0, panickedTimer: 0 };
+              sim.bystanders.set(piece.id, bys);
+            }
+
+            boardToWorld(piece.row, piece.col, _vec3A);
+            const curWorldX = _vec3A.x + bys.offsetX;
+            const curWorldZ = _vec3A.z + bys.offsetZ;
+
+            // Check distance to both fighters
+            const distToAtk = Math.hypot(curWorldX - atkWorldX, curWorldZ - atkWorldZ);
+            const distToDef = Math.hypot(curWorldX - defWorldX, curWorldZ - defWorldZ);
+            const minFighterDist = Math.min(distToAtk, distToDef);
+
+            const dangerRadius = 2.25;
+            if (minFighterDist < dangerRadius) {
+              // Panic and hop out of the way!
+              const threatX = distToAtk < distToDef ? atkWorldX : defWorldX;
+              const threatZ = distToAtk < distToDef ? atkWorldZ : defWorldZ;
+
+              let pushDirX = curWorldX - threatX;
+              let pushDirZ = curWorldZ - threatZ;
+              // If threat is directly on the same Z-row, bias push perpendicular (along Z) so they jump clear of the horizontal fighting lane!
+              if (Math.abs(pushDirZ) < 0.45) {
+                pushDirZ = piece.row < 4 ? -1.2 : 1.2;
+              }
+              const len = Math.hypot(pushDirX, pushDirZ) || 1;
+              pushDirX /= len;
+              pushDirZ /= len;
+
+              const urgency = (dangerRadius - minFighterDist) / dangerRadius;
+              bys.vx += pushDirX * (14.0 * urgency) * rawDelta;
+              bys.vz += pushDirZ * (16.5 * urgency) * rawDelta;
+
+              if (bys.y <= 0.02) {
+                bys.vy = 5.6 + Math.random() * 2.6;
+                soundEngine.playBystanderHop();
+              }
+              bys.panickedTimer = 0.65;
+            } else {
+              // Gently spring back toward original square if it's now safe
+              const homeDistToAtk = Math.hypot(_vec3A.x - atkWorldX, _vec3A.z - atkWorldZ);
+              const homeDistToDef = Math.hypot(_vec3A.x - defWorldX, _vec3A.z - defWorldZ);
+              if (Math.min(homeDistToAtk, homeDistToDef) > dangerRadius + 0.6) {
+                bys.vx += -bys.offsetX * 5.0 * rawDelta;
+                bys.vz += -bys.offsetZ * 5.0 * rawDelta;
+                // Hop lightly while scurrying back to square
+                if (Math.hypot(bys.offsetX, bys.offsetZ) > 0.35 && bys.y <= 0.01) {
+                  bys.vy = 3.2;
+                }
+              }
+            }
+
+            // Integrate bystander velocity & gravity
+            bys.offsetX += bys.vx * rawDelta;
+            bys.offsetZ += bys.vz * rawDelta;
+            bys.vx *= Math.max(0, 1 - 6.5 * rawDelta);
+            bys.vz *= Math.max(0, 1 - 6.5 * rawDelta);
+
+            if (bys.y > 0 || bys.vy !== 0) {
+              bys.y += bys.vy * rawDelta;
+              bys.vy -= 24.0 * rawDelta;
+              if (bys.y <= 0) {
+                bys.y = 0;
+                bys.vy = 0;
+              }
+            }
+
+            if (bys.panickedTimer > 0) {
+              bys.panickedTimer = Math.max(0, bys.panickedTimer - rawDelta);
+            }
+
+            rig.root.position.set(_vec3A.x + bys.offsetX, bys.y, _vec3A.z + bys.offsetZ);
+
+            // Rotate bystander to watch the fight!
+            const lookAngle = Math.atan2(midWorldX - rig.root.position.x, sim.duelCenterWorld.z - rig.root.position.z);
+            rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, lookAngle, 10, rawDelta);
+
+            // Expressive spectator animations (panicked arm flailing when jumping out of the way, or excited spectating!)
+            const isPanicking = bys.panickedTimer > 0 || bys.y > 0.05;
+            rig.surpriseGroup.visible = isPanicking;
+            if (isPanicking) {
+              rig.surpriseGroup.rotation.y += rawDelta * 10;
+              rig.bodyPivot.rotation.z = Math.sin(elapsed * 28 + piece.col) * 0.26;
+              rig.bodyPivot.rotation.x = -0.18;
+              rig.rightArmPivot.rotation.x = -2.4 + Math.sin(elapsed * 32) * 0.55;
+              rig.leftArmPivot.rotation.x = -2.4 - Math.sin(elapsed * 32) * 0.55;
+              rig.capePivot.rotation.x = 0.85;
+            } else {
+              rig.bodyPivot.rotation.z = 0;
+              rig.bodyPivot.rotation.x = Math.sin(elapsed * 5 + piece.col) * 0.06;
+              rig.rightArmPivot.rotation.x = -0.25 + Math.sin(elapsed * 5 + piece.row) * 0.12;
+              rig.leftArmPivot.rotation.x = -0.2;
+            }
           }
 
-          // Step Active Combat Simulation
-          if (sim.phase === 'FIGHT_ACTIVE') {
+          // 3. Step Active Combat Simulation (with brief Hitstop support for meaty heavy impacts)
+          if (sim.hitstopTimer > 0) {
+            sim.hitstopTimer = Math.max(0, sim.hitstopTimer - rawDelta);
+          } else if (sim.phase === 'FIGHT_ACTIVE') {
             sim.fightTimer = Math.max(0, sim.fightTimer - rawDelta);
 
-            // Process held movement keys for human player
             const human = !atk.isAI ? atk : !def.isAI ? def : atk;
             if (
               human.action === 'idle' ||
@@ -910,21 +1142,33 @@ export default function App() {
               }
             }
 
-            // Update AI fighter(s)
             if (atk.isAI) updateFighterAI(atk, def, rawDelta, nowMs, addCallout);
             if (def.isAI) updateFighterAI(def, atk, rawDelta, nowMs, addCallout);
+
+            // Check if either fighter just initiated a slash/special to spawn 3D weapon trail VFX
+            checkFighterActionVFX(atk, sim.prevAtkAction);
+            checkFighterActionVFX(def, sim.prevDefAction);
+            sim.prevAtkAction = atk.action;
+            sim.prevDefAction = def.action;
 
             const stepEvents = stepCombatSimulation(atk, def, rawDelta, nowMs, addCallout);
             if (stepEvents.cameraShake > 0) {
               sim.cameraShake = Math.max(sim.cameraShake, stepEvents.cameraShake);
             }
             if (stepEvents.sparkWorldPos) {
-              const worldX = sim.duelCenterWorld.x + stepEvents.sparkWorldPos.x * 0.75;
+              const worldX = sim.duelCenterWorld.x + stepEvents.sparkWorldPos.x * 0.72;
               const worldY = stepEvents.sparkWorldPos.y;
               const worldZ = sim.duelCenterWorld.z;
-              spawnHitSparks(vfxPool, worldX, worldY, worldZ, stepEvents.sparkWorldPos.color, 12);
+              spawnHitSparks(vfxPool, worldX, worldY, worldZ, stepEvents.sparkWorldPos.color, 18);
+
+              // Flare the clash point light dramatically on impact!
+              arenaRig.clashPointLight.color.setHex(stepEvents.sparkWorldPos.color);
+              arenaRig.clashPointLight.intensity = 14.0;
+
               if (stepEvents.cameraShake >= 0.25) {
-                spawnShockwave(vfxPool, worldX, 0.05, worldZ, stepEvents.sparkWorldPos.color, 4.5);
+                sim.hitstopTimer = 0.042; // Crisp 42ms fighting-game hitstop freeze on heavy/special blows!
+                spawnShockwave(vfxPool, worldX, 0.05, worldZ, stepEvents.sparkWorldPos.color, 4.8);
+                spawnGroundDebris(vfxPool, worldX, worldZ, 9);
               }
             }
 
@@ -941,14 +1185,11 @@ export default function App() {
               sim.phaseTimer = 0;
               setPhase('FIGHT_OUTRO');
               soundEngine.playKO();
-              spawnShockwave(
-                vfxPool,
-                sim.duelCenterWorld.x + loser.x * 0.75,
-                0.05,
-                sim.duelCenterWorld.z,
-                0xf59e0b,
-                7.5
-              );
+
+              const koWorldX = sim.duelCenterWorld.x + loser.x * 0.72;
+              spawnShockwave(vfxPool, koWorldX, 0.05, sim.duelCenterWorld.z, 0xf59e0b, 7.5);
+              spawnGroundDebris(vfxPool, koWorldX, sim.duelCenterWorld.z, 16);
+              spawnAuraPillar(vfxPool, sim.duelCenterWorld.x + winner.x * 0.72, sim.duelCenterWorld.z, 0xfef08a);
 
               const wasUpset =
                 winner.spec.tacticalValue < loser.spec.tacticalValue || !attackerWon;
@@ -972,12 +1213,10 @@ export default function App() {
               });
             }
           } else if (sim.phase === 'FIGHT_OUTRO' && sim.phaseTimer >= 2.3) {
-            // Resolve Duel Outcome on the Chessboard!
             const attackerWon =
               def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp);
 
             if (sim.isExhibitionDuel) {
-              // Remove temporary exhibition rigs
               for (const rig of sim.exhibitionTempRigs) {
                 rig.root.parent?.remove(rig.root);
               }
@@ -986,7 +1225,6 @@ export default function App() {
               const winnerRuntime = attackerWon ? atk : def;
               const loserRuntime = attackerWon ? def : atk;
 
-              // Remove defeated piece from the board & scene (even if it was the Attacker!)
               sim.pieces = sim.pieces.filter((p) => p.id !== loserRuntime.piece.id);
               const loserRig = sim.pieceRigs.get(loserRuntime.piece.id);
               if (loserRig) {
@@ -994,7 +1232,6 @@ export default function App() {
                 sim.pieceRigs.delete(loserRuntime.piece.id);
               }
 
-              // Update surviving piece stats (+15% victorious adrenaline heal)
               const survivorPiece = sim.pieces.find((p) => p.id === winnerRuntime.piece.id);
               if (survivorPiece) {
                 const adrenalineHeal = Math.round(survivorPiece.maxHp * 0.15);
@@ -1010,7 +1247,6 @@ export default function App() {
                   survivorPiece.col = sim.pendingMove.to.col;
                   survivorPiece.hasMoved = true;
 
-                  // Check Pawn Promotion after winning capture on back rank
                   if (
                     survivorPiece.type === 'p' &&
                     (survivorPiece.row === 0 || survivorPiece.row === 7)
@@ -1049,7 +1285,6 @@ export default function App() {
                 ...prev.slice(0, 7),
               ]);
 
-              // Check if a King was slain (Regicide Victory!)
               if (loserRuntime.piece.type === 'k') {
                 setWarVictor({
                   faction: winnerRuntime.piece.faction,
@@ -1058,14 +1293,12 @@ export default function App() {
                 confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
               }
 
-              // Advance chess turn
               const nextFaction: Faction = sim.turnFaction === 'w' ? 'b' : 'w';
               sim.turnFaction = nextFaction;
               sim.turnNumber += 1;
               setTurnFaction(nextFaction);
               setTurnNumber(sim.turnNumber);
 
-              // Trigger AI turn after returning to chessboard if vs_ai
               if (sim.gameMode === 'vs_ai' && nextFaction === 'b' && loserRuntime.piece.type !== 'k') {
                 setTimeout(() => {
                   const currentSim = simRef.current;
@@ -1078,7 +1311,6 @@ export default function App() {
               }
             }
 
-            // Transition smoothly back to Chessboard View
             sim.phase = 'CHESS_VIEW';
             sim.attackerRuntime = null;
             sim.defenderRuntime = null;
@@ -1122,12 +1354,10 @@ export default function App() {
               rawDelta
             );
 
-            // Scale fighters up slightly (1.42x) during combat for commanding presence
             rig.root.scale.setScalar(
               THREE.MathUtils.damp(rig.root.scale.x, 1.42, 8, rawDelta)
             );
 
-            // Face opponent along X axis (+X = PI/2, -X = -PI/2)
             const targetFacingYaw = f.facing === 1 ? Math.PI / 2 : -Math.PI / 2;
             rig.root.rotation.y = THREE.MathUtils.damp(
               rig.root.rotation.y,
@@ -1144,7 +1374,7 @@ export default function App() {
           const midY = 1.05 + Math.max(atk.y, def.y) * 0.25;
           const midZ = sim.duelCenterWorld.z;
           const sep = Math.abs(atk.x - def.x);
-          const camDistZ = THREE.MathUtils.clamp(4.8 + sep * 0.52, 5.0, 8.6);
+          const camDistZ = THREE.MathUtils.clamp(4.6 + sep * 0.52, 4.8, 8.4);
 
           _camTargetPos.set(midX, midY + 1.25, midZ + camDistZ);
           _camLookTarget.set(midX, midY, midZ);
@@ -1159,7 +1389,6 @@ export default function App() {
           sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-11 * rawDelta));
           camera.lookAt(sim.currentLookAt);
 
-          // Throttle React HUD state updates to ~20fps for crisp bars without React overhead
           hudSyncAccumulator += rawDelta;
           if (hudSyncAccumulator >= 0.05) {
             hudSyncAccumulator = 0;
@@ -1170,7 +1399,11 @@ export default function App() {
         }
       }
 
-      renderer.render(scene, camera);
+      if (composer) {
+        composer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
     };
 
     animFrameId = requestAnimationFrame(animate);
@@ -1185,11 +1418,11 @@ export default function App() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('resize', onResize);
       controls.dispose();
+      if (composer) composer.dispose();
       renderer.dispose();
     };
   }, [addCallout, executeChessMove, syncBoardHighlights]);
 
-  // Update Camera Preset smoothly when switched in Chess View
   const handleSelectCameraPreset = (preset: CameraPreset) => {
     setCameraPreset(preset);
     simRef.current.cameraPreset = preset;
@@ -1216,9 +1449,9 @@ export default function App() {
   };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#090B10] text-slate-100 select-none">
+    <div className="relative h-screen w-screen overflow-hidden bg-[#07090E] text-slate-100 select-none">
       {/* 1. Strict 3-Zone Top Navigation Bar Contract */}
-      <header className="relative z-30 flex items-center justify-between gap-8 px-6 py-3.5 bg-[#090B10] border-b border-slate-800/90">
+      <header className="relative z-30 flex items-center justify-between gap-8 px-6 py-3.5 bg-[#07090E] border-b border-slate-800/90">
         {/* Zone 1: Single text element wordmark */}
         <a
           href="#top"
@@ -1286,11 +1519,10 @@ export default function App() {
               {turnFaction === 'w' ? 'Solaris Order (White) to Move' : 'Obsidian Dominion (Black) to Move'}
             </div>
             <div className="text-xs text-slate-400 mt-1">
-              Click any piece to view legal moves. Capturing an enemy piece transitions smoothly into a 3D fighting duel!
+              Click any piece to move. Capturing triggers a spotlight duel right on the board—and nearby pieces will scramble out of the way!
             </div>
           </div>
 
-          {/* Selected Piece Vitality & Archetype Card */}
           {selectedPiece && (
             <div className="bg-[#0B0E17]/95 border border-amber-500/40 rounded-xl px-4 py-3 shadow-xl">
               <div className="flex items-center justify-between text-xs font-mono text-amber-400">
@@ -1310,7 +1542,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Hovering a Capture Target Preview */}
           {hoveredCaptureMove && hoveredCaptureMove.targetPiece && selectedPiece && (
             <div className="bg-[#0B0E17]/95 border border-rose-500/70 rounded-xl px-4 py-3 shadow-2xl">
               <div className="text-[11px] font-mono font-bold text-rose-400">
@@ -1320,7 +1551,7 @@ export default function App() {
                 {ARCHETYPES[selectedPiece.type].chessName} ({selectedPiece.hp} HP) vs {ARCHETYPES[hoveredCaptureMove.targetPiece.type].chessName} ({hoveredCaptureMove.targetPiece.hp} HP)
               </div>
               <div className="text-[11px] text-slate-300 mt-1">
-                Click red square to enter the 3D Colosseum. Even a Pawn can defeat a Queen with Parries and Underdog Valor!
+                Click red square to ignite the Arena Spotlights! Even a Pawn can defeat a Queen with Parries and Underdog Valor!
               </div>
             </div>
           )}
@@ -1400,7 +1631,6 @@ export default function App() {
 
           {!dockCollapsed && (
             <div className="w-full bg-[#0B0E17]/95 border border-slate-800 rounded-xl px-4 py-3 shadow-2xl flex flex-wrap items-center justify-between gap-4">
-              {/* Instant Clash & Exhibition Triggers */}
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleTriggerFeaturedBoardClash}
@@ -1419,7 +1649,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Camera Angle Segmented Controls */}
               <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
                 <Eye className="w-3.5 h-3.5 text-slate-400 ml-1.5 mr-1" />
                 {(
@@ -1443,7 +1672,6 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Mode Switcher, Audio & Reset */}
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
                   <button
@@ -1493,7 +1721,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Recent Battle Chronicle Strip */}
               {battleLogs.length > 0 && (
                 <div className="w-full border-t border-slate-800/80 pt-2 flex items-center justify-between text-xs text-slate-400">
                   <div className="truncate">

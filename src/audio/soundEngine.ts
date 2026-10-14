@@ -248,6 +248,30 @@ class SoundEngine {
       osc.stop(now + 0.9);
     });
   }
+
+  private lastHopSoundTime = 0;
+
+  public playBystanderHop() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastHopSoundTime < 140) return; // Throttle when multiple pieces scatter at once
+    this.lastHopSoundTime = nowMs;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    const baseFreq = 320 + Math.random() * 180;
+    osc.frequency.setValueAtTime(baseFreq, now);
+    osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.65, now + 0.09);
+    gain.gain.setValueAtTime(0.06, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.1);
+  }
 }
 
 export const soundEngine = new SoundEngine();
