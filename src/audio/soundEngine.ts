@@ -272,6 +272,64 @@ class SoundEngine {
     osc.start(now);
     osc.stop(now + 0.1);
   }
+
+  public playWesternStandoffCut(shotIndex: number) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // 1. Whip-zoom lens whoosh (filtered noise burst)
+    const bufferSize = Math.floor(ctx.sampleRate * 0.14);
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(350, now);
+    filter.frequency.exponentialRampToValueAtTime(1800, now + 0.09);
+    filter.Q.value = 2.5;
+
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.18, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+
+    // 2. Spaghetti Western tense metallic twang / bell sting
+    const notes =
+      shotIndex === 0
+        ? [329.63, 493.88] // E4 -> B4
+        : shotIndex === 1
+        ? [392.0, 587.33] // G4 -> D5
+        : [246.94, 329.63, 493.88, 659.25]; // B-minor / E-minor dramatic standoff chord
+
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = shotIndex === 2 ? 'sawtooth' : 'triangle';
+      const start = now + idx * 0.055;
+      osc.frequency.setValueAtTime(freq, start);
+      // Slight vibrato/bend on the standoff note
+      osc.frequency.linearRampToValueAtTime(freq * 1.015, start + 0.18);
+      osc.frequency.linearRampToValueAtTime(freq, start + 0.38);
+
+      gain.gain.setValueAtTime(shotIndex === 2 ? 0.09 : 0.14, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.48);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.48);
+    });
+  }
 }
 
 export const soundEngine = new SoundEngine();

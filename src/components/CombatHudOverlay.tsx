@@ -26,6 +26,7 @@ interface CombatHudOverlayProps {
   defender: FighterRuntime | null;
   fightTimer: number;
   duelSquareName: string;
+  introShotIndex: number;
   callouts: CombatCallout[];
   dockCollapsed: boolean;
   onToggleDock: () => void;
@@ -38,6 +39,7 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
   defender,
   fightTimer,
   duelSquareName,
+  introShotIndex,
   callouts,
   dockCollapsed,
   onToggleDock,
@@ -53,6 +55,13 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
 
   if (!isFightVisible) return null;
 
+  const isCinematicLetterbox =
+    phase === 'TRANSITION_TO_FIGHT' ||
+    phase === 'FIGHT_INTRO' ||
+    phase === 'FIGHT_OUTRO' ||
+    attacker.action === 'special' ||
+    defender.action === 'special';
+
   const humanFighter = !attacker.isAI ? attacker : !defender.isAI ? defender : attacker;
   const opponentFighter = humanFighter === attacker ? defender : attacker;
   const specialCalc = calculateSpecialHitDamage(humanFighter.spec, opponentFighter.spec);
@@ -67,8 +76,20 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
 
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-4 md:p-6">
+      {/* Anamorphic Spaghetti-Western Cinema Letterbox Bars */}
+      <div
+        className={`pointer-events-none fixed inset-x-0 top-[53px] bg-black transition-all duration-300 z-10 ${
+          isCinematicLetterbox ? 'h-12 md:h-16 border-b border-amber-500/30' : 'h-0'
+        }`}
+      />
+      <div
+        className={`pointer-events-none fixed inset-x-0 bottom-0 bg-black transition-all duration-300 z-10 ${
+          isCinematicLetterbox ? 'h-12 md:h-16 border-t border-amber-500/30' : 'h-0'
+        }`}
+      />
+
       {/* Top Fighting Game Vitality & Meter HUD */}
-      <div className="mx-auto w-full max-w-6xl">
+      <div className="relative z-20 mx-auto w-full max-w-6xl">
         <div className="grid grid-cols-11 items-start gap-3 bg-[#0B0E17]/95 border border-slate-800/90 px-4 py-3 rounded-xl shadow-2xl">
           {/* Left Fighter: Attacker */}
           <div className="col-span-5 flex flex-col gap-1.5">
@@ -241,13 +262,41 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
           {/* Center Dynamic Callouts */}
           <div className="flex flex-col items-center gap-1">
             {phase === 'FIGHT_INTRO' && (
-              <div className="bg-[#0B0E17]/95 border border-amber-500/60 px-6 py-2 rounded-xl text-center shadow-2xl">
-                <div className="text-xs font-mono text-slate-400">
-                  {attacker.spec.chessName.toUpperCase()} (VAL {attacker.spec.tacticalValue}) CHALLENGES {defender.spec.chessName.toUpperCase()} (VAL {defender.spec.tacticalValue})
-                </div>
-                <div className="font-display text-2xl md:text-3xl font-extrabold text-amber-400 tracking-wider">
-                  ENGAGE FOR SQUARE {duelSquareName}
-                </div>
+              <div className="bg-[#07090E]/95 border-2 border-amber-500/80 px-6 py-2.5 rounded-xl text-center shadow-2xl">
+                {introShotIndex === 0 ? (
+                  <>
+                    <div className="text-[11px] font-mono tracking-widest text-amber-300">
+                      STANDOFF CLOSE-UP · THE CHALLENGER (VAL {attacker.spec.tacticalValue})
+                    </div>
+                    <div className="font-display text-2xl md:text-3xl font-extrabold text-amber-400 tracking-wider">
+                      {attacker.spec.warriorTitle.toUpperCase()}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-300">
+                      {attacker.spec.weaponName} · {attacker.spec.fightingStyle}
+                    </div>
+                  </>
+                ) : introShotIndex === 1 ? (
+                  <>
+                    <div className="text-[11px] font-mono tracking-widest text-rose-300">
+                      STANDOFF CLOSE-UP · THE DEFENDER (VAL {defender.spec.tacticalValue})
+                    </div>
+                    <div className="font-display text-2xl md:text-3xl font-extrabold text-rose-400 tracking-wider">
+                      {defender.spec.warriorTitle.toUpperCase()}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-300">
+                      {defender.spec.weaponName} · {defender.spec.fightingStyle}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[11px] font-mono tracking-widest text-slate-300">
+                      {attacker.spec.chessName.toUpperCase()} VS {defender.spec.chessName.toUpperCase()} · SQUARE {duelSquareName}
+                    </div>
+                    <div className="font-display text-2xl md:text-3xl font-extrabold text-amber-400 tracking-wider">
+                      DRAW WEAPONS · ENGAGE!
+                    </div>
+                  </>
+                )}
               </div>
             )}
             {callouts.slice(-2).map((c) => (
@@ -284,7 +333,7 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
       </div>
 
       {/* Unified Collapsible Bottom Combat Control Dock */}
-      <div className="pointer-events-auto mx-auto w-full max-w-5xl flex flex-col items-center">
+      <div className="relative z-20 pointer-events-auto mx-auto w-full max-w-5xl flex flex-col items-center">
         <button
           onClick={onToggleDock}
           className="mb-1 px-3 py-1 text-xs font-mono text-slate-300 bg-[#0B0E17]/95 border border-slate-800 rounded-t-lg hover:text-white transition-colors whitespace-nowrap shrink-0"

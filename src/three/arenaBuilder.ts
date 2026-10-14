@@ -311,22 +311,25 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   duelBarrierMesh.renderOrder = 5;
   duelRingGroup.add(duelBarrierMesh);
 
-  // Focused Cinematic Fight SpotLights & Volumetric Light Cones (calibrated intensity!)
-  const spotAttacker = new THREE.SpotLight(0xfffbeb, 0, 22, Math.PI / 6.5, 0.65, 1.6);
-  spotAttacker.position.set(-2.5, 8.5, 1.5);
+  // High-Contrast Overhead Fight SpotLights & Tight Volumetric Shafts
+  // Narrow cone angle (Math.PI / 9) and steep decay (2.1) carve a stark pool of light around the duelists while the rest of the board plunges into darkness!
+  const spotAttacker = new THREE.SpotLight(0xfffbeb, 0, 16, Math.PI / 8.8, 0.48, 2.0);
+  spotAttacker.position.set(-1.5, 6.8, 0.35);
   spotAttacker.castShadow = true;
   spotAttacker.shadow.bias = -0.0002;
+  spotAttacker.shadow.mapSize.width = 1024;
+  spotAttacker.shadow.mapSize.height = 1024;
   group.add(spotAttacker);
   group.add(spotAttacker.target);
 
-  const spotDefender = new THREE.SpotLight(0xffe4e6, 0, 22, Math.PI / 6.5, 0.65, 1.6);
-  spotDefender.position.set(2.5, 8.5, 1.5);
+  const spotDefender = new THREE.SpotLight(0xffe4e6, 0, 16, Math.PI / 8.8, 0.48, 2.0);
+  spotDefender.position.set(1.5, 6.8, 0.35);
   spotDefender.castShadow = false;
   group.add(spotDefender);
   group.add(spotDefender.target);
 
-  const coneGeo = new THREE.ConeGeometry(1.8, 8.5, 32, 1, true);
-  coneGeo.translate(0, -4.25, 0);
+  const coneGeo = new THREE.ConeGeometry(1.28, 6.8, 32, 1, true);
+  coneGeo.translate(0, -3.4, 0);
 
   const coneMatAttacker = new THREE.MeshBasicMaterial({
     color: 0xfef08a,
@@ -350,8 +353,8 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   volumetricConeDefender.position.copy(spotDefender.position);
   group.add(volumetricConeDefender);
 
-  const clashPointLight = new THREE.PointLight(0xf59e0b, 0, 8, 2);
-  clashPointLight.position.set(0, 1.4, 0);
+  const clashPointLight = new THREE.PointLight(0xf59e0b, 0, 4.8, 2.2);
+  clashPointLight.position.set(0, 1.3, 0);
   group.add(clashPointLight);
 
   // Floating Atmospheric Embers

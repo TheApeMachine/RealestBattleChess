@@ -120,6 +120,7 @@ export default function App() {
   const [hudDefender, setHudDefender] = useState<FighterRuntime | null>(null);
   const [fightTimer, setFightTimer] = useState<number>(60);
   const [duelSquareName, setDuelSquareName] = useState<string>('E4');
+  const [introShotIndex, setIntroShotIndex] = useState<number>(-1);
   const [callouts, setCallouts] = useState<CombatCallout[]>([]);
   const [koBanner, setKoBanner] = useState<{
     title: string;
@@ -135,6 +136,8 @@ export default function App() {
   const simRef = useRef<{
     phase: GamePhase;
     phaseTimer: number;
+    introShotIndex: number;
+    currentDutchRoll: number;
     turnFaction: Faction;
     turnNumber: number;
     gameMode: 'vs_ai' | 'pvp';
@@ -167,6 +170,8 @@ export default function App() {
   }>({
     phase: 'CHESS_VIEW',
     phaseTimer: 0,
+    introShotIndex: -1,
+    currentDutchRoll: 0,
     turnFaction: 'w',
     turnNumber: 1,
     gameMode: 'vs_ai',
@@ -328,6 +333,8 @@ export default function App() {
       sim.fightTimer = 60;
       sim.phase = 'TRANSITION_TO_FIGHT';
       sim.phaseTimer = 0;
+      sim.introShotIndex = -1;
+      setIntroShotIndex(-1);
 
       if (sim.controls) {
         sim.controls.enabled = false;
@@ -387,17 +394,15 @@ export default function App() {
 
       if (prevW !== piece.w || prevZ !== piece.z) {
         const sq = formatSquareName(move.to);
-        setBattleLogs((prev) => [
-          {
-            id: `shift_${Date.now()}`,
-            turnNumber: sim.turnNumber,
-            summary: `4D Hyper-Shift: ${ARCHETYPES[piece.type].chessName} → ${sq} [${formatWName(piece.w)}]`,
-            detail: `${ARCHETYPES[piece.type].warriorTitle} shifted along the 4th spatial axis from ${formatWName(prevW)} to ${formatWName(piece.w)}!`,
-            wasUpset: false,
-            winnerFaction: piece.faction,
-          },
-          ...prev.slice(0, 7),
-        ]);
+        const shiftEntry: BattleLogEntry = {
+          id: `shift_${Date.now()}`,
+          turnNumber: sim.turnNumber,
+          summary: `4D Hyper-Shift: ${ARCHETYPES[piece.type].chessName} → ${sq} [${formatWName(piece.w)}]`,
+          detail: `${ARCHETYPES[piece.type].warriorTitle} shifted along the 4th spatial axis from ${formatWName(prevW)} to ${formatWName(piece.w)}!`,
+          wasUpset: false,
+          winnerFaction: piece.faction,
+        };
+        setBattleLogs((prev) => [shiftEntry, ...prev.slice(0, 7)]);
       }
 
       // Check Pawn Promotion on reaching far rank
@@ -1098,7 +1103,24 @@ export default function App() {
       if (sim.phase === 'CHESS_VIEW') {
         temporalEchoMesh.visible = false;
 
-        // Calibrated studio lighting for Chessboard View (tinted subtly by the active 4D slice!)
+        // Restore camera FOV & level horizon when back on the Chessboard
+        if (Math.abs(camera.fov - 45) > 0.05) {
+          camera.fov = THREE.MathUtils.damp(camera.fov, 45, 8, rawDelta);
+          camera.updateProjectionMatrix();
+        }
+        sim.currentDutchRoll = THREE.MathUtils.damp(sim.currentDutchRoll, 0, 10, rawDelta);
+
+        // Restore full studio environment & lighting for Chessboard View
+        scene.environmentIntensity = THREE.MathUtils.damp(
+          scene.environmentIntensity ?? 0.65,
+          0.65,
+          5,
+          rawDelta
+        );
+        if (scene.fog instanceof THREE.FogExp2) {
+          scene.fog.density = THREE.MathUtils.damp(scene.fog.density, 0.022, 5, rawDelta);
+        }
+
         const targetKey = sim.activeSliceW === 0 && sim.activeSliceZ === 0 ? 1.65 : 1.35;
         keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, targetKey, 5, rawDelta);
         hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.48, 5, rawDelta);
@@ -1205,21 +1227,49 @@ export default function App() {
         if (atk && def) {
           sim.phaseTimer += rawDelta;
 
-          if (sim.phase === 'TRANSITION_TO_FIGHT' && sim.phaseTimer >= 0.95) {
+          if (sim.phase === 'TRANSITION_TO_FIGHT' && sim.phaseTimer >= 0.72) {
             sim.phase = 'FIGHT_INTRO';
             sim.phaseTimer = 0;
+            sim.introShotIndex = 0;
+            setIntroShotIndex(0);
             setPhase('FIGHT_INTRO');
-          } else if (sim.phase === 'FIGHT_INTRO' && sim.phaseTimer >= 1.1) {
-            sim.phase = 'FIGHT_ACTIVE';
-            sim.phaseTimer = 0;
-            setPhase('FIGHT_ACTIVE');
+            soundEngine.playWesternStandoffCut(0);
+          } else if (sim.phase === 'FIGHT_INTRO') {
+            // 3-Shot Spaghetti Western Standoff Cutscene:
+            // Shot 0 (0.00s - 0.80s): Attacker Extreme Visor Close-Up + +12.5° Dutch Angle
+            // Shot 1 (0.80s - 1.60s): Defender Extreme Visor Close-Up + -12.5° Counter-Dutch Angle
+            // Shot 2 (1.60s - 2.25s): Low-Angle Gunfighter Wide Standoff + +7° Dutch Angle
+            const nextShot = sim.phaseTimer < 0.8 ? 0 : sim.phaseTimer < 1.6 ? 1 : 2;
+            if (nextShot !== sim.introShotIndex) {
+              sim.introShotIndex = nextShot;
+              setIntroShotIndex(nextShot);
+              soundEngine.playWesternStandoffCut(nextShot);
+            }
+            if (sim.phaseTimer >= 2.25) {
+              sim.phase = 'FIGHT_ACTIVE';
+              sim.phaseTimer = 0;
+              sim.introShotIndex = -1;
+              setIntroShotIndex(-1);
+              setPhase('FIGHT_ACTIVE');
+            }
           }
 
-          // 1. CINEMATIC FIGHT LIGHTING (calibrated intensity so spotlights feel dramatic without washing out!)
-          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.22, 6, rawDelta);
-          hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.14, 6, rawDelta);
-          rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.45, 6, rawDelta);
-          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.18, 6, rawDelta);
+          // 1. HIGH-CONTRAST CHIAROSCURO FIGHT LIGHTING:
+          // Plunge the rest of the board & environment IBL into deep noir darkness, leaving ONLY a tight overhead spotlight pool right above the fighters!
+          scene.environmentIntensity = THREE.MathUtils.damp(
+            scene.environmentIntensity ?? 0.65,
+            0.02,
+            9,
+            rawDelta
+          );
+          if (scene.fog instanceof THREE.FogExp2) {
+            scene.fog.density = THREE.MathUtils.damp(scene.fog.density, 0.056, 6, rawDelta);
+          }
+
+          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.02, 9, rawDelta);
+          hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.02, 9, rawDelta);
+          rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.08, 9, rawDelta);
+          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.0, 9, rawDelta);
 
           const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
           const atkWorldY = atk.y * 0.72;
@@ -1231,28 +1281,29 @@ export default function App() {
 
           const midWorldX = (atkWorldX + defWorldX) * 0.5;
 
-          arenaRig.spotAttacker.position.set(atkWorldX - 0.6, 8.2, atkWorldZ + 1.2);
-          arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.6, atkWorldZ);
-          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 18.0, 6, rawDelta);
+          // Position steep, tight overhead spotlights directly over the two fighters
+          arenaRig.spotAttacker.position.set(atkWorldX - 0.15, 6.7, atkWorldZ + 0.32);
+          arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.5, atkWorldZ);
+          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 34.0, 8, rawDelta);
 
-          arenaRig.spotDefender.position.set(defWorldX + 0.6, 8.2, defWorldZ + 1.2);
-          arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.6, defWorldZ);
-          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 18.0, 6, rawDelta);
+          arenaRig.spotDefender.position.set(defWorldX + 0.15, 6.7, defWorldZ + 0.32);
+          arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.5, defWorldZ);
+          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 34.0, 8, rawDelta);
 
           arenaRig.volumetricConeAttacker.position.copy(arenaRig.spotAttacker.position);
           arenaRig.volumetricConeAttacker.lookAt(arenaRig.spotAttacker.target.position);
           arenaRig.volumetricConeAttacker.rotateX(Math.PI / 2);
           (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity =
-            THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0.042, 5, rawDelta);
+            THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0.055, 6, rawDelta);
 
           arenaRig.volumetricConeDefender.position.copy(arenaRig.spotDefender.position);
           arenaRig.volumetricConeDefender.lookAt(arenaRig.spotDefender.target.position);
           arenaRig.volumetricConeDefender.rotateX(Math.PI / 2);
           (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity =
-            THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0.042, 5, rawDelta);
+            THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0.055, 6, rawDelta);
 
-          arenaRig.clashPointLight.position.set(midWorldX, 1.35, sim.duelCenterWorld.z + 0.4);
-          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 0.8, 8, rawDelta);
+          arenaRig.clashPointLight.position.set(midWorldX, 1.25, sim.duelCenterWorld.z + 0.3);
+          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 0.5, 8, rawDelta);
 
           arenaRig.duelRingGroup.position.x = sim.duelCenterWorld.x;
           arenaRig.duelRingGroup.position.z = sim.duelCenterWorld.z;
@@ -1265,7 +1316,7 @@ export default function App() {
           (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity =
             THREE.MathUtils.damp(
               (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity,
-              0.06,
+              0.05,
               5,
               rawDelta
             );
@@ -1537,23 +1588,23 @@ export default function App() {
               }
 
               const sq = formatSquareName(sim.pendingMove.to);
+              const targetWLabel = formatWName(sim.pendingMove.to.w);
               const wasUpset =
                 !attackerWon ||
                 winnerRuntime.spec.tacticalValue < loserRuntime.spec.tacticalValue;
 
-              setBattleLogs((prev) => [
-                {
-                  id: `duel_${Date.now()}`,
-                  turnNumber: sim.turnNumber,
-                  summary: attackerWon
-                    ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq} [${formatWName(sim.pendingMove!.to.w)}]`
-                    : `UPSET AT ${sq}: Defending ${def.spec.chessName} slew Attacking ${atk.spec.chessName}!`,
-                  detail: `${winnerRuntime.spec.warriorTitle} survived with ${survivorPiece?.hp ?? winnerRuntime.hp} HP (${survivorPiece?.kills ?? 1} Kills).`,
-                  wasUpset,
-                  winnerFaction: winnerRuntime.piece.faction,
-                },
-                ...prev.slice(0, 7),
-              ]);
+              const duelLogEntry: BattleLogEntry = {
+                id: `duel_${Date.now()}`,
+                turnNumber: sim.turnNumber,
+                summary: attackerWon
+                  ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq} [${targetWLabel}]`
+                  : `UPSET AT ${sq}: Defending ${def.spec.chessName} slew Attacking ${atk.spec.chessName}!`,
+                detail: `${winnerRuntime.spec.warriorTitle} survived with ${survivorPiece?.hp ?? winnerRuntime.hp} HP (${survivorPiece?.kills ?? 1} Kills).`,
+                wasUpset,
+                winnerFaction: winnerRuntime.piece.faction,
+              };
+
+              setBattleLogs((prev) => [duelLogEntry, ...prev.slice(0, 7)]);
 
               if (loserRuntime.piece.type === 'k') {
                 setWarVictor({
@@ -1640,24 +1691,118 @@ export default function App() {
             animateFighterRig(rig, f, elapsed, rawDelta);
           }
 
+          // 4. SPAGHETTI WESTERN ZOOM SHOTS & DYNAMIC DUTCH ANGLE CAMERA CHOREOGRAPHY
           const midX = sim.duelCenterWorld.x + ((atk.x + def.x) * 0.5) * 0.72;
           const midY = 1.05 + Math.max(atk.y, def.y) * 0.25;
           const midZ = sim.duelCenterWorld.z;
           const sep = Math.abs(atk.x - def.x);
-          const camDistZ = THREE.MathUtils.clamp(4.6 + sep * 0.52, 4.8, 8.4);
 
-          _camTargetPos.set(midX, midY + 1.25, midZ + camDistZ);
-          _camLookTarget.set(midX, midY, midZ);
+          let targetFov = 40;
+          let targetDutchRoll = 0;
+          let camLerpSpeed = 10;
+
+          if (sim.phase === 'TRANSITION_TO_FIGHT') {
+            // Sweeping low approach toward the spotlighted square with initial Dutch tilt
+            _camTargetPos.set(midX - 1.1, 1.55, midZ + 4.8);
+            _camLookTarget.set(midX, 0.95, midZ);
+            targetFov = 36;
+            targetDutchRoll = 0.09;
+            camLerpSpeed = 8;
+          } else if (sim.phase === 'FIGHT_INTRO') {
+            if (sim.introShotIndex === 0) {
+              // SHOT 0: Sergio Leone Extreme Close-Up Zoom on Challenger's Visor/Eyes + +12.5° Dutch Angle!
+              _camTargetPos.set(atkWorldX + 0.82, atkWorldY + 1.24, atkWorldZ + 1.42);
+              _camLookTarget.set(atkWorldX, atkWorldY + 1.16, atkWorldZ);
+              targetFov = 22;
+              targetDutchRoll = 0.22; // +12.5 deg Dutch tilt
+              camLerpSpeed = 24; // Snappy whip-pan/zoom cut!
+            } else if (sim.introShotIndex === 1) {
+              // SHOT 1: Counter-Cut Extreme Close-Up Zoom on Defender's Visor/Eyes + -12.5° Counter-Dutch Angle!
+              _camTargetPos.set(defWorldX - 0.82, defWorldY + 1.24, defWorldZ + 1.42);
+              _camLookTarget.set(defWorldX, defWorldY + 1.16, defWorldZ);
+              targetFov = 22;
+              targetDutchRoll = -0.22; // -12.5 deg Counter-Dutch tilt
+              camLerpSpeed = 24;
+            } else {
+              // SHOT 2: Low-Angle Over-the-Shoulder Gunfighter Standoff Wide + +7° Dutch Angle!
+              _camTargetPos.set(midX - 0.55, 0.62, midZ + 3.9);
+              _camLookTarget.set(midX, 1.05, midZ);
+              targetFov = 32;
+              targetDutchRoll = 0.12;
+              camLerpSpeed = 16;
+            }
+          } else if (sim.phase === 'FIGHT_OUTRO') {
+            // Low-Angle Dutch Victory Zoom on the surviving warrior under the spotlight!
+            const winnerWorldX =
+              def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp)
+                ? atkWorldX
+                : defWorldX;
+            const winnerIsAtk = winnerWorldX === atkWorldX;
+            _camTargetPos.set(
+              winnerWorldX + (winnerIsAtk ? 0.65 : -0.65),
+              0.68,
+              midZ + 2.45
+            );
+            _camLookTarget.set(winnerWorldX, 1.12, midZ);
+            targetFov = 26;
+            targetDutchRoll = winnerIsAtk ? 0.17 : -0.17;
+            camLerpSpeed = 12;
+          } else {
+            // FIGHT_ACTIVE: Dynamic fighting camera with telephoto zoom & Dutch angle on Specials, Parries & Finishers!
+            const activeSpecialFighter =
+              atk.action === 'special' || atk.action === 'combo_finisher' || atk.action === 'parry_flash'
+                ? atk
+                : def.action === 'special' || def.action === 'combo_finisher' || def.action === 'parry_flash'
+                ? def
+                : null;
+
+            if (activeSpecialFighter) {
+              const focusX = sim.duelCenterWorld.x + activeSpecialFighter.x * 0.72;
+              _camTargetPos.set(
+                (midX + focusX) * 0.5,
+                0.78 + Math.max(atk.y, def.y) * 0.2,
+                midZ + 3.65
+              );
+              _camLookTarget.set((midX + focusX) * 0.5, midY, midZ);
+              targetFov = 29;
+              targetDutchRoll = activeSpecialFighter === atk ? 0.14 : -0.14;
+              camLerpSpeed = 14;
+            } else {
+              const camDistZ = THREE.MathUtils.clamp(4.4 + sep * 0.48, 4.5, 7.8);
+              _camTargetPos.set(midX, midY + 1.05, midZ + camDistZ);
+              _camLookTarget.set(midX, midY, midZ);
+              targetFov = 39;
+              // Subtle dynamic Dutch roll during heavy hits, dashes & 4D Phase Shifts
+              const phaseTilt =
+                atk.wPhaseTimerMs > 0 ? 0.09 : def.wPhaseTimerMs > 0 ? -0.09 : 0;
+              targetDutchRoll =
+                THREE.MathUtils.clamp((atk.vx - def.vx) * 0.005, -0.06, 0.06) + phaseTilt;
+              camLerpSpeed = 10;
+            }
+          }
 
           if (sim.cameraShake > 0) {
             _camTargetPos.x += (Math.random() - 0.5) * sim.cameraShake;
             _camTargetPos.y += (Math.random() - 0.5) * sim.cameraShake;
+            targetDutchRoll += (Math.random() - 0.5) * sim.cameraShake * 0.25;
             sim.cameraShake = Math.max(0, sim.cameraShake - rawDelta * 1.8);
           }
 
-          camera.position.lerp(_camTargetPos, 1 - Math.exp(-9 * rawDelta));
-          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-11 * rawDelta));
+          camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, camLerpSpeed, rawDelta);
+          camera.updateProjectionMatrix();
+
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-camLerpSpeed * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-(camLerpSpeed + 2) * rawDelta));
           camera.lookAt(sim.currentLookAt);
+
+          // Apply Dutch Angle roll around the camera's local line-of-sight axis after lookAt!
+          sim.currentDutchRoll = THREE.MathUtils.damp(
+            sim.currentDutchRoll,
+            targetDutchRoll,
+            camLerpSpeed,
+            rawDelta
+          );
+          camera.rotateZ(sim.currentDutchRoll);
 
           hudSyncAccumulator += rawDelta;
           if (hudSyncAccumulator >= 0.05) {
@@ -1938,6 +2083,7 @@ export default function App() {
         defender={hudDefender}
         fightTimer={fightTimer}
         duelSquareName={duelSquareName}
+        introShotIndex={introShotIndex}
         callouts={callouts}
         dockCollapsed={dockCollapsed}
         onToggleDock={() => setDockCollapsed((p) => !p)}
