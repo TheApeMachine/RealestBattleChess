@@ -6,7 +6,19 @@ import {
   FighterRuntime,
   GamePhase,
 } from '../types/game';
-import { Shield, Swords, Zap, ArrowLeft, ArrowRight, ArrowUp } from 'lucide-react';
+import { Shield, Swords, Zap, ArrowLeft, ArrowRight, ArrowUp, Orbit, Clock } from 'lucide-react';
+
+export type PlayerCombatInputAction =
+  | 'left'
+  | 'right'
+  | 'jump'
+  | 'block_down'
+  | 'block_up'
+  | 'dash_fwd'
+  | 'dash_back'
+  | 'phase_shift_4d'
+  | 'temporal_echo'
+  | AttackInput;
 
 interface CombatHudOverlayProps {
   phase: GamePhase;
@@ -17,9 +29,7 @@ interface CombatHudOverlayProps {
   callouts: CombatCallout[];
   dockCollapsed: boolean;
   onToggleDock: () => void;
-  onPlayerInput: (
-    action: 'left' | 'right' | 'jump' | 'block_down' | 'block_up' | 'dash_fwd' | 'dash_back' | AttackInput
-  ) => void;
+  onPlayerInput: (action: PlayerCombatInputAction) => void;
 }
 
 export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
@@ -43,11 +53,12 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
 
   if (!isFightVisible) return null;
 
-  // Determine which fighter the human player controls (if both AI or PvP, default left or human side)
   const humanFighter = !attacker.isAI ? attacker : !defender.isAI ? defender : attacker;
   const opponentFighter = humanFighter === attacker ? defender : attacker;
   const specialCalc = calculateSpecialHitDamage(humanFighter.spec, opponentFighter.spec);
   const canUseSpecial = humanFighter.meter >= humanFighter.spec.special.meterCost;
+  const canUsePhase4D = humanFighter.wPhaseCooldownMs <= 0 && humanFighter.wPhaseTimerMs <= 0;
+  const canUseTemporalEcho = humanFighter.meter >= 25 && humanFighter.temporalEchoTimerMs <= 0;
 
   const atkHpPct = Math.max(0, Math.min(100, (attacker.hp / attacker.maxHp) * 100));
   const atkRecPct = Math.max(0, Math.min(100, (attacker.recoverableHp / attacker.maxHp) * 100));
@@ -67,8 +78,13 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
                   {attacker.spec.warriorTitle}
                 </span>
                 <span className="text-xs text-slate-400 whitespace-nowrap">
-                  {attacker.spec.chessName} · Val {attacker.spec.tacticalValue} · Attacker
+                  {attacker.spec.chessName} · Val {attacker.spec.tacticalValue} · W={attacker.piece.w}
                 </span>
+                {attacker.wPhaseTimerMs > 0 && (
+                  <span className="text-[10px] font-mono font-bold text-purple-300 bg-purple-950/90 border border-purple-500/40 px-1.5 py-0.5 rounded">
+                    4D PHASED
+                  </span>
+                )}
               </div>
               <span className="font-mono text-xs md:text-sm font-semibold tabular-nums text-slate-100 shrink-0">
                 {attacker.hp} / {attacker.maxHp} HP
@@ -132,7 +148,7 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
               {Math.ceil(fightTimer)}
             </div>
             <span className="text-[10px] font-mono text-amber-400/90">
-              DUEL CLOCK
+              4D ARENA
             </span>
           </div>
 
@@ -143,8 +159,13 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
                 {defender.hp} / {defender.maxHp} HP
               </span>
               <div className="flex items-baseline gap-2 truncate justify-end">
+                {defender.wPhaseTimerMs > 0 && (
+                  <span className="text-[10px] font-mono font-bold text-purple-300 bg-purple-950/90 border border-purple-500/40 px-1.5 py-0.5 rounded">
+                    4D PHASED
+                  </span>
+                )}
                 <span className="text-xs text-slate-400 whitespace-nowrap">
-                  Defender · Val {defender.spec.tacticalValue} · {defender.spec.chessName}
+                  W={defender.piece.w} · Val {defender.spec.tacticalValue} · {defender.spec.chessName}
                 </span>
                 <span className="font-display text-sm md:text-base font-bold tracking-wide text-rose-400 truncate">
                   {defender.spec.warriorTitle}
@@ -263,36 +284,36 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
       </div>
 
       {/* Unified Collapsible Bottom Combat Control Dock */}
-      <div className="pointer-events-auto mx-auto w-full max-w-4xl flex flex-col items-center">
+      <div className="pointer-events-auto mx-auto w-full max-w-5xl flex flex-col items-center">
         <button
           onClick={onToggleDock}
           className="mb-1 px-3 py-1 text-xs font-mono text-slate-300 bg-[#0B0E17]/95 border border-slate-800 rounded-t-lg hover:text-white transition-colors whitespace-nowrap shrink-0"
         >
-          {dockCollapsed ? '▴ Show Combat Controls & Combos (H)' : '▾ Hide Controls (H)'}
+          {dockCollapsed ? '▴ Show Combat Controls, 4D Phase & Combos (H)' : '▾ Hide Controls (H)'}
         </button>
 
         {!dockCollapsed && (
           <div className="w-full bg-[#0B0E17]/95 border border-slate-800 rounded-xl p-3 shadow-2xl">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
               {/* Left: Movement & Defense Arcade Pad */}
-              <div className="md:col-span-4 flex items-center justify-center md:justify-start gap-1.5">
+              <div className="md:col-span-4 flex flex-wrap items-center justify-center md:justify-start gap-1.5">
                 <button
                   onPointerDown={() => onPlayerInput('left')}
-                  className="px-3 py-2.5 bg-slate-900 hover:bg-slate-800 active:bg-amber-500/20 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
+                  className="px-2.5 py-2 bg-slate-900 hover:bg-slate-800 active:bg-amber-500/20 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
                   title="Move Left (A / Left Arrow)"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" /> A
                 </button>
                 <button
                   onPointerDown={() => onPlayerInput('jump')}
-                  className="px-3 py-2.5 bg-slate-900 hover:bg-slate-800 active:bg-amber-500/20 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
+                  className="px-2.5 py-2 bg-slate-900 hover:bg-slate-800 active:bg-amber-500/20 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
                   title="Jump (W / Up Arrow)"
                 >
                   <ArrowUp className="w-3.5 h-3.5" /> W
                 </button>
                 <button
                   onPointerDown={() => onPlayerInput('right')}
-                  className="px-3 py-2.5 bg-slate-900 hover:bg-slate-800 active:bg-amber-500/20 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
+                  className="px-2.5 py-2 bg-slate-900 hover:bg-slate-800 active:bg-amber-500/20 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
                   title="Move Right (D / Right Arrow)"
                 >
                   D <ArrowRight className="w-3.5 h-3.5" />
@@ -301,25 +322,25 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
                   onPointerDown={() => onPlayerInput('block_down')}
                   onPointerUp={() => onPlayerInput('block_up')}
                   onPointerLeave={() => onPlayerInput('block_up')}
-                  className="px-3 py-2.5 bg-sky-950/80 hover:bg-sky-900/80 border border-sky-500/40 rounded-lg text-xs font-mono text-sky-200 flex items-center gap-1 whitespace-nowrap shrink-0"
+                  className="px-2.5 py-2 bg-sky-950/80 hover:bg-sky-900/80 border border-sky-500/40 rounded-lg text-xs font-mono text-sky-200 flex items-center gap-1 whitespace-nowrap shrink-0"
                   title="Hold to Guard, Tap right before impact for Perfect Parry (S / Down)"
                 >
-                  <Shield className="w-3.5 h-3.5" /> Parry / Guard (S)
+                  <Shield className="w-3.5 h-3.5" /> Parry (S)
                 </button>
               </div>
 
-              {/* Center: Strike & Tactical-Value Special Buttons */}
-              <div className="md:col-span-4 flex items-center justify-center gap-2">
+              {/* Center: Strike, Special & 4D Hypercube Combat Actions */}
+              <div className="md:col-span-5 flex flex-wrap items-center justify-center gap-1.5">
                 <button
                   onPointerDown={() => onPlayerInput('L')}
-                  className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 active:scale-95 border border-slate-600 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-transform"
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 active:scale-95 border border-slate-600 rounded-lg text-xs font-semibold text-white flex items-center gap-1 whitespace-nowrap shrink-0 transition-transform"
                 >
                   <Swords className="w-3.5 h-3.5 text-sky-400" />
                   Light (J)
                 </button>
                 <button
                   onPointerDown={() => onPlayerInput('H')}
-                  className="px-3.5 py-2.5 bg-rose-950/90 hover:bg-rose-900 active:scale-95 border border-rose-500/50 rounded-lg text-xs font-semibold text-rose-100 flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-transform"
+                  className="px-3 py-2 bg-rose-950/90 hover:bg-rose-900 active:scale-95 border border-rose-500/50 rounded-lg text-xs font-semibold text-rose-100 flex items-center gap-1 whitespace-nowrap shrink-0 transition-transform"
                 >
                   <Swords className="w-3.5 h-3.5 text-rose-400" />
                   Heavy (K)
@@ -327,33 +348,59 @@ export const CombatHudOverlay: React.FC<CombatHudOverlayProps> = ({
                 <button
                   onPointerDown={() => onPlayerInput('S')}
                   disabled={!canUseSpecial}
-                  className={`px-3.5 py-2.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all ${
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
                     canUseSpecial
                       ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border border-amber-300 shadow-lg'
                       : 'bg-slate-900 text-slate-500 border border-slate-800 cursor-not-allowed'
                   }`}
                 >
                   <Zap className="w-3.5 h-3.5" />
-                  Special (U) · {specialCalc.totalDamage} Dmg
+                  Special (U)
+                </button>
+                <button
+                  onPointerDown={() => onPlayerInput('phase_shift_4d')}
+                  disabled={!canUsePhase4D}
+                  title="Shift into the 4th spatial dimension (W = ±1) to pass through 3D attacks and cross-up behind your opponent! (Q Key)"
+                  className={`px-2.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
+                    canUsePhase4D
+                      ? 'bg-purple-950/90 hover:bg-purple-900 text-purple-200 border border-purple-500/50'
+                      : 'bg-slate-900 text-slate-500 border border-slate-800 cursor-not-allowed'
+                  }`}
+                >
+                  <Orbit className="w-3.5 h-3.5 text-purple-400" />
+                  4D Phase (Q)
+                </button>
+                <button
+                  onPointerDown={() => onPlayerInput('temporal_echo')}
+                  disabled={!canUseTemporalEcho}
+                  title="Spend 25% Meter to leave a Past-Timeline Hologram Clone that strikes from behind while you vault over the enemy! (E Key)"
+                  className={`px-2.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
+                    canUseTemporalEcho
+                      ? 'bg-cyan-950/90 hover:bg-cyan-900 text-cyan-200 border border-cyan-500/50'
+                      : 'bg-slate-900 text-slate-500 border border-slate-800 cursor-not-allowed'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                  Chrono-Echo (E)
                 </button>
               </div>
 
               {/* Right: Active Archetype Combo Tree Reference */}
-              <div className="md:col-span-4 flex flex-col gap-1 border-t md:border-t-0 md:border-l border-slate-800 pt-2 md:pt-0 md:pl-3">
+              <div className="md:col-span-3 flex flex-col gap-1 border-t md:border-t-0 md:border-l border-slate-800 pt-2 md:pt-0 md:pl-3">
                 <div className="flex items-center justify-between text-[11px] text-slate-400">
                   <span className="font-semibold text-slate-200">{humanFighter.spec.chessName} Combos</span>
                   <span className="font-mono text-amber-400">
-                    Buffer: {humanFighter.comboBuffer.length > 0 ? humanFighter.comboBuffer.join(' → ') : 'Ready'}
+                    {humanFighter.comboBuffer.length > 0 ? humanFighter.comboBuffer.join(' → ') : 'Ready'}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="grid grid-cols-3 gap-1">
                   {humanFighter.spec.combos.map((combo) => (
                     <div
                       key={combo.id}
-                      className="bg-slate-900/90 border border-slate-800 rounded px-2 py-1 text-left"
+                      className="bg-slate-900/90 border border-slate-800 rounded px-1.5 py-1 text-left"
                     >
-                      <div className="font-mono text-[11px] font-bold text-sky-400">
-                        {combo.sequence.join(' · ')}
+                      <div className="font-mono text-[10px] font-bold text-sky-400">
+                        {combo.sequence.join('·')}
                       </div>
                       <div className="text-[10px] text-slate-300 truncate" title={combo.description}>
                         {combo.name}

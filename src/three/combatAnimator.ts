@@ -613,6 +613,24 @@ export function animateFighterRig(
   headGroup.rotation.x = THREE.MathUtils.damp(headGroup.rotation.x, targetHeadX, k, dt);
   capePivot.rotation.x = THREE.MathUtils.damp(capePivot.rotation.x, targetCapeX, 14, dt);
 
+  // 4D W-Phase Shift visual displacement & translucency
+  const isPhased4D = fighter.wPhaseTimerMs > 0;
+  rig.tesseractBadge.visible = isPhased4D || fighter.temporalEchoTimerMs > 0;
+  if (rig.tesseractBadge.visible) {
+    rig.tesseractBadge.rotation.y += dt * 4.5;
+    rig.tesseractBadge.rotation.x += dt * 3.2;
+  }
+
+  for (const mesh of rig.allStandardMeshes) {
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    const targetOpacity = isPhased4D ? 0.38 : 1.0;
+    if (Math.abs(mat.opacity - targetOpacity) > 0.01) {
+      mat.transparent = targetOpacity < 0.99;
+      mat.opacity = THREE.MathUtils.damp(mat.opacity, targetOpacity, 16, dt);
+      mat.needsUpdate = true;
+    }
+  }
+
   const isPowerMove =
     fighter.action === 'special' ||
     fighter.action === 'combo_finisher' ||
@@ -621,6 +639,6 @@ export function animateFighterRig(
 
   for (const glowMesh of rig.weaponGlowMeshes) {
     const mat = glowMesh.material as THREE.MeshStandardMaterial;
-    mat.emissiveIntensity = isPowerMove ? 4.2 : fighter.hitFlashTimerMs > 0 ? 5.0 : 2.0;
+    mat.emissiveIntensity = isPowerMove ? 2.1 : fighter.hitFlashTimerMs > 0 ? 2.6 : 1.1;
   }
 }

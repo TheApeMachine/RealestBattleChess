@@ -62,6 +62,16 @@ export interface ArchetypeSpec {
 export interface BoardCoord {
   row: number;
   col: number;
+  z?: number; // 3rd spatial axis (0 = Prime Ground, 1 = Astral Stratum)
+  w?: number; // 4th spatial axis (-1 = Kata, 0 = Prime, +1 = Ana)
+}
+
+export interface SpacetimeWaypoint {
+  row: number;
+  col: number;
+  z: number;
+  w: number;
+  turn: number;
 }
 
 export interface ChessPiece {
@@ -70,19 +80,39 @@ export interface ChessPiece {
   faction: Faction;
   row: number;
   col: number;
+  z: number; // 0 or 1
+  w: number; // -1, 0, +1
   hp: number;
   maxHp: number;
   meter: number; // 0 to 100
   kills: number;
   hasMoved: boolean;
+  history: SpacetimeWaypoint[];
 }
 
+export type MoveDimensionType =
+  | '3D_SLICE'
+  | '4D_HYPER_SHIFT'
+  | '4D_CROSS_SLICE_STRIKE'
+  | 'TEMPORAL_INTERCEPT';
+
 export interface MoveOption {
-  from: BoardCoord;
-  to: BoardCoord;
+  from: { row: number; col: number; z: number; w: number };
+  to: { row: number; col: number; z: number; w: number };
   isCapture: boolean;
   targetPiece?: ChessPiece;
   isPromotion?: boolean;
+  dimensionType?: MoveDimensionType;
+  dimensionLabel?: string;
+}
+
+export interface UnseenThreatVector {
+  attacker: ChessPiece;
+  targetRow: number;
+  targetCol: number;
+  targetZ: number;
+  targetW: number;
+  axisDescription: string;
 }
 
 export type GamePhase =
@@ -120,16 +150,16 @@ export interface FighterRuntime {
   spec: ArchetypeSpec;
   isAttacker: boolean;
   isAI: boolean;
-  x: number; // Arena X coordinate (-6.5 to +6.5)
-  y: number; // Arena height (0 = ground)
+  x: number;
+  y: number;
   vx: number;
   vy: number;
-  facing: 1 | -1; // 1 = right, -1 = left
+  facing: 1 | -1;
   hp: number;
   maxHp: number;
   recoverableHp: number;
-  meter: number; // 0 to 100
-  guardGauge: number; // 0 to 100
+  meter: number;
+  guardGauge: number;
   action: FighterAction;
   actionTimerMs: number;
   actionDurationMs: number;
@@ -139,19 +169,27 @@ export interface FighterRuntime {
   comboWindowTimerMs: number;
   activeComboRecipe: ComboRecipe | null;
   comboStepIndex: number;
-  hitCount: number; // Current combo hits landed on opponent
+  hitCount: number;
   comboDamageAccum: number;
-  lastBlockPressTime: number; // For Parry detection (<160ms window)
+  lastBlockPressTime: number;
   superArmorActive: boolean;
   invulnerableTimerMs: number;
   hitFlashTimerMs: number;
+  // 4D Combat Mechanics: W-Axis Phase Shift & Temporal Echo Clone
+  wPhaseOffset: number; // 0 = Prime plane, +1 = Ana Phase, -1 = Kata Phase
+  wPhaseTimerMs: number;
+  wPhaseCooldownMs: number;
+  temporalEchoTimerMs: number;
+  temporalEchoX: number;
+  temporalEchoFacing: 1 | -1;
+  temporalEchoHasStruck: boolean;
 }
 
 export interface CombatCallout {
   id: number;
   text: string;
   subtext?: string;
-  x: number; // -1 to 1 normalized or world X
+  x: number;
   y: number;
   color: string;
   createdAt: number;

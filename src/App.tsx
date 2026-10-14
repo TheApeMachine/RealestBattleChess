@@ -8,7 +8,6 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import confetti from 'canvas-confetti';
 import {
-  AttackInput,
   BattleLogEntry,
   BoardCoord,
   ChessPiece,
@@ -19,21 +18,27 @@ import {
   GamePhase,
   MoveOption,
   PieceType,
+  UnseenThreatVector,
 } from './types/game';
 import { ARCHETYPES } from './data/archetypes';
 import {
   chooseAIMove,
+  computeUnseen4DThreats,
   createInitialBoard,
   formatSquareName,
-  getPieceAt,
+  formatWName,
+  formatZName,
+  getPieceAtProjected,
   getValidMovesForPiece,
 } from './engine/chessEngine';
 import {
   createFighterRuntime,
   stepCombatSimulation,
+  triggerFighter4DPhaseShift,
   triggerFighterAttack,
   triggerFighterDash,
   triggerFighterJump,
+  triggerFighterTemporalEcho,
   updateFighterAI,
 } from './engine/combatEngine';
 import { createArticulatedPiece, ArticulatedPieceRig } from './three/pieceModels';
@@ -41,6 +46,7 @@ import {
   boardToWorld,
   createBoardArena,
   BoardArenaRig,
+  update4DTesseractProjection,
 } from './three/arenaBuilder';
 import {
   animateFighterRig,
@@ -54,9 +60,9 @@ import {
   VFXPool,
 } from './three/combatAnimator';
 import { soundEngine } from './audio/soundEngine';
-import { CombatHudOverlay } from './components/CombatHudOverlay';
+import { CombatHudOverlay, PlayerCombatInputAction } from './components/CombatHudOverlay';
 import { CodexModal } from './components/CodexModal';
-import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles } from 'lucide-react';
+import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle } from 'lucide-react';
 
 // Pre-allocated math helpers at module scope (Zero GC in render loop)
 const _vec3A = new THREE.Vector3();
@@ -88,14 +94,22 @@ export default function App() {
   const [muted, setMuted] = useState<boolean>(false);
   const [codexOpen, setCodexOpen] = useState<boolean>(false);
 
+  // 4D Hypercube Slice State: Which 3D slice (Z, W) the player is currently observing,
+  // and which target 4D slice the selected piece is projecting moves into!
+  const [activeSliceW, setActiveSliceW] = useState<number>(0); // -1 = Kata, 0 = Prime, +1 = Ana
+  const [activeSliceZ, setActiveSliceZ] = useState<number>(0); // 0 = Ground, 1 = Astral
+  const [targetMoveW, setTargetMoveW] = useState<number>(0);
+  const [targetMoveZ, setTargetMoveZ] = useState<number>(0);
+  const [unseenThreats, setUnseenThreats] = useState<UnseenThreatVector[]>([]);
+
   const [selectedPiece, setSelectedPiece] = useState<ChessPiece | null>(null);
   const [hoveredCaptureMove, setHoveredCaptureMove] = useState<MoveOption | null>(null);
   const [battleLogs, setBattleLogs] = useState<BattleLogEntry[]>([
     {
       id: 'init',
       turnNumber: 1,
-      summary: 'Sanctuary Board Initialized',
-      detail: 'Select any Solaris (Gold/White) piece to advance, or initiate a Capture Clash to enter the 3D Fighting Arena.',
+      summary: '4D Hypercube Sanctuary Initialized',
+      detail: 'Select any warrior to move on Prime (W=0) or project across the 4th spatial axis (Kata -W / Ana +W) & Spacetime trails!',
       wasUpset: false,
       winnerFaction: 'w',
     },
@@ -125,6 +139,10 @@ export default function App() {
     turnNumber: number;
     gameMode: 'vs_ai' | 'pvp';
     cameraPreset: CameraPreset;
+    activeSliceW: number;
+    activeSliceZ: number;
+    targetMoveW: number;
+    targetMoveZ: number;
     pieces: ChessPiece[];
     selectedPieceId: string | null;
     validMoves: MoveOption[];
@@ -153,6 +171,10 @@ export default function App() {
     turnNumber: 1,
     gameMode: 'vs_ai',
     cameraPreset: 'white_orbit',
+    activeSliceW: 0,
+    activeSliceZ: 0,
+    targetMoveW: 0,
+    targetMoveZ: 0,
     pieces: createInitialBoard(),
     selectedPieceId: null,
     validMoves: [],
@@ -185,7 +207,7 @@ export default function App() {
     setCallouts((prev) => [...prev.slice(-3), item]);
   }, []);
 
-  // Sync tile highlight meshes with current selected piece & valid moves
+  // Sync tile highlight meshes and Unseen 4D Threat sigils
   const syncBoardHighlights = useCallback(() => {
     const sim = simRef.current;
     if (!sim.arenaRig) return;
@@ -193,9 +215,29 @@ export default function App() {
     sim.arenaRig.highlightMeshes.forEach((mesh) => {
       mesh.visible = false;
     });
+    sim.arenaRig.threatSigilMeshes.forEach((sigil) => {
+      sigil.visible = false;
+    });
 
     if (sim.phase !== 'CHESS_VIEW') return;
 
+    // 1. Compute Unseen 4D Cross-Dimensional Threats on the currently viewed 3D slice!
+    const threats = computeUnseen4DThreats(
+      sim.pieces,
+      sim.activeSliceZ,
+      sim.activeSliceW,
+      sim.turnFaction
+    );
+    setUnseenThreats(threats);
+
+    for (const t of threats) {
+      const sigil = sim.arenaRig.threatSigilMeshes.get(`${t.targetRow}_${t.targetCol}`);
+      if (sigil) {
+        sigil.visible = true;
+      }
+    }
+
+    // 2. Highlight selected piece and its valid moves (3D slice moves, 4D Hyper-Shifts, and Chrono-Intercepts!)
     const selPiece = sim.pieces.find((p) => p.id === sim.selectedPieceId) || null;
     setSelectedPiece(selPiece ? { ...selPiece } : null);
 
@@ -205,7 +247,7 @@ export default function App() {
         selMesh.visible = true;
         const mat = selMesh.material as THREE.MeshBasicMaterial;
         mat.color.setHex(0x38bdf8);
-        mat.opacity = 0.55;
+        mat.opacity = 0.48;
       }
 
       for (const mv of sim.validMoves) {
@@ -213,17 +255,50 @@ export default function App() {
         if (hl) {
           hl.visible = true;
           const mat = hl.material as THREE.MeshBasicMaterial;
-          if (mv.isCapture) {
-            mat.color.setHex(0xf43f5e);
+          if (mv.dimensionType === 'TEMPORAL_INTERCEPT') {
+            mat.color.setHex(0x22d3ee); // Cyan Chrono-Intercept
             mat.opacity = 0.68;
+          } else if (mv.isCapture) {
+            mat.color.setHex(mv.dimensionType === '4D_CROSS_SLICE_STRIKE' ? 0xc084fc : 0xf43f5e);
+            mat.opacity = 0.65;
+          } else if (mv.dimensionType === '4D_HYPER_SHIFT') {
+            mat.color.setHex(0xa855f7); // Violet 4D Hyper-Shift
+            mat.opacity = 0.52;
           } else {
             mat.color.setHex(0xf59e0b);
-            mat.opacity = 0.42;
+            mat.opacity = 0.38;
           }
         }
       }
     }
   }, []);
+
+  // Helper to change viewed 3D slice or target 4D move projection slice
+  const handleSelect4DSlice = useCallback(
+    (newW: number, newZ: number, alsoSetView: boolean = true) => {
+      const sim = simRef.current;
+      if (alsoSetView) {
+        sim.activeSliceW = newW;
+        sim.activeSliceZ = newZ;
+        setActiveSliceW(newW);
+        setActiveSliceZ(newZ);
+      }
+      sim.targetMoveW = newW;
+      sim.targetMoveZ = newZ;
+      setTargetMoveW(newW);
+      setTargetMoveZ(newZ);
+
+      if (sim.selectedPieceId) {
+        const sel = sim.pieces.find((p) => p.id === sim.selectedPieceId);
+        if (sel) {
+          sim.validMoves = getValidMovesForPiece(sel, sim.pieces, newZ, newW);
+        }
+      }
+      soundEngine.playChessSelect();
+      syncBoardHighlights();
+    },
+    [syncBoardHighlights]
+  );
 
   // Start a capture duel on the board
   const initiateCombatDuel = useCallback(
@@ -239,12 +314,10 @@ export default function App() {
       setHoveredCaptureMove(null);
       syncBoardHighlights();
 
-      // Calculate world center of the contested square
       boardToWorld(move.to.row, move.to.col, sim.duelCenterWorld);
-      const sqName = formatSquareName(move.to);
+      const sqName = `${formatSquareName(move.to)} · ${formatWName(move.to.w)}`;
       setDuelSquareName(sqName);
 
-      // Determine AI flags: in vs_ai mode, Black ('b') is AI, White ('w') is Player
       const atkIsAI = sim.gameMode === 'vs_ai' && attackerPiece.faction === 'b';
       const defIsAI = sim.gameMode === 'vs_ai' && defenderPiece.faction === 'b';
 
@@ -266,11 +339,26 @@ export default function App() {
       setKoBanner(null);
       setHudAttacker({ ...sim.attackerRuntime });
       setHudDefender({ ...sim.defenderRuntime });
+
+      if (move.dimensionType && move.dimensionType !== '3D_SLICE') {
+        setTimeout(() => {
+          addCallout({
+            text:
+              move.dimensionType === 'TEMPORAL_INTERCEPT'
+                ? 'CHRONO-INTERCEPT DUEL (Δt = -1)!'
+                : '4D CROSS-DIMENSIONAL AMBUSH!',
+            subtext: move.dimensionLabel || 'HYPERCUBE COLLISION',
+            x: 0,
+            y: 2.35,
+            color: '#c084fc',
+          });
+        }, 400);
+      }
     },
-    [syncBoardHighlights]
+    [addCallout, syncBoardHighlights]
   );
 
-  // Execute a non-capture chess move or trigger a capture duel
+  // Execute a non-capture chess move (including 4D Hyper-Shifts!) or trigger a capture duel
   const executeChessMove = useCallback(
     (piece: ChessPiece, move: MoveOption) => {
       const sim = simRef.current;
@@ -280,12 +368,37 @@ export default function App() {
         return;
       }
 
-      // Standard non-capture positional move
       soundEngine.playChessMove();
+      const prevW = piece.w;
+      const prevZ = piece.z;
       piece.row = move.to.row;
       piece.col = move.to.col;
+      piece.z = move.to.z;
+      piece.w = move.to.w;
       piece.hasMoved = true;
-      piece.meter = Math.min(100, piece.meter + 8);
+      piece.meter = Math.min(100, piece.meter + (prevW !== piece.w || prevZ !== piece.z ? 14 : 8));
+      piece.history.push({
+        row: piece.row,
+        col: piece.col,
+        z: piece.z,
+        w: piece.w,
+        turn: sim.turnNumber + 1,
+      });
+
+      if (prevW !== piece.w || prevZ !== piece.z) {
+        const sq = formatSquareName(move.to);
+        setBattleLogs((prev) => [
+          {
+            id: `shift_${Date.now()}`,
+            turnNumber: sim.turnNumber,
+            summary: `4D Hyper-Shift: ${ARCHETYPES[piece.type].chessName} → ${sq} [${formatWName(piece.w)}]`,
+            detail: `${ARCHETYPES[piece.type].warriorTitle} shifted along the 4th spatial axis from ${formatWName(prevW)} to ${formatWName(piece.w)}!`,
+            wasUpset: false,
+            winnerFaction: piece.faction,
+          },
+          ...prev.slice(0, 7),
+        ]);
+      }
 
       // Check Pawn Promotion on reaching far rank
       if (move.isPromotion && piece.type === 'p') {
@@ -346,11 +459,14 @@ export default function App() {
         faction: 'w',
         row: 4,
         col: 3,
+        z: 0,
+        w: 0,
         hp: atkSpec.maxHp,
         maxHp: atkSpec.maxHp,
-        meter: 45,
+        meter: 50,
         kills: 0,
         hasMoved: true,
+        history: [{ row: 4, col: 3, z: 0, w: 0, turn: 1 }],
       };
 
       const tempDef: ChessPiece = {
@@ -359,11 +475,14 @@ export default function App() {
         faction: 'b',
         row: 4,
         col: 4,
+        z: 0,
+        w: 0,
         hp: defSpec.maxHp,
         maxHp: defSpec.maxHp,
-        meter: 45,
+        meter: 50,
         kills: 0,
         hasMoved: true,
+        history: [{ row: 4, col: 4, z: 0, w: 0, turn: 1 }],
       };
 
       if (sim.arenaRig) {
@@ -381,10 +500,11 @@ export default function App() {
       }
 
       const exhibMove: MoveOption = {
-        from: { row: 4, col: 3 },
-        to: { row: 4, col: 4 },
+        from: { row: 4, col: 3, z: 0, w: 0 },
+        to: { row: 4, col: 4, z: 0, w: 0 },
         isCapture: true,
         targetPiece: tempDef,
+        dimensionType: '3D_SLICE',
       };
 
       initiateCombatDuel(tempAtk, exhibMove, true);
@@ -392,13 +512,71 @@ export default function App() {
     [initiateCombatDuel]
   );
 
+  // Trigger a 4D Hyper-Space Scenario on the board (shifts pieces into Ana +W and Kata -W so unseen 4D threats & cross-dimensional ambushes appear immediately!)
+  const handleTrigger4DHyperScenario = useCallback(() => {
+    const sim = simRef.current;
+    if (sim.phase !== 'CHESS_VIEW') return;
+
+    // Place a Black Rook & Queen in Ana (+W) and Kata (-W) threatening the Prime (W=0) slice,
+    // and select a White Knight/Queen ready to execute a 4D Cross-Dimensional Strike or Chrono-Intercept!
+    const bRook = sim.pieces.find((p) => p.faction === 'b' && p.type === 'r');
+    const bBishop = sim.pieces.find((p) => p.faction === 'b' && p.type === 'b');
+    const wQueen = sim.pieces.find((p) => p.faction === 'w' && p.type === 'q');
+    const wKnight = sim.pieces.find((p) => p.faction === 'w' && p.type === 'n');
+
+    if (bRook) {
+      bRook.row = 3;
+      bRook.col = 3;
+      bRook.w = 1; // Lurking in Ana (+W)!
+      bRook.z = 0;
+      bRook.history.push({ row: 2, col: 3, z: 0, w: 0, turn: sim.turnNumber });
+      bRook.history.push({ row: 3, col: 3, z: 0, w: 1, turn: sim.turnNumber + 1 });
+    }
+    if (bBishop) {
+      bBishop.row = 3;
+      bBishop.col = 5;
+      bBishop.w = -1; // Lurking in Kata (-W)!
+      bBishop.z = 0;
+    }
+    if (wKnight) {
+      wKnight.row = 5;
+      wKnight.col = 4;
+      wKnight.w = 0;
+      wKnight.z = 0;
+    }
+    if (wQueen) {
+      wQueen.row = 5;
+      wQueen.col = 3;
+      wQueen.w = 0;
+      wQueen.z = 0;
+      sim.selectedPieceId = wQueen.id;
+      sim.targetMoveW = 1; // Project moves into Ana (+W) to ambush the lurking Rook!
+      setTargetMoveW(1);
+      sim.validMoves = getValidMovesForPiece(wQueen, sim.pieces, 0, 1);
+    }
+
+    soundEngine.playSpecialActivate();
+    syncBoardHighlights();
+    setBattleLogs((prev) => [
+      {
+        id: `hyper_${Date.now()}`,
+        turnNumber: sim.turnNumber,
+        summary: '4D Tesseract Fold Activated!',
+        detail: 'Enemy Rook shifted to Ana (+W) at D5 and Bishop to Kata (-W) at F5! Purple sigils mark Unseen 4D Threats on Prime (W=0). Click D5 to launch a 4D Cross-Slice Ambush!',
+        wasUpset: false,
+        winnerFaction: 'w',
+      },
+      ...prev.slice(0, 7),
+    ]);
+  }, [syncBoardHighlights]);
+
   // Trigger an immediate canonical board clash (e.g. Pawn vs Queen surrounded by lively spectator pieces!)
   const handleTriggerFeaturedBoardClash = useCallback(() => {
     const sim = simRef.current;
     if (sim.phase !== 'CHESS_VIEW') return;
 
     for (const p of sim.pieces.filter((x) => x.faction === sim.turnFaction)) {
-      const moves = getValidMovesForPiece(p, sim.pieces);
+      const moves = getValidMovesForPiece(p, sim.pieces, p.z, p.w);
       const cap = moves.find((m) => m.isCapture && m.targetPiece);
       if (cap) {
         executeChessMove(p, cap);
@@ -406,21 +584,25 @@ export default function App() {
       }
     }
 
-    const whitePawn = sim.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4) ||
+    const whitePawn =
+      sim.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4) ||
       sim.pieces.find((p) => p.faction === 'w' && p.type === 'p');
     const blackQueen = sim.pieces.find((p) => p.faction === 'b' && p.type === 'q');
 
     if (whitePawn && blackQueen) {
       whitePawn.row = 4;
       whitePawn.col = 4;
+      whitePawn.w = 0;
       blackQueen.row = 3;
       blackQueen.col = 3;
+      blackQueen.w = 0;
 
       const move: MoveOption = {
-        from: { row: 4, col: 4 },
-        to: { row: 3, col: 3 },
+        from: { row: 4, col: 4, z: 0, w: 0 },
+        to: { row: 3, col: 3, z: 0, w: 0 },
         isCapture: true,
         targetPiece: blackQueen,
+        dimensionType: '3D_SLICE',
       };
       initiateCombatDuel(whitePawn, move, false);
     }
@@ -443,6 +625,10 @@ export default function App() {
     sim.phase = 'CHESS_VIEW';
     sim.turnFaction = 'w';
     sim.turnNumber = 1;
+    sim.activeSliceW = 0;
+    sim.activeSliceZ = 0;
+    sim.targetMoveW = 0;
+    sim.targetMoveZ = 0;
     sim.selectedPieceId = null;
     sim.validMoves = [];
     sim.pendingMove = null;
@@ -463,6 +649,10 @@ export default function App() {
       sim.controls.enabled = true;
     }
 
+    setActiveSliceW(0);
+    setActiveSliceZ(0);
+    setTargetMoveW(0);
+    setTargetMoveZ(0);
     syncBoardHighlights();
     setPhase('CHESS_VIEW');
     setTurnFaction('w');
@@ -473,27 +663,17 @@ export default function App() {
       {
         id: `reset_${Date.now()}`,
         turnNumber: 1,
-        summary: 'New Campaign Initialized',
-        detail: 'All 32 warriors restored to full vitality.',
+        summary: 'New 4D Campaign Initialized',
+        detail: 'All 32 warriors restored to Prime Slice (W=0, Z=0).',
         wasUpset: false,
         winnerFaction: 'w',
       },
     ]);
   }, [syncBoardHighlights]);
 
-  // Player combat input handler
+  // Player combat input handler (including 4D Phase Shift & Temporal Echo Clone!)
   const handlePlayerCombatInput = useCallback(
-    (
-      action:
-        | 'left'
-        | 'right'
-        | 'jump'
-        | 'block_down'
-        | 'block_up'
-        | 'dash_fwd'
-        | 'dash_back'
-        | AttackInput
-    ) => {
+    (action: PlayerCombatInputAction) => {
       const sim = simRef.current;
       if (sim.phase !== 'FIGHT_ACTIVE') return;
       const atk = sim.attackerRuntime;
@@ -504,6 +684,10 @@ export default function App() {
 
       if (action === 'L' || action === 'H' || action === 'S') {
         triggerFighterAttack(human, action, addCallout);
+      } else if (action === 'phase_shift_4d') {
+        triggerFighter4DPhaseShift(human, addCallout);
+      } else if (action === 'temporal_echo') {
+        triggerFighterTemporalEcho(human, addCallout);
       } else if (action === 'jump') {
         triggerFighterJump(human);
       } else if (action === 'block_down') {
@@ -531,7 +715,7 @@ export default function App() {
     [addCallout]
   );
 
-  // Initialize Three.js Scene, Post-Processing Bloom, Studio & Cinematic Fight Lighting, Board, Pieces, and Loop
+  // Initialize Three.js Scene, Calibrated Bloom, Studio & Cinematic Fight Lighting, Board, 4D Tesseract, Pieces, and Loop
   useEffect(() => {
     const container = canvasMountRef.current;
     if (!container) return;
@@ -557,7 +741,8 @@ export default function App() {
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
+    // Calibrated toneMappingExposure so marble tiles and white armor never blow out!
+    renderer.toneMappingExposure = 0.88;
     renderer.setPixelRatio(isHeadless ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = !isHeadless;
@@ -566,7 +751,7 @@ export default function App() {
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
-    // Post-Processing Composer with subtle HDR UnrealBloomPass
+    // Post-Processing Composer with restrained, high-threshold UnrealBloomPass (scaled down glow!)
     let composer: EffectComposer | null = null;
     let bloomPass: UnrealBloomPass | null = null;
     if (!isHeadless) {
@@ -574,9 +759,9 @@ export default function App() {
       composer.addPass(new RenderPass(scene, camera));
       bloomPass = new UnrealBloomPass(
         new THREE.Vector2(container.clientWidth, container.clientHeight),
-        0.44, // strength
-        0.35, // radius
-        0.8 // threshold
+        0.18, // scaled-down strength for crispness
+        0.28, // tight radius
+        0.88 // high threshold so only true emissive weapon sparks/slashes bloom
       );
       composer.addPass(bloomPass);
       composer.addPass(new OutputPass());
@@ -587,16 +772,15 @@ export default function App() {
     };
     renderer.domElement.addEventListener('webglcontextlost', onContextLost);
 
-    // Studio Environment Map
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
 
-    // 3-Point Board Studio Lighting Rig (dims dramatically during fights so the SpotLights take center stage!)
-    const hemiLight = new THREE.HemisphereLight(0xdbeafe, 0x1e1b4b, 0.65);
+    // 3-Point Board Studio Lighting Rig (calibrated intensities)
+    const hemiLight = new THREE.HemisphereLight(0xdbeafe, 0x1e1b4b, 0.48);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xfffbeb, 2.2);
+    const keyLight = new THREE.DirectionalLight(0xfffbeb, 1.65);
     keyLight.position.set(9, 16, 10);
     keyLight.castShadow = !isHeadless;
     keyLight.shadow.mapSize.width = 2048;
@@ -612,11 +796,11 @@ export default function App() {
     keyLight.shadow.normalBias = 0.02;
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x38bdf8, 1.35);
+    const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.95);
     rimLight.position.set(-10, 9, -11);
     scene.add(rimLight);
 
-    const warmFill = new THREE.PointLight(0xf59e0b, 1.4, 24);
+    const warmFill = new THREE.PointLight(0xf59e0b, 0.85, 24);
     warmFill.position.set(0, 6, 0);
     scene.add(warmFill);
 
@@ -630,7 +814,7 @@ export default function App() {
     controls.target.set(0, 0.3, 0);
     simRef.current.controls = controls;
 
-    // Build 3D Chessboard, Cinematic Spotlights & Duel Colosseum Arena
+    // Build 3D Chessboard, 4D Tesseract Projector, Cinematic Spotlights & Duel Colosseum Arena
     const arenaRig = createBoardArena(renderer);
     scene.add(arenaRig.group);
     simRef.current.arenaRig = arenaRig;
@@ -639,6 +823,18 @@ export default function App() {
     const vfxPool = createVFXPool();
     scene.add(vfxPool.group);
     simRef.current.vfxPool = vfxPool;
+
+    // Holographic Temporal Echo Clone Mesh for 4D Spacetime Pincer Strikes during Duels!
+    const echoGeo = new THREE.CylinderGeometry(0.28, 0.36, 1.35, 16);
+    const echoMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.65,
+    });
+    const temporalEchoMesh = new THREE.Mesh(echoGeo, echoMat);
+    temporalEchoMesh.visible = false;
+    scene.add(temporalEchoMesh);
 
     // Populate all 32 articulated 3D chess warriors
     const sim = simRef.current;
@@ -720,20 +916,46 @@ export default function App() {
 
       if (sim.selectedPieceId) {
         const activePiece = sim.pieces.find((p) => p.id === sim.selectedPieceId);
-        const chosenMove = sim.validMoves.find(
-          (m) => m.to.row === coord.row && m.to.col === coord.col
-        );
+        // Prioritize captures/chrono-intercepts on that square, or moves into the selected targetMoveW/targetMoveZ slice
+        const chosenMove =
+          sim.validMoves.find(
+            (m) => m.to.row === coord.row && m.to.col === coord.col && m.isCapture
+          ) ||
+          sim.validMoves.find(
+            (m) =>
+              m.to.row === coord.row &&
+              m.to.col === coord.col &&
+              m.to.w === sim.targetMoveW &&
+              m.to.z === sim.targetMoveZ
+          ) ||
+          sim.validMoves.find((m) => m.to.row === coord.row && m.to.col === coord.col);
+
         if (activePiece && chosenMove) {
           executeChessMove(activePiece, chosenMove);
           return;
         }
       }
 
-      const clickedPiece = getPieceAt(sim.pieces, coord.row, coord.col);
+      const clickedPiece = getPieceAtProjected(
+        sim.pieces,
+        coord.row,
+        coord.col,
+        sim.activeSliceZ,
+        sim.activeSliceW
+      );
       if (clickedPiece && clickedPiece.faction === sim.turnFaction) {
         soundEngine.playChessSelect();
         sim.selectedPieceId = clickedPiece.id;
-        sim.validMoves = getValidMovesForPiece(clickedPiece, sim.pieces);
+        sim.targetMoveW = clickedPiece.w;
+        sim.targetMoveZ = clickedPiece.z;
+        setTargetMoveW(clickedPiece.w);
+        setTargetMoveZ(clickedPiece.z);
+        sim.validMoves = getValidMovesForPiece(
+          clickedPiece,
+          sim.pieces,
+          clickedPiece.z,
+          clickedPiece.w
+        );
         syncBoardHighlights();
       } else {
         sim.selectedPieceId = null;
@@ -766,6 +988,10 @@ export default function App() {
         triggerFighterAttack(human, 'H', addCallout);
       } else if (e.code === 'KeyU' || e.code === 'KeyC' || e.code === 'Enter') {
         triggerFighterAttack(human, 'S', addCallout);
+      } else if (e.code === 'KeyQ') {
+        triggerFighter4DPhaseShift(human, addCallout);
+      } else if (e.code === 'KeyE') {
+        triggerFighterTemporalEcho(human, addCallout);
       } else if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space') {
         triggerFighterJump(human);
       } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
@@ -815,7 +1041,6 @@ export default function App() {
     };
     window.addEventListener('resize', onResize);
 
-    // Helper to trigger 3D Slash Arcs & Aura Pillars when a fighter starts an attack
     const checkFighterActionVFX = (f: FighterRuntime, prevAction: FighterAction) => {
       if (f.action === prevAction) return;
       const worldX = sim.duelCenterWorld.x + f.x * 0.72;
@@ -848,6 +1073,16 @@ export default function App() {
       const elapsed = clock.getElapsedTime();
       const nowMs = performance.now();
 
+      // Rotate & project the 4D Tesseract (8-cell Hypercube) in the sky!
+      update4DTesseractProjection(arenaRig, elapsed, sim.activeSliceW, sim.activeSliceZ);
+
+      // Spin any active 4D Unseen Threat Sigils on the board
+      arenaRig.threatSigilMeshes.forEach((sigil) => {
+        if (sigil.visible) {
+          sigil.rotation.z += rawDelta * 2.2;
+        }
+      });
+
       // Drift ambient sanctuary embers upward gently
       const emberPos = arenaRig.ambientParticles.geometry.attributes.position as THREE.BufferAttribute;
       for (let i = 0; i < emberPos.count; i++) {
@@ -861,13 +1096,15 @@ export default function App() {
 
       // Update Phase Machine
       if (sim.phase === 'CHESS_VIEW') {
-        // Restore warm/cool broad studio lighting for Chessboard View
-        keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 2.2, 5, rawDelta);
-        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.65, 5, rawDelta);
-        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 1.35, 5, rawDelta);
-        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 1.4, 5, rawDelta);
+        temporalEchoMesh.visible = false;
 
-        // Turn off focused fight spotlights & volumetric cones smoothly
+        // Calibrated studio lighting for Chessboard View (tinted subtly by the active 4D slice!)
+        const targetKey = sim.activeSliceW === 0 && sim.activeSliceZ === 0 ? 1.65 : 1.35;
+        keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, targetKey, 5, rawDelta);
+        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.48, 5, rawDelta);
+        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.95, 5, rawDelta);
+        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.85, 5, rawDelta);
+
         arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 0, 8, rawDelta);
         arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 0, 8, rawDelta);
         arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 0, 10, rawDelta);
@@ -890,7 +1127,8 @@ export default function App() {
             rawDelta
           );
 
-        // Smoothly return all chess pieces (including any displaced bystanders) to their exact chess squares
+        // Position & render all 32 pieces with Single-3D-Slice 4D Perception!
+        // Pieces in the active (Z, W) slice are solid; pieces in adjacent 4D slices appear as floating 4D Apparitions with spinning Tesseract badges!
         for (const piece of sim.pieces) {
           const rig = sim.pieceRigs.get(piece.id);
           if (!rig) continue;
@@ -906,16 +1144,37 @@ export default function App() {
             bys.panickedTimer = 0;
           }
 
+          const isSameSlice = piece.w === sim.activeSliceW && piece.z === sim.activeSliceZ;
+          const wDiff = piece.w - sim.activeSliceW;
+          const zDiff = piece.z - sim.activeSliceZ;
+          const elevation4D = isSameSlice ? 0 : 0.36 * Math.abs(wDiff) + 0.55 * Math.abs(zDiff);
+
           boardToWorld(piece.row, piece.col, _vec3A);
-          rig.root.position.x = THREE.MathUtils.damp(rig.root.position.x, _vec3A.x, 10, rawDelta);
-          rig.root.position.y = THREE.MathUtils.damp(rig.root.position.y, 0, 10, rawDelta);
+          rig.root.position.x = THREE.MathUtils.damp(rig.root.position.x, _vec3A.x + wDiff * 0.14, 10, rawDelta);
+          rig.root.position.y = THREE.MathUtils.damp(rig.root.position.y, elevation4D, 10, rawDelta);
           rig.root.position.z = THREE.MathUtils.damp(rig.root.position.z, _vec3A.z, 10, rawDelta);
-          rig.root.scale.setScalar(THREE.MathUtils.damp(rig.root.scale.x, 1.0, 8, rawDelta));
+          rig.root.scale.setScalar(THREE.MathUtils.damp(rig.root.scale.x, isSameSlice ? 1.0 : 0.88, 8, rawDelta));
 
           const targetYaw = piece.faction === 'w' ? Math.PI : 0;
           rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, targetYaw, 8, rawDelta);
 
           rig.surpriseGroup.visible = false;
+          rig.tesseractBadge.visible = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
+          if (rig.tesseractBadge.visible) {
+            rig.tesseractBadge.rotation.y += rawDelta * 2.5;
+            rig.tesseractBadge.rotation.x += rawDelta * 1.8;
+          }
+
+          const targetOpacity = isSameSlice ? 1.0 : 0.34;
+          for (const mesh of rig.allStandardMeshes) {
+            const mat = mesh.material as THREE.MeshStandardMaterial;
+            if (Math.abs(mat.opacity - targetOpacity) > 0.01) {
+              mat.transparent = targetOpacity < 0.99;
+              mat.opacity = THREE.MathUtils.damp(mat.opacity, targetOpacity, 10, rawDelta);
+              mat.needsUpdate = true;
+            }
+          }
+
           rig.bodyPivot.rotation.x = Math.sin(elapsed * 2.2 + piece.col) * 0.03;
           rig.bodyPivot.rotation.y = 0;
           rig.bodyPivot.rotation.z = 0;
@@ -956,11 +1215,11 @@ export default function App() {
             setPhase('FIGHT_ACTIVE');
           }
 
-          // 1. CINEMATIC FIGHT LIGHTING: Dim ambient board lights into moody shadow & lock twin SpotLights onto the duelists!
-          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.24, 6, rawDelta);
+          // 1. CINEMATIC FIGHT LIGHTING (calibrated intensity so spotlights feel dramatic without washing out!)
+          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.22, 6, rawDelta);
           hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.14, 6, rawDelta);
           rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.45, 6, rawDelta);
-          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.2, 6, rawDelta);
+          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.18, 6, rawDelta);
 
           const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
           const atkWorldY = atk.y * 0.72;
@@ -972,31 +1231,29 @@ export default function App() {
 
           const midWorldX = (atkWorldX + defWorldX) * 0.5;
 
-          // Position SpotLights and Volumetric God-Ray Cones directly above the two fighters
           arenaRig.spotAttacker.position.set(atkWorldX - 0.6, 8.2, atkWorldZ + 1.2);
           arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.6, atkWorldZ);
-          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 32.0, 6, rawDelta);
+          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 18.0, 6, rawDelta);
 
           arenaRig.spotDefender.position.set(defWorldX + 0.6, 8.2, defWorldZ + 1.2);
           arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.6, defWorldZ);
-          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 32.0, 6, rawDelta);
+          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 18.0, 6, rawDelta);
 
           arenaRig.volumetricConeAttacker.position.copy(arenaRig.spotAttacker.position);
           arenaRig.volumetricConeAttacker.lookAt(arenaRig.spotAttacker.target.position);
           arenaRig.volumetricConeAttacker.rotateX(Math.PI / 2);
           (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity =
-            THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0.065, 5, rawDelta);
+            THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0.042, 5, rawDelta);
 
           arenaRig.volumetricConeDefender.position.copy(arenaRig.spotDefender.position);
           arenaRig.volumetricConeDefender.lookAt(arenaRig.spotDefender.target.position);
           arenaRig.volumetricConeDefender.rotateX(Math.PI / 2);
           (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity =
-            THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0.065, 5, rawDelta);
+            THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0.042, 5, rawDelta);
 
           arenaRig.clashPointLight.position.set(midWorldX, 1.35, sim.duelCenterWorld.z + 0.4);
-          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 1.2, 8, rawDelta);
+          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 0.8, 8, rawDelta);
 
-          // Elevate Duel Colosseum Ring around the contested square
           arenaRig.duelRingGroup.position.x = sim.duelCenterWorld.x;
           arenaRig.duelRingGroup.position.z = sim.duelCenterWorld.z;
           arenaRig.duelRingGroup.position.y = THREE.MathUtils.damp(
@@ -1008,12 +1265,26 @@ export default function App() {
           (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity =
             THREE.MathUtils.damp(
               (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity,
-              0.08,
+              0.06,
               5,
               rawDelta
             );
 
-          // 2. COMEDIC BYSTANDER PIECES: All other pieces stay on the board, watch the fight, and jump out of the way if the fighters get too close!
+          // Render Temporal Echo Hologram Clone if either fighter has bifurcated timelines!
+          const echoOwner = atk.temporalEchoTimerMs > 0 ? atk : def.temporalEchoTimerMs > 0 ? def : null;
+          if (echoOwner) {
+            temporalEchoMesh.visible = true;
+            temporalEchoMesh.position.set(
+              sim.duelCenterWorld.x + echoOwner.temporalEchoX * 0.72,
+              0.7,
+              sim.duelCenterWorld.z
+            );
+            temporalEchoMesh.rotation.y += rawDelta * 8;
+          } else {
+            temporalEchoMesh.visible = false;
+          }
+
+          // 2. COMEDIC BYSTANDER PIECES: All other pieces stay on the board, watch the fight, and jump out of the way if the fight comes close!
           for (const piece of sim.pieces) {
             if (piece.id === atk.piece.id || piece.id === def.piece.id) continue;
             const rig = sim.pieceRigs.get(piece.id);
@@ -1029,20 +1300,17 @@ export default function App() {
             const curWorldX = _vec3A.x + bys.offsetX;
             const curWorldZ = _vec3A.z + bys.offsetZ;
 
-            // Check distance to both fighters
             const distToAtk = Math.hypot(curWorldX - atkWorldX, curWorldZ - atkWorldZ);
             const distToDef = Math.hypot(curWorldX - defWorldX, curWorldZ - defWorldZ);
             const minFighterDist = Math.min(distToAtk, distToDef);
 
             const dangerRadius = 2.25;
             if (minFighterDist < dangerRadius) {
-              // Panic and hop out of the way!
               const threatX = distToAtk < distToDef ? atkWorldX : defWorldX;
               const threatZ = distToAtk < distToDef ? atkWorldZ : defWorldZ;
 
               let pushDirX = curWorldX - threatX;
               let pushDirZ = curWorldZ - threatZ;
-              // If threat is directly on the same Z-row, bias push perpendicular (along Z) so they jump clear of the horizontal fighting lane!
               if (Math.abs(pushDirZ) < 0.45) {
                 pushDirZ = piece.row < 4 ? -1.2 : 1.2;
               }
@@ -1060,20 +1328,17 @@ export default function App() {
               }
               bys.panickedTimer = 0.65;
             } else {
-              // Gently spring back toward original square if it's now safe
               const homeDistToAtk = Math.hypot(_vec3A.x - atkWorldX, _vec3A.z - atkWorldZ);
               const homeDistToDef = Math.hypot(_vec3A.x - defWorldX, _vec3A.z - defWorldZ);
               if (Math.min(homeDistToAtk, homeDistToDef) > dangerRadius + 0.6) {
                 bys.vx += -bys.offsetX * 5.0 * rawDelta;
                 bys.vz += -bys.offsetZ * 5.0 * rawDelta;
-                // Hop lightly while scurrying back to square
                 if (Math.hypot(bys.offsetX, bys.offsetZ) > 0.35 && bys.y <= 0.01) {
                   bys.vy = 3.2;
                 }
               }
             }
 
-            // Integrate bystander velocity & gravity
             bys.offsetX += bys.vx * rawDelta;
             bys.offsetZ += bys.vz * rawDelta;
             bys.vx *= Math.max(0, 1 - 6.5 * rawDelta);
@@ -1094,11 +1359,9 @@ export default function App() {
 
             rig.root.position.set(_vec3A.x + bys.offsetX, bys.y, _vec3A.z + bys.offsetZ);
 
-            // Rotate bystander to watch the fight!
             const lookAngle = Math.atan2(midWorldX - rig.root.position.x, sim.duelCenterWorld.z - rig.root.position.z);
             rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, lookAngle, 10, rawDelta);
 
-            // Expressive spectator animations (panicked arm flailing when jumping out of the way, or excited spectating!)
             const isPanicking = bys.panickedTimer > 0 || bys.y > 0.05;
             rig.surpriseGroup.visible = isPanicking;
             if (isPanicking) {
@@ -1116,7 +1379,7 @@ export default function App() {
             }
           }
 
-          // 3. Step Active Combat Simulation (with brief Hitstop support for meaty heavy impacts)
+          // 3. Step Active Combat Simulation
           if (sim.hitstopTimer > 0) {
             sim.hitstopTimer = Math.max(0, sim.hitstopTimer - rawDelta);
           } else if (sim.phase === 'FIGHT_ACTIVE') {
@@ -1145,7 +1408,6 @@ export default function App() {
             if (atk.isAI) updateFighterAI(atk, def, rawDelta, nowMs, addCallout);
             if (def.isAI) updateFighterAI(def, atk, rawDelta, nowMs, addCallout);
 
-            // Check if either fighter just initiated a slash/special to spawn 3D weapon trail VFX
             checkFighterActionVFX(atk, sim.prevAtkAction);
             checkFighterActionVFX(def, sim.prevDefAction);
             sim.prevAtkAction = atk.action;
@@ -1159,16 +1421,15 @@ export default function App() {
               const worldX = sim.duelCenterWorld.x + stepEvents.sparkWorldPos.x * 0.72;
               const worldY = stepEvents.sparkWorldPos.y;
               const worldZ = sim.duelCenterWorld.z;
-              spawnHitSparks(vfxPool, worldX, worldY, worldZ, stepEvents.sparkWorldPos.color, 18);
+              spawnHitSparks(vfxPool, worldX, worldY, worldZ, stepEvents.sparkWorldPos.color, 16);
 
-              // Flare the clash point light dramatically on impact!
               arenaRig.clashPointLight.color.setHex(stepEvents.sparkWorldPos.color);
-              arenaRig.clashPointLight.intensity = 14.0;
+              arenaRig.clashPointLight.intensity = 5.5;
 
               if (stepEvents.cameraShake >= 0.25) {
-                sim.hitstopTimer = 0.042; // Crisp 42ms fighting-game hitstop freeze on heavy/special blows!
-                spawnShockwave(vfxPool, worldX, 0.05, worldZ, stepEvents.sparkWorldPos.color, 4.8);
-                spawnGroundDebris(vfxPool, worldX, worldZ, 9);
+                sim.hitstopTimer = 0.042;
+                spawnShockwave(vfxPool, worldX, 0.05, worldZ, stepEvents.sparkWorldPos.color, 4.5);
+                spawnGroundDebris(vfxPool, worldX, worldZ, 8);
               }
             }
 
@@ -1187,8 +1448,8 @@ export default function App() {
               soundEngine.playKO();
 
               const koWorldX = sim.duelCenterWorld.x + loser.x * 0.72;
-              spawnShockwave(vfxPool, koWorldX, 0.05, sim.duelCenterWorld.z, 0xf59e0b, 7.5);
-              spawnGroundDebris(vfxPool, koWorldX, sim.duelCenterWorld.z, 16);
+              spawnShockwave(vfxPool, koWorldX, 0.05, sim.duelCenterWorld.z, 0xf59e0b, 6.5);
+              spawnGroundDebris(vfxPool, koWorldX, sim.duelCenterWorld.z, 14);
               spawnAuraPillar(vfxPool, sim.duelCenterWorld.x + winner.x * 0.72, sim.duelCenterWorld.z, 0xfef08a);
 
               const wasUpset =
@@ -1245,7 +1506,16 @@ export default function App() {
                 if (attackerWon) {
                   survivorPiece.row = sim.pendingMove.to.row;
                   survivorPiece.col = sim.pendingMove.to.col;
+                  survivorPiece.z = sim.pendingMove.to.z;
+                  survivorPiece.w = sim.pendingMove.to.w;
                   survivorPiece.hasMoved = true;
+                  survivorPiece.history.push({
+                    row: survivorPiece.row,
+                    col: survivorPiece.col,
+                    z: survivorPiece.z,
+                    w: survivorPiece.w,
+                    turn: sim.turnNumber + 1,
+                  });
 
                   if (
                     survivorPiece.type === 'p' &&
@@ -1276,7 +1546,7 @@ export default function App() {
                   id: `duel_${Date.now()}`,
                   turnNumber: sim.turnNumber,
                   summary: attackerWon
-                    ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq}`
+                    ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq} [${formatWName(sim.pendingMove!.to.w)}]`
                     : `UPSET AT ${sq}: Defending ${def.spec.chessName} slew Attacking ${atk.spec.chessName}!`,
                   detail: `${winnerRuntime.spec.warriorTitle} survived with ${survivorPiece?.hp ?? winnerRuntime.hp} HP (${survivorPiece?.kills ?? 1} Kills).`,
                   wasUpset,
@@ -1323,7 +1593,7 @@ export default function App() {
             syncBoardHighlights();
           }
 
-          // Position and animate the two dueling 3D rigs on the Duel Stage
+          // Position and animate the two dueling 3D rigs on the Duel Stage (with 4D W-Phase depth offset!)
           const fighterPairs: [FighterRuntime, ArticulatedPieceRig | undefined][] = [
             [atk, sim.pieceRigs.get(atk.piece.id)],
             [def, sim.pieceRigs.get(def.piece.id)],
@@ -1333,7 +1603,8 @@ export default function App() {
             if (!rig) continue;
             const targetWorldX = sim.duelCenterWorld.x + f.x * 0.72;
             const targetWorldY = f.y * 0.72;
-            const targetWorldZ = sim.duelCenterWorld.z;
+            const phaseOffsetZ = f.wPhaseTimerMs > 0 ? f.wPhaseOffset * 0.65 : 0;
+            const targetWorldZ = sim.duelCenterWorld.z + phaseOffsetZ;
 
             rig.root.position.x = THREE.MathUtils.damp(
               rig.root.position.x,
@@ -1369,7 +1640,6 @@ export default function App() {
             animateFighterRig(rig, f, elapsed, rawDelta);
           }
 
-          // Smoothly glide camera to 2.5D Fighting Game Framing tracking midpoint & separation
           const midX = sim.duelCenterWorld.x + ((atk.x + def.x) * 0.5) * 0.72;
           const midY = 1.05 + Math.max(atk.y, def.y) * 0.25;
           const midZ = sim.duelCenterWorld.z;
@@ -1460,22 +1730,22 @@ export default function App() {
           }}
           className="font-display text-lg font-bold tracking-wider text-amber-400 whitespace-nowrap shrink-0"
         >
-          CROWNBREAKER
+          CROWNBREAKER 4D
         </a>
 
         {/* Zone 2: 4 concise single-line navigation links */}
         <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-slate-300">
           <button
+            onClick={handleTrigger4DHyperScenario}
+            className="hover:text-purple-400 text-purple-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            4D Hyper-Ambush Demo
+          </button>
+          <button
             onClick={handleTriggerFeaturedBoardClash}
             className="hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Pawn vs Queen Clash
-          </button>
-          <button
-            onClick={() => handleLaunchExhibitionDuel('q', 'p')}
-            className="hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Queen vs Pawn Duel
           </button>
           <button
             onClick={() => setCodexOpen(true)}
@@ -1508,36 +1778,91 @@ export default function App() {
         className="absolute inset-0 top-[53px] z-0 w-full h-[calc(100vh-53px)] cursor-grab active:cursor-grabbing"
       />
 
-      {/* 3. Subtle Top-Left Tactical Status & Clash Preview (during CHESS_VIEW) */}
+      {/* 3. Subtle Top-Left Tactical Status, 4D Slice Inspector & Unseen 4D Threat Radar (during CHESS_VIEW) */}
       {phase === 'CHESS_VIEW' && (
-        <div className="pointer-events-none fixed top-[68px] left-6 z-20 flex flex-col gap-2 max-w-sm">
+        <div className="pointer-events-auto fixed top-[68px] left-6 z-20 flex flex-col gap-2 max-w-sm">
           <div className="bg-[#0B0E17]/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl">
-            <div className="text-[11px] font-mono text-slate-400">
-              TURN {turnNumber} · {gameMode === 'vs_ai' ? 'SOLO CAMPAIGN VS AI' : '2-PLAYER PASS & PLAY'}
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span>TURN {turnNumber} · {gameMode === 'vs_ai' ? 'VS AI' : '2P LOCAL'}</span>
+              <span className="text-purple-300">
+                SLICE: {formatWName(activeSliceW)} · {formatZName(activeSliceZ)}
+              </span>
             </div>
             <div className="font-display text-base font-bold text-white mt-0.5">
               {turnFaction === 'w' ? 'Solaris Order (White) to Move' : 'Obsidian Dominion (Black) to Move'}
             </div>
             <div className="text-xs text-slate-400 mt-1">
-              Click any piece to move. Capturing triggers a spotlight duel right on the board—and nearby pieces will scramble out of the way!
+              You observe one 3D slice at a time. Translucent pieces with spinning Tesseracts lurk in adjacent 4th-dimensional folds (<span className="text-purple-300">-W / +W</span>)!
             </div>
           </div>
 
+          {/* Unseen 4D Cross-Dimensional Threat Alert */}
+          {unseenThreats.length > 0 && (
+            <div className="bg-[#0B0E17]/95 border border-purple-500/60 rounded-xl px-4 py-2.5 shadow-xl">
+              <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold text-purple-300">
+                <AlertTriangle className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                <span>{unseenThreats.length} UNSEEN 4D THREAT{unseenThreats.length > 1 ? 'S' : ''} ON THIS SLICE!</span>
+              </div>
+              <div className="text-[11px] text-slate-300 mt-1">
+                {unseenThreats[0].axisDescription} threatens square{' '}
+                <span className="font-mono font-bold text-white">
+                  {formatSquareName({ row: unseenThreats[0].targetRow, col: unseenThreats[0].targetCol })}
+                </span>
+                .
+              </div>
+              <button
+                onClick={() =>
+                  handleSelect4DSlice(unseenThreats[0].attacker.w, unseenThreats[0].attacker.z, true)
+                }
+                className="mt-1.5 px-2.5 py-1 bg-purple-950/90 hover:bg-purple-900 border border-purple-500/40 rounded text-[11px] font-mono text-purple-200 transition-colors cursor-pointer"
+              >
+                Shift View to Attacker&apos;s 4D Slice ({formatWName(unseenThreats[0].attacker.w)})
+              </button>
+            </div>
+          )}
+
+          {/* Selected Piece + 4D Move Destination Slice Projector */}
           {selectedPiece && (
             <div className="bg-[#0B0E17]/95 border border-amber-500/40 rounded-xl px-4 py-3 shadow-xl">
               <div className="flex items-center justify-between text-xs font-mono text-amber-400">
                 <span>
-                  {ARCHETYPES[selectedPiece.type].chessName.toUpperCase()} · VAL {ARCHETYPES[selectedPiece.type].tacticalValue}
+                  {ARCHETYPES[selectedPiece.type].chessName.toUpperCase()} · W={selectedPiece.w}, Z={selectedPiece.z}
                 </span>
                 <span className="tabular-nums">
-                  {selectedPiece.hp}/{selectedPiece.maxHp} HP · {Math.round(selectedPiece.meter)}% METER
+                  {selectedPiece.hp}/{selectedPiece.maxHp} HP
                 </span>
               </div>
               <div className="font-display text-sm font-bold text-white mt-0.5">
                 {ARCHETYPES[selectedPiece.type].warriorTitle}
               </div>
-              <div className="text-[11px] text-slate-300 mt-1">
-                Special: <span className="text-amber-300">{ARCHETYPES[selectedPiece.type].special.name}</span> ({ARCHETYPES[selectedPiece.type].special.meterCost}% Meter)
+
+              {/* 4D Move Projection Selector */}
+              <div className="mt-2 pt-2 border-t border-slate-800">
+                <div className="text-[10px] font-mono text-slate-400 mb-1.5 flex items-center gap-1">
+                  <Orbit className="w-3 h-3 text-purple-400" />
+                  <span>PROJECT 4D MOVE INTO W-AXIS SLICE:</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      [-1, 'Kata (-W)'],
+                      [0, 'Prime (0)'],
+                      [1, 'Ana (+W)'],
+                    ] as [number, string][]
+                  ).map(([wVal, label]) => (
+                    <button
+                      key={wVal}
+                      onClick={() => handleSelect4DSlice(wVal, targetMoveZ, false)}
+                      className={`px-2 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer ${
+                        targetMoveW === wVal
+                          ? 'bg-purple-600 text-white font-semibold'
+                          : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -1545,13 +1870,13 @@ export default function App() {
           {hoveredCaptureMove && hoveredCaptureMove.targetPiece && selectedPiece && (
             <div className="bg-[#0B0E17]/95 border border-rose-500/70 rounded-xl px-4 py-3 shadow-2xl">
               <div className="text-[11px] font-mono font-bold text-rose-400">
-                IMMINENT DUEL AT SQUARE {formatSquareName(hoveredCaptureMove.to)}
+                {hoveredCaptureMove.dimensionLabel || `IMMINENT DUEL AT SQUARE ${formatSquareName(hoveredCaptureMove.to)}`}
               </div>
               <div className="font-display text-sm font-bold text-white mt-0.5">
                 {ARCHETYPES[selectedPiece.type].chessName} ({selectedPiece.hp} HP) vs {ARCHETYPES[hoveredCaptureMove.targetPiece.type].chessName} ({hoveredCaptureMove.targetPiece.hp} HP)
               </div>
               <div className="text-[11px] text-slate-300 mt-1">
-                Click red square to ignite the Arena Spotlights! Even a Pawn can defeat a Queen with Parries and Underdog Valor!
+                Click target square to enter the 3D Arena! Use <span className="text-purple-300">4D Phase (Q)</span> and <span className="text-cyan-300">Chrono-Echo (E)</span> in combat!
               </div>
             </div>
           )}
@@ -1621,49 +1946,59 @@ export default function App() {
 
       {/* 7. Unified Collapsible Bottom Control Dock (during CHESS_VIEW) */}
       {phase === 'CHESS_VIEW' && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(940px,94vw)] flex flex-col items-center pointer-events-auto">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(1020px,95vw)] flex flex-col items-center pointer-events-auto">
           <button
             onClick={() => setDockCollapsed((prev) => !prev)}
             className="mb-1 px-3 py-1 text-xs font-mono text-slate-300 bg-[#0B0E17]/95 border border-slate-800 rounded-t-lg hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            {dockCollapsed ? '▴ Show Tactical Dock & Instant Clash (H)' : '▾ Hide Controls (H)'}
+            {dockCollapsed ? '▴ Show 4D Hypercube Navigator & Instant Clash (H)' : '▾ Hide Controls (H)'}
           </button>
 
           {!dockCollapsed && (
-            <div className="w-full bg-[#0B0E17]/95 border border-slate-800 rounded-xl px-4 py-3 shadow-2xl flex flex-wrap items-center justify-between gap-4">
+            <div className="w-full bg-[#0B0E17]/95 border border-slate-800 rounded-xl px-4 py-3 shadow-2xl flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleTriggerFeaturedBoardClash}
-                  className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   title="Immediately trigger a Pawn vs Queen capture duel on the board!"
                 >
                   <Swords className="w-3.5 h-3.5" />
-                  Instant Clash: Pawn vs Queen
+                  Pawn vs Queen Clash
+                </button>
+                <button
+                  onClick={handleTrigger4DHyperScenario}
+                  className="px-3 py-2 bg-purple-950/90 hover:bg-purple-900 border border-purple-500/50 text-purple-200 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Shift pieces across the 4th spatial dimension (Ana +W / Kata -W) to experience Unseen 4D Threats & Cross-Dimensional Ambushes!"
+                >
+                  <Orbit className="w-3.5 h-3.5 text-purple-400" />
+                  4D Hyper-Ambush
                 </button>
                 <button
                   onClick={() => setCodexOpen(true)}
                   className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-medium text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  Custom Matchup & Combos
+                  Matchups
                 </button>
               </div>
 
+              {/* 4D Hypercube W-Slice & Z-Stratum Navigator */}
               <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
-                <Eye className="w-3.5 h-3.5 text-slate-400 ml-1.5 mr-1" />
+                <Layers className="w-3.5 h-3.5 text-purple-400 ml-1.5 mr-1" />
                 {(
                   [
-                    ['white_orbit', 'Perspective'],
-                    ['top_tactical', 'Top-Down'],
-                    ['cinematic_angle', 'Flank View'],
-                  ] as [CameraPreset, string][]
-                ).map(([preset, label]) => (
+                    [-1, 0, 'Kata (-W)'],
+                    [0, 0, 'Prime (W=0)'],
+                    [1, 0, 'Ana (+W)'],
+                    [0, 1, 'Astral (+Z)'],
+                  ] as [number, number, string][]
+                ).map(([wVal, zVal, label]) => (
                   <button
-                    key={preset}
-                    onClick={() => handleSelectCameraPreset(preset)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      cameraPreset === preset
-                        ? 'bg-slate-800 text-amber-400 shadow-sm'
+                    key={`${wVal}_${zVal}`}
+                    onClick={() => handleSelect4DSlice(wVal, zVal, true)}
+                    className={`px-2.5 py-1 text-xs font-mono rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      activeSliceW === wVal && activeSliceZ === zVal
+                        ? 'bg-purple-900/90 text-purple-200 border border-purple-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-slate-200'
                     }`}
                   >
@@ -1672,34 +2007,29 @@ export default function App() {
                 ))}
               </div>
 
+              {/* Camera Angle Presets + Audio/Reset */}
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
-                  <button
-                    onClick={() => {
-                      setGameMode('vs_ai');
-                      simRef.current.gameMode = 'vs_ai';
-                    }}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      gameMode === 'vs_ai'
-                        ? 'bg-slate-800 text-white'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    vs AI
-                  </button>
-                  <button
-                    onClick={() => {
-                      setGameMode('pvp');
-                      simRef.current.gameMode = 'pvp';
-                    }}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      gameMode === 'pvp'
-                        ? 'bg-slate-800 text-white'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    2P Local
-                  </button>
+                <div className="hidden lg:flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+                  <Eye className="w-3.5 h-3.5 text-slate-400 ml-1.5 mr-1" />
+                  {(
+                    [
+                      ['white_orbit', 'Orbit'],
+                      ['top_tactical', 'Top'],
+                      ['cinematic_angle', 'Flank'],
+                    ] as [CameraPreset, string][]
+                  ).map(([preset, label]) => (
+                    <button
+                      key={preset}
+                      onClick={() => handleSelectCameraPreset(preset)}
+                      className={`px-2 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        cameraPreset === preset
+                          ? 'bg-slate-800 text-amber-400 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
 
                 <button
@@ -1725,7 +2055,7 @@ export default function App() {
                 <div className="w-full border-t border-slate-800/80 pt-2 flex items-center justify-between text-xs text-slate-400">
                   <div className="truncate">
                     <span className="font-mono text-amber-400 mr-2">
-                      CHRONICLE:
+                      4D CHRONICLE:
                     </span>
                     <span className="text-slate-200 font-medium">
                       {battleLogs[0].summary}

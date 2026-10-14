@@ -19,7 +19,6 @@ export function createFighterRuntime(
   isAI: boolean
 ): FighterRuntime {
   const spec = ARCHETYPES[piece.type];
-  // Attacker gets Ambush Initiative (+20% starting tactical meter boost)
   const initialMeter = Math.min(100, piece.meter + (isAttacker ? 20 : 10));
 
   return {
@@ -52,6 +51,13 @@ export function createFighterRuntime(
     superArmorActive: false,
     invulnerableTimerMs: 0,
     hitFlashTimerMs: 0,
+    wPhaseOffset: 0,
+    wPhaseTimerMs: 0,
+    wPhaseCooldownMs: 0,
+    temporalEchoTimerMs: 0,
+    temporalEchoX: 0,
+    temporalEchoFacing: 1,
+    temporalEchoHasStruck: false,
   };
 }
 
@@ -76,6 +82,88 @@ function findMatchingCombo(
   return { exact, partial };
 }
 
+/**
+ * 4D Hypercube Combat Mechanic #1: Ana/Kata W-Axis Phase Shift!
+ * Shifts the fighter into the 4th spatial dimension (W = +1 or -1) for 680ms,
+ * allowing them to pass right through 3D attacks and cross up behind the opponent!
+ */
+export function triggerFighter4DPhaseShift(
+  fighter: FighterRuntime,
+  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
+): boolean {
+  if (
+    fighter.wPhaseTimerMs > 0 ||
+    fighter.wPhaseCooldownMs > 0 ||
+    fighter.action === 'hitstun' ||
+    fighter.action === 'knockdown' ||
+    fighter.action === 'victory' ||
+    fighter.action === 'defeat'
+  ) {
+    return false;
+  }
+
+  fighter.wPhaseOffset = fighter.wPhaseOffset === 1 ? -1 : 1;
+  fighter.wPhaseTimerMs = 680;
+  fighter.wPhaseCooldownMs = 2200;
+  fighter.vx = fighter.facing * (fighter.spec.dashSpeed * 0.95);
+  fighter.action = 'dash_fwd';
+  fighter.actionTimerMs = 0;
+  fighter.actionDurationMs = 340;
+
+  soundEngine.playSpecialActivate();
+  onCallout({
+    text: fighter.wPhaseOffset > 0 ? '4D ANA PHASE SHIFT (+W)' : '4D KATA PHASE SHIFT (-W)',
+    subtext: 'INTANGIBLE TO 3D STRIKES · PHASE THROUGH FOE',
+    x: fighter.x,
+    y: 2.15,
+    color: '#c084fc',
+  });
+  return true;
+}
+
+/**
+ * 4D Spacetime Combat Mechanic #2: Temporal Echo Clone (x, y, z, t)!
+ * Leaves a Past-Self Temporal Hologram at the current coordinate while vaulting across the enemy
+ * for a simultaneous two-timeline pincer strike!
+ */
+export function triggerFighterTemporalEcho(
+  fighter: FighterRuntime,
+  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
+): boolean {
+  if (
+    fighter.temporalEchoTimerMs > 0 ||
+    fighter.meter < 25 ||
+    fighter.action === 'hitstun' ||
+    fighter.action === 'knockdown' ||
+    fighter.action === 'victory' ||
+    fighter.action === 'defeat'
+  ) {
+    return false;
+  }
+
+  fighter.meter -= 25;
+  fighter.temporalEchoTimerMs = 750;
+  fighter.temporalEchoX = fighter.x;
+  fighter.temporalEchoFacing = fighter.facing;
+  fighter.temporalEchoHasStruck = false;
+
+  // Propel present self across to pincer the opponent from the other side!
+  fighter.vx = fighter.facing * (fighter.spec.dashSpeed * 1.15);
+  fighter.vy = 5.5;
+  fighter.wPhaseTimerMs = 350; // Brief 4D phase so we vault cleanly past the opponent
+  fighter.wPhaseOffset = 1;
+
+  soundEngine.playSpecialActivate();
+  onCallout({
+    text: 'TEMPORAL ECHO BIFURCATION!',
+    subtext: 'PAST & PRESENT PINCER ATTACK (Δt = -1)',
+    x: fighter.x,
+    y: 2.25,
+    color: '#38bdf8',
+  });
+  return true;
+}
+
 export function triggerFighterAttack(
   fighter: FighterRuntime,
   input: AttackInput,
@@ -90,7 +178,12 @@ export function triggerFighterAttack(
     return false;
   }
 
-  // Check if currently in an attack: allow combo cancel after startup + 40% active frames
+  // Attacking brings the fighter back into Prime 3D space (W=0) to materialize the strike!
+  if (fighter.wPhaseTimerMs > 0) {
+    fighter.wPhaseTimerMs = 0;
+    fighter.wPhaseOffset = 0;
+  }
+
   const isAttacking =
     fighter.action.startsWith('light') ||
     fighter.action.startsWith('heavy') ||
@@ -110,7 +203,6 @@ export function triggerFighterAttack(
     fighter.superArmorActive = fighter.spec.type === 'r' || fighter.spec.type === 'k';
     fighter.comboBuffer = [];
 
-    // Knight jumps upward during L-Shift Sky Drop
     if (fighter.spec.type === 'n') {
       fighter.vy = 11.5;
       fighter.vx = fighter.facing * 6.5;
@@ -129,7 +221,6 @@ export function triggerFighterAttack(
     return true;
   }
 
-  // Can we chain a combo?
   if (isAttacking) {
     const canCancel =
       fighter.action !== 'combo_finisher' &&
@@ -143,7 +234,6 @@ export function triggerFighterAttack(
   const { exact, partial } = findMatchingCombo(fighter.spec.combos, nextBuffer);
 
   if (exact) {
-    // Execute Named Combo Finisher!
     fighter.comboBuffer = [];
     fighter.comboWindowTimerMs = 0;
     fighter.activeComboRecipe = exact;
@@ -167,7 +257,6 @@ export function triggerFighterAttack(
     return true;
   }
 
-  // Otherwise normal Light or Heavy step (either part of a partial combo or fresh start)
   const finalBuffer = partial ? nextBuffer : [input];
   fighter.comboBuffer = finalBuffer;
   fighter.comboWindowTimerMs = COMBO_CHAIN_WINDOW_MS;
@@ -209,13 +298,13 @@ export function triggerFighterDash(fighter: FighterRuntime, forward: boolean) {
   const dir = forward ? fighter.facing : -fighter.facing;
   fighter.vx = dir * fighter.spec.dashSpeed;
   if (!forward) {
-    fighter.invulnerableTimerMs = 110; // Backdash evasion frames
+    fighter.invulnerableTimerMs = 110;
   }
   soundEngine.playSwing(false);
 }
 
 export function triggerFighterJump(fighter: FighterRuntime) {
-  if (fighter.y > 0.05) return; // Already airborne
+  if (fighter.y > 0.05) return;
   if (
     fighter.action === 'hitstun' ||
     fighter.action === 'knockdown' ||
@@ -251,7 +340,7 @@ export function stepCombatSimulation(
 
   const fighters = [f1, f2];
 
-  // 1. Update timers, physics, and facing
+  // 1. Update timers, 4D phase timers, physics, and facing
   for (let i = 0; i < 2; i++) {
     const f = fighters[i];
     const opp = fighters[1 - i];
@@ -269,23 +358,66 @@ export function stepCombatSimulation(
     if (f.hitFlashTimerMs > 0) {
       f.hitFlashTimerMs = Math.max(0, f.hitFlashTimerMs - dtMs);
     }
+    if (f.wPhaseCooldownMs > 0) {
+      f.wPhaseCooldownMs = Math.max(0, f.wPhaseCooldownMs - dtMs);
+    }
+    if (f.wPhaseTimerMs > 0) {
+      f.wPhaseTimerMs = Math.max(0, f.wPhaseTimerMs - dtMs);
+      if (f.wPhaseTimerMs === 0) {
+        f.wPhaseOffset = 0;
+      }
+    }
 
-    // Recoverable HP slowly drains toward actual HP unless rallying
+    // Check Temporal Echo Clone Strike!
+    if (f.temporalEchoTimerMs > 0) {
+      f.temporalEchoTimerMs = Math.max(0, f.temporalEchoTimerMs - dtMs);
+      if (!f.temporalEchoHasStruck && f.temporalEchoTimerMs <= 420) {
+        f.temporalEchoHasStruck = true;
+        const distFromEcho = Math.abs(opp.x - f.temporalEchoX);
+        if (distFromEcho <= f.spec.heavy.range * 1.15 && opp.hp > 0) {
+          resolveStrikeImpact(
+            f,
+            opp,
+            {
+              damage: 16,
+              chipDamage: 4,
+              hitstunMs: 460,
+              blockstunMs: 220,
+              knockback: 2.2,
+              launchY: 4.5,
+              unblockable: false,
+              effect: 'launch',
+              isSpecial: false,
+              underdogBonusPct: 0,
+              canHit4DPhase: true,
+            },
+            nowMs,
+            events,
+            onCallout
+          );
+          onCallout({
+            text: 'CHRONO-ECHO PINCER HIT!',
+            subtext: 'PAST SELF LANDED CROSS-TIMELINE STRIKE',
+            x: f.temporalEchoX,
+            y: 1.95,
+            color: '#38bdf8',
+          });
+        }
+      }
+    }
+
     if (f.recoverableHp > f.hp) {
       f.recoverableHp = Math.max(f.hp, f.recoverableHp - dtSeconds * 8);
     }
 
-    // Regenerate Guard Gauge slowly when not blocking
     if (f.action !== 'block') {
       f.guardGauge = Math.min(100, f.guardGauge + dtSeconds * 14);
     }
 
-    // Horizontal velocity & friction
     f.x += f.vx * dtSeconds;
     const friction = f.y > 0.05 ? 2.5 : 10.5;
     f.vx *= Math.max(0, 1 - friction * dtSeconds);
 
-    // Vertical velocity & gravity
     if (f.y > 0 || f.vy !== 0) {
       f.y += f.vy * dtSeconds;
       f.vy -= GRAVITY * dtSeconds;
@@ -298,7 +430,6 @@ export function stepCombatSimulation(
       }
     }
 
-    // Wall bounce if knocked into the arena edge at high speed
     if (Math.abs(f.x) >= ARENA_HALF_WIDTH) {
       const clampedX = Math.sign(f.x) * ARENA_HALF_WIDTH;
       if (f.action === 'hitstun' && Math.abs(f.vx) > 6.5) {
@@ -317,17 +448,18 @@ export function stepCombatSimulation(
       f.x = clampedX;
     }
 
-    // Prevent overlapping on the ground
+    // Prevent overlapping on the ground ONLY if neither fighter is 4D Phase-Shifted!
+    // If either fighter is in 4D W-Phase, they pass right through each other for a 4D cross-up!
+    const eitherPhased = f.wPhaseTimerMs > 0 || opp.wPhaseTimerMs > 0;
     const dist = f.x - opp.x;
     const minSep = 0.92;
-    if (Math.abs(dist) < minSep && Math.abs(f.y - opp.y) < 0.9) {
+    if (!eitherPhased && Math.abs(dist) < minSep && Math.abs(f.y - opp.y) < 0.9) {
       const push = (minSep - Math.abs(dist)) * 0.5;
       const dir = dist >= 0 ? 1 : -1;
       f.x = Math.max(-ARENA_HALF_WIDTH, Math.min(ARENA_HALF_WIDTH, f.x + dir * push));
       opp.x = Math.max(-ARENA_HALF_WIDTH, Math.min(ARENA_HALF_WIDTH, opp.x - dir * push));
     }
 
-    // Update facing when in neutral states
     if (
       f.action === 'idle' ||
       f.action === 'walk_fwd' ||
@@ -337,7 +469,6 @@ export function stepCombatSimulation(
       f.facing = opp.x >= f.x ? 1 : -1;
     }
 
-    // Action completion return to neutral
     if (
       f.action !== 'idle' &&
       f.action !== 'walk_fwd' &&
@@ -364,7 +495,6 @@ export function stepCombatSimulation(
 
     if (def.hp <= 0 || atk.hp <= 0) continue;
 
-    // Special Move Multi-Hit check
     if (atk.action === 'special' && atk.specialHitsRemaining > 0) {
       const sp = atk.spec.special;
       const elapsedActive = atk.actionTimerMs - sp.startupMs;
@@ -397,6 +527,7 @@ export function stepCombatSimulation(
                 effect: atk.specialHitsRemaining === 0 ? 'launch' : undefined,
                 isSpecial: true,
                 underdogBonusPct,
+                canHit4DPhase: true, // Specials cleave across 4D space!
               },
               nowMs,
               events,
@@ -407,7 +538,6 @@ export function stepCombatSimulation(
       }
     }
 
-    // Standard Light / Heavy / Combo Finisher Hit Check
     const isLight = atk.action.startsWith('light');
     const isHeavy = atk.action.startsWith('heavy');
     const isFinisher = atk.action === 'combo_finisher';
@@ -446,6 +576,7 @@ export function stepCombatSimulation(
               effect: isFinisher ? atk.activeComboRecipe?.effect : undefined,
               isSpecial: false,
               underdogBonusPct: 0,
+              canHit4DPhase: isFinisher, // Combo Finishers can catch 4D Phase-Shifted foes!
             },
             nowMs,
             events,
@@ -473,11 +604,26 @@ function resolveStrikeImpact(
     effect?: ComboRecipe['effect'];
     isSpecial: boolean;
     underdogBonusPct: number;
+    canHit4DPhase?: boolean;
   },
   nowMs: number,
   events: CombatStepEvents,
   onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
 ) {
+  // Check if Defender is shifted into the 4th spatial dimension (W != 0)!
+  if (def.wPhaseTimerMs > 0 && !strike.canHit4DPhase) {
+    def.meter = Math.min(100, def.meter + 14);
+    soundEngine.playSwing(false);
+    onCallout({
+      text: '4D PHASE EVASION!',
+      subtext: '3D ATTACK PASSED THROUGH W-FOLD · +14% METER',
+      x: def.x,
+      y: 2.05,
+      color: '#c084fc',
+    });
+    return;
+  }
+
   const isBlocking = def.action === 'block' && !strike.unblockable;
 
   // Check Perfect Parry (< 175ms since pressing Block)
@@ -486,7 +632,7 @@ function resolveStrikeImpact(
     def.actionTimerMs = 0;
     def.actionDurationMs = 220;
     def.meter = Math.min(100, def.meter + 24);
-    def.hp = Math.min(def.maxHp, def.hp + 5); // Slight rally heal on parry
+    def.hp = Math.min(def.maxHp, def.hp + 5);
     atk.vx = -atk.facing * 3.5;
 
     soundEngine.playBlock(true);
@@ -502,7 +648,6 @@ function resolveStrikeImpact(
     return;
   }
 
-  // Guard Crush effect breaks block!
   if (isBlocking && strike.effect !== 'guard_crush') {
     const finalChip = strike.effect === 'pierce' ? Math.round(strike.damage * 0.5) : strike.chipDamage;
     def.hp = Math.max(1, def.hp - finalChip);
@@ -511,7 +656,6 @@ function resolveStrikeImpact(
     def.vx = atk.facing * strike.knockback * 0.55;
 
     if (def.guardGauge <= 0) {
-      // Guard Broken!
       def.guardGauge = 50;
       def.action = 'hitstun';
       def.actionTimerMs = 0;
@@ -530,8 +674,6 @@ function resolveStrikeImpact(
     return;
   }
 
-  // Clean Hit!
-  // Combo scaling so infinite loops don't 1-shot, while rewarding 3-5 hit combos
   const scaling = Math.max(0.45, 1 - def.hitCount * 0.08);
   const actualDamage = Math.max(2, Math.round(strike.damage * scaling));
 
@@ -540,14 +682,14 @@ function resolveStrikeImpact(
   def.comboDamageAccum += actualDamage;
   def.hitFlashTimerMs = 130;
   def.meter = Math.min(100, def.meter + 8);
+  def.wPhaseTimerMs = 0;
+  def.wPhaseOffset = 0;
 
-  // Rally tiny bit of recoverable HP for attacker on aggressive combos
   if (atk.hp < atk.recoverableHp) {
     atk.hp = Math.min(atk.recoverableHp, atk.hp + Math.ceil(actualDamage * 0.15));
   }
 
   if (def.superArmorActive && !strike.isSpecial && strike.effect !== 'guard_crush') {
-    // Super-armor absorbs the hitstun!
     soundEngine.playHit('light');
     events.sparkWorldPos = { x: def.x, y: 1.1, color: 0xf59e0b };
     onCallout({
@@ -560,14 +702,12 @@ function resolveStrikeImpact(
     return;
   }
 
-  // Apply hitstun & physics
   def.action = strike.launchY > 4.0 ? 'knockdown' : 'hitstun';
   def.actionTimerMs = 0;
   def.actionDurationMs = strike.hitstunMs;
   def.superArmorActive = false;
 
   if (strike.effect === 'vortex') {
-    // Pull opponent toward attacker
     def.vx = -atk.facing * 3.8;
     def.vy = 3.2;
   } else {
@@ -625,7 +765,6 @@ export function updateFighterAI(
   const dist = Math.abs(opponent.x - ai.x);
   const preferredRange = ai.spec.light.range * 0.92;
 
-  // Defensive reaction if opponent is swinging right in front of AI
   const oppAttacking =
     opponent.action.startsWith('light') ||
     opponent.action.startsWith('heavy') ||
@@ -634,8 +773,13 @@ export function updateFighterAI(
 
   if (oppAttacking && dist < opponent.spec.heavy.range * 1.15) {
     if (ai.action === 'idle' || ai.action === 'walk_fwd' || ai.action === 'walk_back') {
-      if (Math.random() < 0.38) {
-        ai.lastBlockPressTime = nowMs - 80; // Occasional smart guard
+      // AI can either block OR 4D Phase-Shift through the attack!
+      if (ai.wPhaseCooldownMs <= 0 && Math.random() < 0.16) {
+        triggerFighter4DPhaseShift(ai, onCallout);
+        return;
+      }
+      if (Math.random() < 0.36) {
+        ai.lastBlockPressTime = nowMs - 80;
         ai.action = 'block';
         ai.vx = 0;
         return;
@@ -645,7 +789,6 @@ export function updateFighterAI(
     ai.action = 'idle';
   }
 
-  // If currently mid-combo, chain the next hit of one of its archetype recipes!
   const isAiAttacking = ai.action.startsWith('light') || ai.action.startsWith('heavy');
   if (isAiAttacking && ai.actionTimerMs >= ai.actionDurationMs * 0.48) {
     if (dist <= ai.spec.heavy.range * 1.15 && Math.random() < 0.45) {
@@ -660,7 +803,6 @@ export function updateFighterAI(
     return;
   }
 
-  // Unleash Special Move if meter is full and within range!
   if (
     ai.meter >= ai.spec.special.meterCost &&
     dist <= ai.spec.special.range * 0.88 &&
@@ -670,7 +812,6 @@ export function updateFighterAI(
     return;
   }
 
-  // Spacing & Footsies
   if (dist > preferredRange + 0.35) {
     if (dist > 3.6 && Math.random() < dtSeconds * 1.5) {
       triggerFighterDash(ai, true);
@@ -679,7 +820,6 @@ export function updateFighterAI(
       ai.vx = ai.facing * ai.spec.walkSpeed;
     }
   } else {
-    // In strike range!
     ai.vx = 0;
     const roll = Math.random();
     if (roll < dtSeconds * 4.2) {
