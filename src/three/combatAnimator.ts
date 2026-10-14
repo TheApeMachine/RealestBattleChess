@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { FighterRuntime } from '../types/game';
-import { ArticulatedPieceRig } from './pieceModels';
+import { ArticulatedPieceRig, FirstPersonViewmodelRig } from './pieceModels';
 
 export interface VFXPool {
   group: THREE.Group;
@@ -613,12 +613,15 @@ export function animateFighterRig(
   headGroup.rotation.x = THREE.MathUtils.damp(headGroup.rotation.x, targetHeadX, k, dt);
   capePivot.rotation.x = THREE.MathUtils.damp(capePivot.rotation.x, targetCapeX, 14, dt);
 
-  // 4D W-Phase Shift visual displacement & translucency
+  // 4D W-Phase Shift visual displacement & Quantum Superposition Rings
   const isPhased4D = fighter.wPhaseTimerMs > 0;
   rig.tesseractBadge.visible = isPhased4D || fighter.temporalEchoTimerMs > 0;
+  rig.quantumWaveGroup.visible = isPhased4D || fighter.temporalEchoTimerMs > 0;
   if (rig.tesseractBadge.visible) {
     rig.tesseractBadge.rotation.y += dt * 4.5;
     rig.tesseractBadge.rotation.x += dt * 3.2;
+    rig.quantumWaveGroup.rotation.y += dt * 3.8;
+    rig.quantumWaveGroup.rotation.z += dt * 2.6;
   }
 
   for (const mesh of rig.allStandardMeshes) {
@@ -640,5 +643,155 @@ export function animateFighterRig(
   for (const glowMesh of rig.weaponGlowMeshes) {
     const mat = glowMesh.material as THREE.MeshStandardMaterial;
     mat.emissiveIntensity = isPowerMove ? 2.1 : fighter.hitFlashTimerMs > 0 ? 2.6 : 1.1;
+  }
+}
+
+/**
+ * Animates the First-Person Weapon & Shield Viewmodel Rig attached in front of the player's camera
+ * during First-Person Visor Combat Mode!
+ */
+export function animateFirstPersonViewmodel(
+  vm: FirstPersonViewmodelRig,
+  fighter: FighterRuntime,
+  elapsedTime: number,
+  dt: number
+) {
+  const p =
+    fighter.actionDurationMs > 0
+      ? Math.min(1, fighter.actionTimerMs / fighter.actionDurationMs)
+      : 0;
+
+  const walkBobX =
+    fighter.action === 'walk_fwd' || fighter.action === 'walk_back'
+      ? Math.cos(elapsedTime * 11) * 0.035
+      : Math.cos(elapsedTime * 2.4) * 0.008;
+  const walkBobY =
+    fighter.action === 'walk_fwd' || fighter.action === 'walk_back'
+      ? Math.abs(Math.sin(elapsedTime * 11)) * 0.04
+      : Math.sin(elapsedTime * 2.4) * 0.012;
+
+  // Default resting poses for Right Weapon Hand and Left Shield Hand
+  let rPosX = 0.42 + walkBobX;
+  let rPosY = -0.34 - walkBobY;
+  let rPosZ = -0.68;
+  let rRotX = 0.08;
+  let rRotY = -0.15;
+  let rRotZ = -0.08;
+
+  let lPosX = -0.42 - walkBobX;
+  let lPosY = -0.34 - walkBobY;
+  let lPosZ = -0.62;
+  let lRotX = 0.05;
+  let lRotY = 0.22;
+  let lRotZ = 0.06;
+
+  switch (fighter.action) {
+    case 'light_1':
+    case 'light_3': {
+      const thrust = Math.sin(p * Math.PI);
+      rPosX = 0.42 - thrust * 0.24;
+      rPosY = -0.3 + thrust * 0.1;
+      rPosZ = -0.68 - thrust * 0.45;
+      rRotX = -0.55 * thrust;
+      rRotY = -0.15 + thrust * 0.35;
+      break;
+    }
+    case 'light_2': {
+      const slash = Math.sin(p * Math.PI);
+      rPosX = 0.42 - slash * 0.55;
+      rPosY = -0.26 + slash * 0.08;
+      rPosZ = -0.68 - slash * 0.32;
+      rRotZ = -0.95 * slash;
+      rRotY = 0.65 * slash;
+      break;
+    }
+    case 'heavy_1':
+    case 'heavy_2': {
+      if (p < 0.35) {
+        const windup = p / 0.35;
+        rPosY = -0.34 + windup * 0.32;
+        rPosZ = -0.68 + windup * 0.15;
+        rRotX = 0.75 * windup;
+      } else {
+        const cleave = Math.sin(((p - 0.35) / 0.65) * Math.PI);
+        rPosX = 0.42 - cleave * 0.32;
+        rPosY = -0.02 - cleave * 0.42;
+        rPosZ = -0.68 - cleave * 0.52;
+        rRotX = -1.05 * cleave;
+      }
+      break;
+    }
+    case 'combo_finisher':
+    case 'special': {
+      const surge = Math.sin(p * Math.PI);
+      rPosX = 0.12;
+      rPosY = -0.18 + surge * 0.12;
+      rPosZ = -0.68 - surge * 0.58;
+      rRotX = -0.85 * surge;
+      rRotZ = p * Math.PI * 2;
+      lPosX = -0.25;
+      lPosY = -0.22 + surge * 0.1;
+      break;
+    }
+    case 'block': {
+      // Raise Left Shield / Ward directly across the center of the First-Person Visor!
+      lPosX = -0.12;
+      lPosY = -0.14;
+      lPosZ = -0.48;
+      lRotY = 0.65;
+      lRotX = 0.15;
+      rPosX = 0.48;
+      rPosY = -0.38;
+      break;
+    }
+    case 'parry_flash': {
+      const bash = Math.sin(p * Math.PI);
+      lPosX = -0.08 + bash * 0.18;
+      lPosY = -0.12 + bash * 0.08;
+      lPosZ = -0.46 - bash * 0.25;
+      lRotY = 0.85;
+      break;
+    }
+    case 'hitstun': {
+      const recoil = Math.sin(p * Math.PI);
+      rPosY = -0.45 - recoil * 0.12;
+      lPosY = -0.45 - recoil * 0.12;
+      rRotZ = 0.35 * recoil;
+      break;
+    }
+  }
+
+  const dampSpd = 26;
+  vm.rightHandGroup.position.set(
+    THREE.MathUtils.damp(vm.rightHandGroup.position.x, rPosX, dampSpd, dt),
+    THREE.MathUtils.damp(vm.rightHandGroup.position.y, rPosY, dampSpd, dt),
+    THREE.MathUtils.damp(vm.rightHandGroup.position.z, rPosZ, dampSpd, dt)
+  );
+  vm.rightHandGroup.rotation.set(
+    THREE.MathUtils.damp(vm.rightHandGroup.rotation.x, rRotX, dampSpd, dt),
+    THREE.MathUtils.damp(vm.rightHandGroup.rotation.y, rRotY, dampSpd, dt),
+    THREE.MathUtils.damp(vm.rightHandGroup.rotation.z, rRotZ, dampSpd, dt)
+  );
+
+  vm.leftHandGroup.position.set(
+    THREE.MathUtils.damp(vm.leftHandGroup.position.x, lPosX, dampSpd, dt),
+    THREE.MathUtils.damp(vm.leftHandGroup.position.y, lPosY, dampSpd, dt),
+    THREE.MathUtils.damp(vm.leftHandGroup.position.z, lPosZ, dampSpd, dt)
+  );
+  vm.leftHandGroup.rotation.set(
+    THREE.MathUtils.damp(vm.leftHandGroup.rotation.x, lRotX, dampSpd, dt),
+    THREE.MathUtils.damp(vm.leftHandGroup.rotation.y, lRotY, dampSpd, dt),
+    THREE.MathUtils.damp(vm.leftHandGroup.rotation.z, lRotZ, dampSpd, dt)
+  );
+
+  const isPower =
+    fighter.action === 'special' ||
+    fighter.action === 'combo_finisher' ||
+    fighter.action === 'parry_flash' ||
+    fighter.wPhaseTimerMs > 0;
+
+  for (const gm of vm.weaponGlowMeshes) {
+    const mat = gm.material as THREE.MeshStandardMaterial;
+    mat.emissiveIntensity = isPower ? 2.2 : 1.0;
   }
 }

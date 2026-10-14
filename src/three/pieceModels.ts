@@ -11,11 +11,19 @@ export interface ArticulatedPieceRig {
   capePivot: THREE.Group;
   surpriseGroup: THREE.Group;
   tesseractBadge: THREE.LineSegments;
+  quantumWaveGroup: THREE.Group;
   weaponGlowMeshes: THREE.Mesh[];
   allStandardMeshes: THREE.Mesh[];
   specialOrbitGroup: THREE.Group;
   shieldMesh: THREE.Mesh | null;
   hpRingMesh: THREE.Mesh;
+}
+
+export interface FirstPersonViewmodelRig {
+  root: THREE.Group;
+  rightHandGroup: THREE.Group;
+  leftHandGroup: THREE.Group;
+  weaponGlowMeshes: THREE.Mesh[];
 }
 
 // Shared Lathe profile for ornate chess pedestal bases
@@ -75,40 +83,40 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
 
   const isWhite = faction === 'w';
 
-  // Calibrated PBR Materials (restrained albedo & envMapIntensity so white pieces never blow out)
+  // Calibrated PBR Materials (balanced albedo & roughness so both Solaris White and Obsidian Black pieces read with crystal clarity under spotlights)
   const primaryArmorMat = new THREE.MeshPhysicalMaterial({
-    color: isWhite ? 0xc8c0b0 : 0x181c26,
-    roughness: isWhite ? 0.42 : 0.38,
-    metalness: isWhite ? 0.22 : 0.68,
-    clearcoat: 0.45,
-    clearcoatRoughness: 0.25,
-    envMapIntensity: 0.5,
+    color: isWhite ? 0xd0c8b8 : 0x2a3246,
+    roughness: isWhite ? 0.4 : 0.34,
+    metalness: isWhite ? 0.2 : 0.45,
+    clearcoat: 0.5,
+    clearcoatRoughness: 0.22,
+    envMapIntensity: 0.65,
   });
 
   const secondaryTrimMat = new THREE.MeshPhysicalMaterial({
-    color: isWhite ? 0xc68a22 : 0x991b1b,
+    color: isWhite ? 0xd99b26 : 0xe11d48,
     roughness: 0.24,
-    metalness: 0.85,
+    metalness: 0.78,
     anisotropy: 0.65,
-    envMapIntensity: 0.6,
+    envMapIntensity: 0.75,
   });
 
   const darkSteelMat = new THREE.MeshStandardMaterial({
-    color: isWhite ? 0x3b4659 : 0x0b0e14,
-    roughness: 0.68,
-    metalness: 0.78,
-    envMapIntensity: 0.45,
+    color: isWhite ? 0x475569 : 0x1e2536,
+    roughness: 0.52,
+    metalness: 0.62,
+    envMapIntensity: 0.6,
   });
 
   const capeFabricMat = new THREE.MeshPhysicalMaterial({
-    color: isWhite ? 0x1e3a8a : 0x450a0a,
-    roughness: 0.85,
+    color: isWhite ? 0x1d4ed8 : 0x7f1d1d,
+    roughness: 0.8,
     metalness: 0.05,
-    sheen: 0.5,
-    sheenRoughness: 0.5,
-    sheenColor: new THREE.Color(isWhite ? 0x60a5fa : 0xf87171),
+    sheen: 0.6,
+    sheenRoughness: 0.45,
+    sheenColor: new THREE.Color(isWhite ? 0x60a5fa : 0xfb7185),
     side: THREE.DoubleSide,
-    envMapIntensity: 0.3,
+    envMapIntensity: 0.4,
   });
 
   const energyAccentColor = isWhite ? 0x38bdf8 : 0xf43f5e;
@@ -298,8 +306,40 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
   helmMesh.castShadow = true;
   headGroup.add(helmMesh);
 
-  const visorMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.036, 0.12), energyMat);
-  visorMesh.position.set(0, 0.15, 0.12);
+  // Dark Recessed Visor Slit & Heavy Brow Ridge (for Sergio Leone Extreme Eye Crash-Zooms!)
+  const visorRecessMat = new THREE.MeshBasicMaterial({ color: 0x05070b });
+  const visorRecess = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.056, 0.13), visorRecessMat);
+  visorRecess.position.set(0, 0.15, 0.105);
+  headGroup.add(visorRecess);
+
+  const browRidge = registerMesh(
+    new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.028, 0.145), secondaryTrimMat)
+  );
+  browRidge.position.set(0, 0.182, 0.115);
+  browRidge.rotation.x = 0.12;
+  headGroup.add(browRidge);
+
+  // Expressive Fierce Glowing Warrior Eyes + Intense Iris Cores inside the Visor Slit
+  const eyeOuterMat = new THREE.MeshBasicMaterial({
+    color: isWhite ? 0x7dd3fc : 0xfda4af,
+  });
+  const eyePupilMat = new THREE.MeshBasicMaterial({
+    color: isWhite ? 0xfef08a : 0xffffff,
+  });
+
+  for (const side of [-1, 1]) {
+    const eyeSlit = new THREE.Mesh(new THREE.BoxGeometry(0.056, 0.022, 0.02), eyeOuterMat);
+    eyeSlit.position.set(side * 0.052, 0.15, 0.166);
+    eyeSlit.rotation.z = -side * 0.14; // Fierce narrowed glare
+    headGroup.add(eyeSlit);
+
+    const irisCore = new THREE.Mesh(new THREE.SphereGeometry(0.011, 10, 10), eyePupilMat);
+    irisCore.position.set(side * 0.05, 0.15, 0.175);
+    headGroup.add(irisCore);
+  }
+
+  const visorMesh = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.012, 0.12), energyMat);
+  visorMesh.position.set(0, 0.126, 0.12);
   headGroup.add(visorMesh);
   weaponGlowMeshes.push(visorMesh);
 
@@ -507,6 +547,36 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
     }
   }
 
+  // 7. Quantum 4D Wavefunction Superposition Shell (Dual orbital interference rings + probability field)
+  const quantumWaveGroup = new THREE.Group();
+  quantumWaveGroup.position.set(0, 0.72, 0);
+  quantumWaveGroup.visible = false;
+  root.add(quantumWaveGroup);
+
+  const qRingGeo1 = new THREE.TorusGeometry(0.56, 0.012, 10, 48);
+  const qRingMat1 = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.75,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const qRing1 = new THREE.Mesh(qRingGeo1, qRingMat1);
+  qRing1.rotation.x = Math.PI / 3;
+  quantumWaveGroup.add(qRing1);
+
+  const qRingGeo2 = new THREE.TorusGeometry(0.64, 0.01, 10, 48);
+  const qRingMat2 = new THREE.MeshBasicMaterial({
+    color: 0xc084fc,
+    transparent: true,
+    opacity: 0.65,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const qRing2 = new THREE.Mesh(qRingGeo2, qRingMat2);
+  qRing2.rotation.y = Math.PI / 3;
+  quantumWaveGroup.add(qRing2);
+
   return {
     root,
     pedestal,
@@ -517,6 +587,7 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
     capePivot,
     surpriseGroup,
     tesseractBadge,
+    quantumWaveGroup,
     weaponGlowMeshes,
     allStandardMeshes,
     specialOrbitGroup,
@@ -526,10 +597,157 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
 }
 
 /**
+ * Creates a dedicated 3D First-Person Weapon & Shield/Gauntlet Viewmodel Rig
+ * attached in front of the player's camera during First-Person Combat Mode!
+ */
+export function createFirstPersonViewmodelRig(
+  type: PieceType,
+  faction: Faction
+): FirstPersonViewmodelRig {
+  const root = new THREE.Group();
+  const isWhite = faction === 'w';
+
+  const armorMat = new THREE.MeshPhysicalMaterial({
+    color: isWhite ? 0xd0c8b8 : 0x2a3246,
+    roughness: 0.34,
+    metalness: 0.45,
+    clearcoat: 0.5,
+  });
+  const trimMat = new THREE.MeshPhysicalMaterial({
+    color: isWhite ? 0xd99b26 : 0xe11d48,
+    roughness: 0.24,
+    metalness: 0.8,
+  });
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: isWhite ? 0x475569 : 0x1e2536,
+    roughness: 0.45,
+    metalness: 0.7,
+  });
+  const energyColor = isWhite ? 0x38bdf8 : 0xf43f5e;
+  const energyMat = new THREE.MeshStandardMaterial({
+    color: energyColor,
+    emissive: energyColor,
+    emissiveIntensity: 0.85,
+    roughness: 0.2,
+  });
+
+  const weaponGlowMeshes: THREE.Mesh[] = [];
+
+  // Right Hand & Signature Archetype Weapon (Bottom-Right of First-Person Viewport)
+  const rightHandGroup = new THREE.Group();
+  rightHandGroup.position.set(0.42, -0.34, -0.68);
+  root.add(rightHandGroup);
+
+  const gauntletR = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.26, 8, 12), armorMat);
+  gauntletR.rotation.x = Math.PI * 0.38;
+  gauntletR.position.set(0, -0.08, 0.14);
+  rightHandGroup.add(gauntletR);
+
+  const cuffR = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.06, 0.09, 12), trimMat);
+  cuffR.rotation.x = Math.PI * 0.38;
+  cuffR.position.set(0, -0.02, 0.04);
+  rightHandGroup.add(cuffR);
+
+  if (type === 'p') {
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.024, 1.15, 12), steelMat);
+    shaft.rotation.x = Math.PI * 0.46;
+    shaft.position.set(0, 0.08, -0.32);
+    const spearTip = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.34, 8), energyMat);
+    spearTip.rotation.x = -Math.PI * 0.54;
+    spearTip.position.set(0, 0.16, -0.92);
+    rightHandGroup.add(shaft, spearTip);
+    weaponGlowMeshes.push(spearTip);
+  } else if (type === 'n') {
+    const lance = new THREE.Mesh(new THREE.ConeGeometry(0.085, 1.2, 14), trimMat);
+    lance.rotation.x = -Math.PI * 0.52;
+    lance.position.set(0, 0.1, -0.48);
+    const guard = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.13, 0.16, 14), armorMat);
+    guard.rotation.x = -Math.PI * 0.52;
+    guard.position.set(0, 0.03, -0.02);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.018, 10, 24), energyMat);
+    ring.position.set(0, 0.11, -0.55);
+    rightHandGroup.add(lance, guard, ring);
+    weaponGlowMeshes.push(ring);
+  } else if (type === 'b') {
+    const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 1.15, 12), trimMat);
+    staff.rotation.x = -Math.PI * 0.38;
+    staff.position.set(0, 0.18, -0.32);
+    const crescent = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.026, 12, 28, Math.PI * 1.35), energyMat);
+    crescent.position.set(0, 0.42, -0.68);
+    rightHandGroup.add(staff, crescent);
+    weaponGlowMeshes.push(crescent);
+  } else if (type === 'r') {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.0, 12), steelMat);
+    handle.rotation.x = -Math.PI * 0.4;
+    handle.position.set(0, 0.12, -0.3);
+    const maul = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.24, 0.42), trimMat);
+    maul.position.set(0, 0.25, -0.72);
+    const face = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, 0.06), energyMat);
+    face.position.set(0, 0.25, -0.92);
+    rightHandGroup.add(handle, maul, face);
+    weaponGlowMeshes.push(face);
+  } else if (type === 'q') {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 1.25, 12), trimMat);
+    pole.rotation.x = -Math.PI * 0.42;
+    pole.position.set(0, 0.16, -0.36);
+    const blade = new THREE.Mesh(new THREE.OctahedronGeometry(0.18, 0), energyMat);
+    blade.scale.set(0.25, 1.35, 1.15);
+    blade.position.set(0, 0.28, -0.82);
+    rightHandGroup.add(pole, blade);
+    weaponGlowMeshes.push(blade);
+  } else {
+    const hilt = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.28, 12), trimMat);
+    hilt.rotation.x = -Math.PI * 0.42;
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.05, 0.07), trimMat);
+    guard.position.set(0, 0.06, -0.1);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.028, 1.05), armorMat);
+    blade.rotation.x = 0.22;
+    blade.position.set(0, 0.2, -0.58);
+    const fuller = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.034, 0.95), energyMat);
+    fuller.rotation.x = 0.22;
+    fuller.position.set(0, 0.2, -0.58);
+    rightHandGroup.add(hilt, guard, blade, fuller);
+    weaponGlowMeshes.push(fuller);
+  }
+
+  // Left Hand & Shield / Off-Hand Ward (Bottom-Left of First-Person Viewport)
+  const leftHandGroup = new THREE.Group();
+  leftHandGroup.position.set(-0.42, -0.34, -0.62);
+  root.add(leftHandGroup);
+
+  const gauntletL = new THREE.Mesh(new THREE.CapsuleGeometry(0.052, 0.24, 8, 12), armorMat);
+  gauntletL.rotation.x = Math.PI * 0.38;
+  gauntletL.position.set(0, -0.08, 0.12);
+  leftHandGroup.add(gauntletL);
+
+  const shieldRim = new THREE.Mesh(
+    type === 'r'
+      ? new THREE.BoxGeometry(0.36, 0.48, 0.06)
+      : new THREE.CylinderGeometry(0.22, 0.18, 0.05, 8),
+    trimMat
+  );
+  if (type !== 'r') {
+    shieldRim.rotation.x = Math.PI / 2;
+  }
+  shieldRim.position.set(0.06, 0.08, -0.18);
+  leftHandGroup.add(shieldRim);
+
+  const wardCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.055, 0), energyMat);
+  wardCore.position.set(0.06, 0.08, -0.22);
+  leftHandGroup.add(wardCore);
+  weaponGlowMeshes.push(wardCore);
+
+  return {
+    root,
+    rightHandGroup,
+    leftHandGroup,
+    weaponGlowMeshes,
+  };
+}
+
+/**
  * Updates how a piece renders based on its 4D hypercube distance (deltaW, deltaZ)
  * from the player's currently viewed 3D slice!
- * - (0, 0): Solid physical warrior in the current 3D slice.
- * - |deltaW| > 0 or |deltaZ| > 0: Translucent 4D Phase-Projection with Ana (Cyan) or Kata (Violet) spectral tint!
  */
 export function updatePiece4DAppearance(
   rig: ArticulatedPieceRig,
@@ -541,9 +759,9 @@ export function updatePiece4DAppearance(
   const isPhased = dist4D > 0 || isPhaseShiftedInFight;
 
   rig.tesseractBadge.visible = isPhased;
+  rig.quantumWaveGroup.visible = isPhased;
   if (isPhased) {
     const badgeMat = rig.tesseractBadge.material as THREE.LineBasicMaterial;
-    // +W (Ana) = Cyan (#38bdf8), -W (Kata) = Violet (#a855f7), Z-shift = Emerald (#34d399)
     badgeMat.color.setHex(deltaW > 0 ? 0x38bdf8 : deltaW < 0 ? 0xa855f7 : 0x34d399);
   }
 
@@ -552,8 +770,8 @@ export function updatePiece4DAppearance(
     : dist4D === 0
     ? 1.0
     : dist4D === 1
-    ? 0.36
-    : 0.16;
+    ? 0.42
+    : 0.2;
 
   for (const m of rig.allStandardMeshes) {
     const mat = m.material as THREE.MeshStandardMaterial;

@@ -41,7 +41,12 @@ import {
   triggerFighterTemporalEcho,
   updateFighterAI,
 } from './engine/combatEngine';
-import { createArticulatedPiece, ArticulatedPieceRig } from './three/pieceModels';
+import {
+  createArticulatedPiece,
+  ArticulatedPieceRig,
+  createFirstPersonViewmodelRig,
+  FirstPersonViewmodelRig,
+} from './three/pieceModels';
 import {
   boardToWorld,
   createBoardArena,
@@ -50,6 +55,7 @@ import {
 } from './three/arenaBuilder';
 import {
   animateFighterRig,
+  animateFirstPersonViewmodel,
   createVFXPool,
   spawnAuraPillar,
   spawnGroundDebris,
@@ -79,6 +85,19 @@ interface BystanderPhysics {
   y: number;
   vy: number;
   panickedTimer: number;
+}
+
+const PIECE_TORSO_HEIGHTS: Record<PieceType, number> = {
+  p: 0.64,
+  n: 0.78,
+  b: 0.84,
+  r: 0.86,
+  q: 0.96,
+  k: 1.0,
+};
+
+function getWarriorEyeHeightWorld(type: PieceType): number {
+  return (PIECE_TORSO_HEIGHTS[type] + 0.37) * 1.42;
 }
 
 export default function App() {
@@ -121,6 +140,7 @@ export default function App() {
   const [fightTimer, setFightTimer] = useState<number>(60);
   const [duelSquareName, setDuelSquareName] = useState<string>('E4');
   const [introShotIndex, setIntroShotIndex] = useState<number>(-1);
+  const [combatCameraMode, setCombatCameraMode] = useState<'first_person' | 'side_arena'>('first_person');
   const [callouts, setCallouts] = useState<CombatCallout[]>([]);
   const [koBanner, setKoBanner] = useState<{
     title: string;
@@ -137,6 +157,7 @@ export default function App() {
     phase: GamePhase;
     phaseTimer: number;
     introShotIndex: number;
+    combatCameraMode: 'first_person' | 'side_arena';
     currentDutchRoll: number;
     turnFaction: Faction;
     turnNumber: number;
@@ -163,6 +184,8 @@ export default function App() {
     hitstopTimer: number;
     keysHeld: Record<string, boolean>;
     pieceRigs: Map<string, ArticulatedPieceRig>;
+    firstPersonRig: FirstPersonViewmodelRig | null;
+    fpMountGroup: THREE.Group | null;
     arenaRig: BoardArenaRig | null;
     vfxPool: VFXPool | null;
     controls: OrbitControls | null;
@@ -171,6 +194,7 @@ export default function App() {
     phase: 'CHESS_VIEW',
     phaseTimer: 0,
     introShotIndex: -1,
+    combatCameraMode: 'first_person',
     currentDutchRoll: 0,
     turnFaction: 'w',
     turnNumber: 1,
@@ -197,11 +221,20 @@ export default function App() {
     hitstopTimer: 0,
     keysHeld: {},
     pieceRigs: new Map(),
+    firstPersonRig: null,
+    fpMountGroup: null,
     arenaRig: null,
     vfxPool: null,
     controls: null,
     currentLookAt: new THREE.Vector3(0, 0.4, 0),
   });
+
+  const handleToggleCombatCameraMode = useCallback(() => {
+    const sim = simRef.current;
+    const next = sim.combatCameraMode === 'first_person' ? 'side_arena' : 'first_person';
+    sim.combatCameraMode = next;
+    setCombatCameraMode(next);
+  }, []);
 
   const addCallout = useCallback((c: Omit<CombatCallout, 'id' | 'createdAt'>) => {
     const item: CombatCallout = {
@@ -335,6 +368,25 @@ export default function App() {
       sim.phaseTimer = 0;
       sim.introShotIndex = -1;
       setIntroShotIndex(-1);
+
+      // Build First-Person Weapon & Shield Viewmodel Rig matching the human player's warrior!
+      const humanRuntime = !sim.attackerRuntime.isAI
+        ? sim.attackerRuntime
+        : !sim.defenderRuntime.isAI
+        ? sim.defenderRuntime
+        : sim.attackerRuntime;
+      if (sim.fpMountGroup) {
+        if (sim.firstPersonRig) {
+          sim.fpMountGroup.remove(sim.firstPersonRig.root);
+        }
+        const fpRig = createFirstPersonViewmodelRig(
+          humanRuntime.piece.type,
+          humanRuntime.piece.faction
+        );
+        fpRig.root.visible = false;
+        sim.fpMountGroup.add(fpRig.root);
+        sim.firstPersonRig = fpRig;
+      }
 
       if (sim.controls) {
         sim.controls.enabled = false;
@@ -735,10 +787,19 @@ export default function App() {
     const camera = new THREE.PerspectiveCamera(
       45,
       container.clientWidth / container.clientHeight,
-      0.1,
+      0.08,
       150
     );
     camera.position.set(0, 11.5, 11.5);
+    scene.add(camera);
+
+    // First-Person Viewmodel Mount attached directly to camera lens space
+    const fpMountGroup = new THREE.Group();
+    camera.add(fpMountGroup);
+    const fpLight = new THREE.PointLight(0xfffbeb, 3.2, 2.5);
+    fpLight.position.set(0, 0.25, -0.35);
+    fpMountGroup.add(fpLight);
+    simRef.current.fpMountGroup = fpMountGroup;
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -976,6 +1037,10 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'h' || e.key === 'H') {
         setDockCollapsed((prev) => !prev);
+      } else if (e.key === 'v' || e.key === 'V') {
+        const next = sim.combatCameraMode === 'first_person' ? 'side_arena' : 'first_person';
+        sim.combatCameraMode = next;
+        setCombatCameraMode(next);
       }
 
       sim.keysHeld[e.code] = true;
@@ -1102,6 +1167,11 @@ export default function App() {
       // Update Phase Machine
       if (sim.phase === 'CHESS_VIEW') {
         temporalEchoMesh.visible = false;
+        arenaRig.tesseractLines.visible = true;
+        arenaRig.quantumLatticeGroup.visible = true;
+        if (sim.firstPersonRig) {
+          sim.firstPersonRig.root.visible = false;
+        }
 
         // Restore camera FOV & level horizon when back on the Chessboard
         if (Math.abs(camera.fov - 45) > 0.05) {
@@ -1110,22 +1180,43 @@ export default function App() {
         }
         sim.currentDutchRoll = THREE.MathUtils.damp(sim.currentDutchRoll, 0, 10, rawDelta);
 
-        // Restore full studio environment & lighting for Chessboard View
+        const isQuantumManifold = sim.activeSliceW !== 0 || sim.activeSliceZ !== 0;
+
+        // Distinct Visual Language between Classical Prime Sanctuary (W=0, Z=0) and Quantum 4D Manifold (W≠0 or Z≠0)
         scene.environmentIntensity = THREE.MathUtils.damp(
           scene.environmentIntensity ?? 0.65,
-          0.65,
+          isQuantumManifold ? 0.5 : 0.65,
           5,
           rawDelta
         );
         if (scene.fog instanceof THREE.FogExp2) {
-          scene.fog.density = THREE.MathUtils.damp(scene.fog.density, 0.022, 5, rawDelta);
+          scene.fog.density = THREE.MathUtils.damp(
+            scene.fog.density,
+            isQuantumManifold ? 0.028 : 0.022,
+            5,
+            rawDelta
+          );
         }
 
-        const targetKey = sim.activeSliceW === 0 && sim.activeSliceZ === 0 ? 1.65 : 1.35;
+        const targetKey = isQuantumManifold ? 1.15 : 1.65;
         keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, targetKey, 5, rawDelta);
-        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.48, 5, rawDelta);
-        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.95, 5, rawDelta);
-        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.85, 5, rawDelta);
+        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, isQuantumManifold ? 0.62 : 0.48, 5, rawDelta);
+        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, isQuantumManifold ? 1.55 : 0.95, 5, rawDelta);
+        warmFill.color.setHex(
+          sim.activeSliceW > 0
+            ? 0x38bdf8
+            : sim.activeSliceW < 0
+            ? 0xc084fc
+            : sim.activeSliceZ > 0
+            ? 0x34d399
+            : 0xf59e0b
+        );
+        warmFill.intensity = THREE.MathUtils.damp(
+          warmFill.intensity,
+          isQuantumManifold ? 1.45 : 0.85,
+          5,
+          rawDelta
+        );
 
         arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 0, 8, rawDelta);
         arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 0, 8, rawDelta);
@@ -1149,11 +1240,11 @@ export default function App() {
             rawDelta
           );
 
-        // Position & render all 32 pieces with Single-3D-Slice 4D Perception!
-        // Pieces in the active (Z, W) slice are solid; pieces in adjacent 4D slices appear as floating 4D Apparitions with spinning Tesseract badges!
+        // Position & render all 32 pieces with Single-3D-Slice 4D Quantum Perception!
         for (const piece of sim.pieces) {
           const rig = sim.pieceRigs.get(piece.id);
           if (!rig) continue;
+          rig.root.visible = true;
 
           const bys = sim.bystanders.get(piece.id);
           if (bys) {
@@ -1181,13 +1272,17 @@ export default function App() {
           rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, targetYaw, 8, rawDelta);
 
           rig.surpriseGroup.visible = false;
-          rig.tesseractBadge.visible = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
-          if (rig.tesseractBadge.visible) {
+          const showQuantumOrbits = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
+          rig.tesseractBadge.visible = showQuantumOrbits;
+          rig.quantumWaveGroup.visible = showQuantumOrbits;
+          if (showQuantumOrbits) {
             rig.tesseractBadge.rotation.y += rawDelta * 2.5;
             rig.tesseractBadge.rotation.x += rawDelta * 1.8;
+            rig.quantumWaveGroup.rotation.y += rawDelta * 3.2;
+            rig.quantumWaveGroup.rotation.z += rawDelta * 2.1;
           }
 
-          const targetOpacity = isSameSlice ? 1.0 : 0.34;
+          const targetOpacity = isSameSlice ? 1.0 : 0.38;
           for (const mesh of rig.allStandardMeshes) {
             const mat = mesh.material as THREE.MeshStandardMaterial;
             if (Math.abs(mat.opacity - targetOpacity) > 0.01) {
@@ -1225,25 +1320,75 @@ export default function App() {
         const def = sim.defenderRuntime;
 
         if (atk && def) {
+          arenaRig.tesseractLines.visible = false;
           sim.phaseTimer += rawDelta;
 
-          if (sim.phase === 'TRANSITION_TO_FIGHT' && sim.phaseTimer >= 0.72) {
+          const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
+          const atkWorldY = atk.y * 0.72;
+          const atkWorldZ = sim.duelCenterWorld.z;
+          const atkEyeH = getWarriorEyeHeightWorld(atk.piece.type);
+
+          const defWorldX = sim.duelCenterWorld.x + def.x * 0.72;
+          const defWorldY = def.y * 0.72;
+          const defWorldZ = sim.duelCenterWorld.z;
+          const defEyeH = getWarriorEyeHeightWorld(def.piece.type);
+
+          const midWorldX = (atkWorldX + defWorldX) * 0.5;
+          const atkRig = sim.pieceRigs.get(atk.piece.id);
+          const defRig = sim.pieceRigs.get(def.piece.id);
+
+          if (sim.phase === 'TRANSITION_TO_FIGHT' && sim.phaseTimer >= 0.55) {
             sim.phase = 'FIGHT_INTRO';
             sim.phaseTimer = 0;
             sim.introShotIndex = 0;
             setIntroShotIndex(0);
             setPhase('FIGHT_INTRO');
             soundEngine.playWesternStandoffCut(0);
+            // Snap Challenger into place & start at wide FOV (62°) directly in front of Challenger's eyes, then CRASH-ZOOM to 9.5° in 0.14s!
+            if (atkRig) {
+              atkRig.root.position.set(atkWorldX, atkWorldY, atkWorldZ);
+              atkRig.root.scale.setScalar(1.42);
+              atkRig.root.rotation.y = Math.PI / 2;
+            }
+            camera.position.set(atkWorldX + 1.48, atkWorldY + atkEyeH, atkWorldZ);
+            sim.currentLookAt.set(atkWorldX, atkWorldY + atkEyeH, atkWorldZ);
+            camera.fov = 62; // Starts wide and immediately punches in via high-speed optical crash zoom!
+            sim.currentDutchRoll = 0.04;
           } else if (sim.phase === 'FIGHT_INTRO') {
-            // 3-Shot Spaghetti Western Standoff Cutscene:
-            // Shot 0 (0.00s - 0.80s): Attacker Extreme Visor Close-Up + +12.5° Dutch Angle
-            // Shot 1 (0.80s - 1.60s): Defender Extreme Visor Close-Up + -12.5° Counter-Dutch Angle
-            // Shot 2 (1.60s - 2.25s): Low-Angle Gunfighter Wide Standoff + +7° Dutch Angle
-            const nextShot = sim.phaseTimer < 0.8 ? 0 : sim.phaseTimer < 1.6 ? 1 : 2;
+            // 3-Shot Sergio Leone / Tarantino Optical Crash-Zoom Sequence:
+            // Shot 0 (0.00s - 0.85s): Challenger Extreme Eye Crash-Zoom (62° -> 9.5° in 0.14s!)
+            // Shot 1 (0.85s - 1.70s): Defender Extreme Eye Counter-Crash-Zoom (62° -> 9.5° in 0.14s!)
+            // Shot 2 (1.70s - 2.25s): Snap-Zoom into First-Person Warrior Visor POV!
+            const nextShot = sim.phaseTimer < 0.85 ? 0 : sim.phaseTimer < 1.7 ? 1 : 2;
             if (nextShot !== sim.introShotIndex) {
               sim.introShotIndex = nextShot;
               setIntroShotIndex(nextShot);
               soundEngine.playWesternStandoffCut(nextShot);
+              if (nextShot === 1) {
+                if (defRig) {
+                  defRig.root.position.set(defWorldX, defWorldY, defWorldZ);
+                  defRig.root.scale.setScalar(1.42);
+                  defRig.root.rotation.y = -Math.PI / 2;
+                }
+                camera.position.set(defWorldX - 1.48, defWorldY + defEyeH, defWorldZ);
+                sim.currentLookAt.set(defWorldX, defWorldY + defEyeH, defWorldZ);
+                camera.fov = 62; // Starts wide and immediately CRASH-ZOOMS into Defender's glaring eyes!
+                sim.currentDutchRoll = -0.04;
+              } else if (nextShot === 2) {
+                const human = !atk.isAI ? atk : !def.isAI ? def : atk;
+                const opp = human === atk ? def : atk;
+                const hWorldX = sim.duelCenterWorld.x + human.x * 0.72;
+                const hWorldY = human.y * 0.72;
+                const hEyeH = getWarriorEyeHeightWorld(human.piece.type);
+                const oWorldX = sim.duelCenterWorld.x + opp.x * 0.72;
+                const oWorldY = opp.y * 0.72;
+                const oEyeH = getWarriorEyeHeightWorld(opp.piece.type);
+
+                camera.position.set(hWorldX, hWorldY + hEyeH, sim.duelCenterWorld.z);
+                sim.currentLookAt.set(oWorldX, oWorldY + oEyeH * 0.82, sim.duelCenterWorld.z);
+                camera.fov = 22; // Snap-zooms out into 56° First-Person Visor FOV!
+                sim.currentDutchRoll = 0;
+              }
             }
             if (sim.phaseTimer >= 2.25) {
               sim.phase = 'FIGHT_ACTIVE';
@@ -1254,69 +1399,79 @@ export default function App() {
             }
           }
 
-          // 1. HIGH-CONTRAST CHIAROSCURO FIGHT LIGHTING:
-          // Plunge the rest of the board & environment IBL into deep noir darkness, leaving ONLY a tight overhead spotlight pool right above the fighters!
+          // 1. HIGH-CONTRAST STAGE SPOTLIGHTING & QUANTUM TUNNELING FIELD:
+          const isQuantumCombat =
+            atk.wPhaseTimerMs > 0 ||
+            def.wPhaseTimerMs > 0 ||
+            atk.temporalEchoTimerMs > 0 ||
+            def.temporalEchoTimerMs > 0;
+
+          arenaRig.quantumLatticeGroup.visible = isQuantumCombat;
+          if (isQuantumCombat) {
+            update4DTesseractProjection(arenaRig, elapsed * 2.5, atk.wPhaseOffset || 1, 0);
+          }
+
           scene.environmentIntensity = THREE.MathUtils.damp(
             scene.environmentIntensity ?? 0.65,
-            0.02,
-            9,
+            0.38,
+            8,
             rawDelta
           );
           if (scene.fog instanceof THREE.FogExp2) {
-            scene.fog.density = THREE.MathUtils.damp(scene.fog.density, 0.056, 6, rawDelta);
+            scene.fog.density = THREE.MathUtils.damp(scene.fog.density, 0.034, 6, rawDelta);
           }
 
-          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.02, 9, rawDelta);
-          hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.02, 9, rawDelta);
-          rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.08, 9, rawDelta);
-          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.0, 9, rawDelta);
+          keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.25, 8, rawDelta);
+          hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.28, 8, rawDelta);
+          rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 1.25, 8, rawDelta);
+          warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.18, 8, rawDelta);
 
-          const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
-          const atkWorldY = atk.y * 0.72;
-          const atkWorldZ = sim.duelCenterWorld.z;
+          // Position blazing overhead spotlights so both fighters' eyes, armor, and stage floor are vividly lit!
+          arenaRig.spotAttacker.position.set(atkWorldX + 0.45, 6.8, atkWorldZ + 2.2);
+          arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.95, atkWorldZ);
+          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 210.0, 10, rawDelta);
 
-          const defWorldX = sim.duelCenterWorld.x + def.x * 0.72;
-          const defWorldY = def.y * 0.72;
-          const defWorldZ = sim.duelCenterWorld.z;
+          arenaRig.spotDefender.position.set(defWorldX - 0.45, 6.8, defWorldZ + 2.2);
+          arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.95, defWorldZ);
+          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 210.0, 10, rawDelta);
 
-          const midWorldX = (atkWorldX + defWorldX) * 0.5;
-
-          // Position steep, tight overhead spotlights directly over the two fighters
-          arenaRig.spotAttacker.position.set(atkWorldX - 0.15, 6.7, atkWorldZ + 0.32);
-          arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.5, atkWorldZ);
-          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 34.0, 8, rawDelta);
-
-          arenaRig.spotDefender.position.set(defWorldX + 0.15, 6.7, defWorldZ + 0.32);
-          arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.5, defWorldZ);
-          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 34.0, 8, rawDelta);
-
-          arenaRig.volumetricConeAttacker.position.copy(arenaRig.spotAttacker.position);
-          arenaRig.volumetricConeAttacker.lookAt(arenaRig.spotAttacker.target.position);
-          arenaRig.volumetricConeAttacker.rotateX(Math.PI / 2);
+          // Vertical overhead volumetric light shafts descending directly onto each fighter
+          arenaRig.volumetricConeAttacker.position.set(atkWorldX, 3.2, atkWorldZ);
+          arenaRig.volumetricConeAttacker.rotation.set(0, 0, 0);
           (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity =
-            THREE.MathUtils.damp((arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity, 0.055, 6, rawDelta);
+            THREE.MathUtils.damp(
+              (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity,
+              sim.phase === 'FIGHT_INTRO' ? 0.0 : 0.05,
+              6,
+              rawDelta
+            );
 
-          arenaRig.volumetricConeDefender.position.copy(arenaRig.spotDefender.position);
-          arenaRig.volumetricConeDefender.lookAt(arenaRig.spotDefender.target.position);
-          arenaRig.volumetricConeDefender.rotateX(Math.PI / 2);
+          arenaRig.volumetricConeDefender.position.set(defWorldX, 3.2, defWorldZ);
+          arenaRig.volumetricConeDefender.rotation.set(0, 0, 0);
           (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity =
-            THREE.MathUtils.damp((arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity, 0.055, 6, rawDelta);
+            THREE.MathUtils.damp(
+              (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity,
+              sim.phase === 'FIGHT_INTRO' ? 0.0 : 0.05,
+              6,
+              rawDelta
+            );
 
-          arenaRig.clashPointLight.position.set(midWorldX, 1.25, sim.duelCenterWorld.z + 0.3);
-          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 0.5, 8, rawDelta);
+          // Strong front-stage fill light illuminating both duelists
+          arenaRig.clashPointLight.position.set(midWorldX, 2.15, sim.duelCenterWorld.z + 2.2);
+          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 28.0, 8, rawDelta);
 
           arenaRig.duelRingGroup.position.x = sim.duelCenterWorld.x;
           arenaRig.duelRingGroup.position.z = sim.duelCenterWorld.z;
           arenaRig.duelRingGroup.position.y = THREE.MathUtils.damp(
             arenaRig.duelRingGroup.position.y,
             0.0,
-            7,
+            9,
             rawDelta
           );
           (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity =
             THREE.MathUtils.damp(
               (arenaRig.duelBarrierMesh.material as THREE.MeshBasicMaterial).opacity,
-              0.05,
+              0.04,
               5,
               rawDelta
             );
@@ -1335,7 +1490,8 @@ export default function App() {
             temporalEchoMesh.visible = false;
           }
 
-          // 2. COMEDIC BYSTANDER PIECES: All other pieces stay on the board, watch the fight, and jump out of the way if the fight comes close!
+          // 2. COMEDIC BYSTANDER PIECES & FULL ARENA RING CLEARANCE:
+          // Clear all non-fighting pieces outside the 4.6-unit Duel Ring perimeter AND out of the camera's front viewing corridor so ONLY the two fighters occupy the spotlighted stage!
           for (const piece of sim.pieces) {
             if (piece.id === atk.piece.id || piece.id === def.piece.id) continue;
             const rig = sim.pieceRigs.get(piece.id);
@@ -1351,37 +1507,60 @@ export default function App() {
             const curWorldX = _vec3A.x + bys.offsetX;
             const curWorldZ = _vec3A.z + bys.offsetZ;
 
+            const distToRingCenter = Math.hypot(
+              curWorldX - sim.duelCenterWorld.x,
+              curWorldZ - sim.duelCenterWorld.z
+            );
             const distToAtk = Math.hypot(curWorldX - atkWorldX, curWorldZ - atkWorldZ);
             const distToDef = Math.hypot(curWorldX - defWorldX, curWorldZ - defWorldZ);
             const minFighterDist = Math.min(distToAtk, distToDef);
 
-            const dangerRadius = 2.25;
-            if (minFighterDist < dangerRadius) {
-              const threatX = distToAtk < distToDef ? atkWorldX : defWorldX;
-              const threatZ = distToAtk < distToDef ? atkWorldZ : defWorldZ;
+            // Check if this bystander is inside the 4.65-unit Duel Ring OR in the foreground camera sightline corridor!
+            const inArenaRing = distToRingCenter < 4.65;
+            const inCameraCorridor =
+              curWorldZ > sim.duelCenterWorld.z - 0.6 &&
+              curWorldZ < sim.duelCenterWorld.z + 6.0 &&
+              Math.abs(curWorldX - midWorldX) < 3.8;
 
-              let pushDirX = curWorldX - threatX;
-              let pushDirZ = curWorldZ - threatZ;
-              if (Math.abs(pushDirZ) < 0.45) {
+            if (inArenaRing || inCameraCorridor || minFighterDist < 2.6) {
+              let pushDirX = curWorldX - sim.duelCenterWorld.x;
+              let pushDirZ = curWorldZ - sim.duelCenterWorld.z;
+
+              if (inCameraCorridor) {
+                // Push sideways to the left/right flanks of the camera frustum so the fighters are 100% unobstructed!
+                pushDirX = curWorldX >= midWorldX ? 1.6 : -1.6;
+                pushDirZ = curWorldZ < sim.duelCenterWorld.z ? -0.9 : 0.25;
+              } else if (Math.hypot(pushDirX, pushDirZ) < 0.25) {
+                pushDirX = piece.col < 4 ? -1.2 : 1.2;
                 pushDirZ = piece.row < 4 ? -1.2 : 1.2;
               }
+
               const len = Math.hypot(pushDirX, pushDirZ) || 1;
               pushDirX /= len;
               pushDirZ /= len;
 
-              const urgency = (dangerRadius - minFighterDist) / dangerRadius;
-              bys.vx += pushDirX * (14.0 * urgency) * rawDelta;
-              bys.vz += pushDirZ * (16.5 * urgency) * rawDelta;
+              const urgency = inCameraCorridor
+                ? 0.95
+                : Math.max(0.45, (4.75 - distToRingCenter) / 4.75);
+              bys.vx += pushDirX * (22.0 * urgency) * rawDelta;
+              bys.vz += pushDirZ * (22.0 * urgency) * rawDelta;
 
               if (bys.y <= 0.02) {
-                bys.vy = 5.6 + Math.random() * 2.6;
+                bys.vy = 5.4 + Math.random() * 2.0;
                 soundEngine.playBystanderHop();
               }
               bys.panickedTimer = 0.65;
             } else {
-              const homeDistToAtk = Math.hypot(_vec3A.x - atkWorldX, _vec3A.z - atkWorldZ);
-              const homeDistToDef = Math.hypot(_vec3A.x - defWorldX, _vec3A.z - defWorldZ);
-              if (Math.min(homeDistToAtk, homeDistToDef) > dangerRadius + 0.6) {
+              const homeDistToCenter = Math.hypot(
+                _vec3A.x - sim.duelCenterWorld.x,
+                _vec3A.z - sim.duelCenterWorld.z
+              );
+              const homeInCameraCorridor =
+                _vec3A.z > sim.duelCenterWorld.z - 0.6 &&
+                _vec3A.z < sim.duelCenterWorld.z + 6.0 &&
+                Math.abs(_vec3A.x - midWorldX) < 3.8;
+
+              if (!homeInCameraCorridor && homeDistToCenter > 4.95) {
                 bys.vx += -bys.offsetX * 5.0 * rawDelta;
                 bys.vz += -bys.offsetZ * 5.0 * rawDelta;
                 if (Math.hypot(bys.offsetX, bys.offsetZ) > 0.35 && bys.y <= 0.01) {
@@ -1444,15 +1623,29 @@ export default function App() {
             ) {
               const leftHeld = sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft'];
               const rightHeld = sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight'];
-              if (leftHeld && !rightHeld) {
-                human.vx = -human.spec.walkSpeed;
-                human.action = human.facing === -1 ? 'walk_fwd' : 'walk_back';
-              } else if (rightHeld && !leftHeld) {
-                human.vx = human.spec.walkSpeed;
-                human.action = human.facing === 1 ? 'walk_fwd' : 'walk_back';
+              if (sim.combatCameraMode === 'first_person') {
+                // In First-Person Visor POV, D advances toward the opponent and A steps back!
+                if (rightHeld && !leftHeld) {
+                  human.vx = human.facing * human.spec.walkSpeed;
+                  human.action = 'walk_fwd';
+                } else if (leftHeld && !rightHeld) {
+                  human.vx = -human.facing * human.spec.walkSpeed;
+                  human.action = 'walk_back';
+                } else {
+                  human.vx = 0;
+                  human.action = 'idle';
+                }
               } else {
-                human.vx = 0;
-                human.action = 'idle';
+                if (leftHeld && !rightHeld) {
+                  human.vx = -human.spec.walkSpeed;
+                  human.action = human.facing === -1 ? 'walk_fwd' : 'walk_back';
+                } else if (rightHeld && !leftHeld) {
+                  human.vx = human.spec.walkSpeed;
+                  human.action = human.facing === 1 ? 'walk_fwd' : 'walk_back';
+                } else {
+                  human.vx = 0;
+                  human.action = 'idle';
+                }
               }
             }
 
@@ -1475,7 +1668,7 @@ export default function App() {
               spawnHitSparks(vfxPool, worldX, worldY, worldZ, stepEvents.sparkWorldPos.color, 16);
 
               arenaRig.clashPointLight.color.setHex(stepEvents.sparkWorldPos.color);
-              arenaRig.clashPointLight.intensity = 5.5;
+              arenaRig.clashPointLight.intensity = 16.0;
 
               if (stepEvents.cameraShake >= 0.25) {
                 sim.hitstopTimer = 0.042;
@@ -1644,10 +1837,17 @@ export default function App() {
             syncBoardHighlights();
           }
 
-          // Position and animate the two dueling 3D rigs on the Duel Stage (with 4D W-Phase depth offset!)
+          // Position and animate the two dueling 3D rigs on the Duel Stage
+          const human = !atk.isAI ? atk : !def.isAI ? def : atk;
+          const opponent = human === atk ? def : atk;
+          const isFirstPersonActive =
+            (sim.phase === 'FIGHT_ACTIVE' ||
+              (sim.phase === 'FIGHT_INTRO' && sim.introShotIndex === 2)) &&
+            sim.combatCameraMode === 'first_person';
+
           const fighterPairs: [FighterRuntime, ArticulatedPieceRig | undefined][] = [
-            [atk, sim.pieceRigs.get(atk.piece.id)],
-            [def, sim.pieceRigs.get(def.piece.id)],
+            [atk, atkRig],
+            [def, defRig],
           ];
 
           for (const [f, rig] of fighterPairs) {
@@ -1660,139 +1860,197 @@ export default function App() {
             rig.root.position.x = THREE.MathUtils.damp(
               rig.root.position.x,
               targetWorldX,
-              18,
+              28,
               rawDelta
             );
             rig.root.position.y = THREE.MathUtils.damp(
               rig.root.position.y,
               targetWorldY,
-              18,
+              28,
               rawDelta
             );
             rig.root.position.z = THREE.MathUtils.damp(
               rig.root.position.z,
               targetWorldZ,
-              14,
+              28,
               rawDelta
             );
 
             rig.root.scale.setScalar(
-              THREE.MathUtils.damp(rig.root.scale.x, 1.42, 8, rawDelta)
+              THREE.MathUtils.damp(rig.root.scale.x, 1.42, 22, rawDelta)
             );
+
+            // Visibility rules:
+            // - During Shot 0 (Challenger Extreme Eye Crash-Zoom), hide Defender so Challenger's eyes are 100% unobstructed head-on!
+            // - During Shot 1 (Defender Extreme Eye Crash-Zoom), hide Challenger so Defender's eyes are 100% unobstructed head-on!
+            // - During First-Person Combat, hide the human fighter's 3rd-person body and show the First-Person Weapon/Shield Viewmodel!
+            if (sim.phase === 'FIGHT_INTRO' && sim.introShotIndex === 0) {
+              rig.root.visible = f === atk;
+            } else if (sim.phase === 'FIGHT_INTRO' && sim.introShotIndex === 1) {
+              rig.root.visible = f === def;
+            } else if (isFirstPersonActive && f === human) {
+              rig.root.visible = false;
+            } else {
+              rig.root.visible = true;
+            }
+
+            if (f.wPhaseTimerMs <= 0) {
+              for (const mesh of rig.allStandardMeshes) {
+                const mat = mesh.material as THREE.MeshStandardMaterial;
+                if (mat.opacity < 0.99) {
+                  mat.opacity = 1.0;
+                  mat.transparent = false;
+                  mat.needsUpdate = true;
+                }
+              }
+            }
 
             const targetFacingYaw = f.facing === 1 ? Math.PI / 2 : -Math.PI / 2;
             rig.root.rotation.y = THREE.MathUtils.damp(
               rig.root.rotation.y,
               targetFacingYaw,
-              16,
+              24,
               rawDelta
             );
 
             animateFighterRig(rig, f, elapsed, rawDelta);
+
+            // Keep head level during extreme eye Crash-Zooms so the glowing eyes lock dead-center into the lens!
+            if (sim.phase === 'FIGHT_INTRO' && (sim.introShotIndex === 0 || sim.introShotIndex === 1)) {
+              rig.headGroup.rotation.set(0, 0, 0);
+              rig.bodyPivot.rotation.set(0, 0, 0);
+            }
           }
 
-          // 4. SPAGHETTI WESTERN ZOOM SHOTS & DYNAMIC DUTCH ANGLE CAMERA CHOREOGRAPHY
+          // Animate First-Person Weapon & Shield Viewmodel Rig when in First-Person Mode!
+          if (sim.firstPersonRig) {
+            sim.firstPersonRig.root.visible = isFirstPersonActive;
+            if (isFirstPersonActive) {
+              animateFirstPersonViewmodel(sim.firstPersonRig, human, elapsed, rawDelta);
+            }
+          }
+
+          // 4. SPAGHETTI WESTERN OPTICAL CRASH-ZOOMS -> FIRST-PERSON VISOR COMBAT CAMERA
           const midX = sim.duelCenterWorld.x + ((atk.x + def.x) * 0.5) * 0.72;
-          const midY = 1.05 + Math.max(atk.y, def.y) * 0.25;
+          const midY = 0.96 + Math.max(atk.y, def.y) * 0.22;
           const midZ = sim.duelCenterWorld.z;
           const sep = Math.abs(atk.x - def.x);
 
-          let targetFov = 40;
+          let targetFov = 38;
+          let fovDampSpeed = 14;
           let targetDutchRoll = 0;
-          let camLerpSpeed = 10;
+          let camLerpSpeed = 14;
 
           if (sim.phase === 'TRANSITION_TO_FIGHT') {
-            // Sweeping low approach toward the spotlighted square with initial Dutch tilt
-            _camTargetPos.set(midX - 1.1, 1.55, midZ + 4.8);
-            _camLookTarget.set(midX, 0.95, midZ);
-            targetFov = 36;
-            targetDutchRoll = 0.09;
-            camLerpSpeed = 8;
+            _camTargetPos.set(midX, 1.75, midZ + 5.0);
+            _camLookTarget.set(midX, 1.0, midZ);
+            targetFov = 42;
+            fovDampSpeed = 12;
+            targetDutchRoll = 0.03;
+            camLerpSpeed = 12;
           } else if (sim.phase === 'FIGHT_INTRO') {
             if (sim.introShotIndex === 0) {
-              // SHOT 0: Sergio Leone Extreme Close-Up Zoom on Challenger's Visor/Eyes + +12.5° Dutch Angle!
-              _camTargetPos.set(atkWorldX + 0.82, atkWorldY + 1.24, atkWorldZ + 1.42);
-              _camLookTarget.set(atkWorldX, atkWorldY + 1.16, atkWorldZ);
-              targetFov = 22;
-              targetDutchRoll = 0.22; // +12.5 deg Dutch tilt
-              camLerpSpeed = 24; // Snappy whip-pan/zoom cut!
+              // SHOT 0: Sergio Leone Extreme Eye CRASH-ZOOM on Challenger (FOV 62° -> 9.5° in 0.14s, locked dead-on Challenger's glowing eyes!)
+              _camTargetPos.set(atkWorldX + 1.48, atkWorldY + atkEyeH, atkWorldZ);
+              _camLookTarget.set(atkWorldX, atkWorldY + atkEyeH, atkWorldZ);
+              targetFov = 9.5;
+              fovDampSpeed = 32; // Violent, high-speed optical crash zoom!
+              targetDutchRoll = 0.035;
+              camLerpSpeed = 40;
             } else if (sim.introShotIndex === 1) {
-              // SHOT 1: Counter-Cut Extreme Close-Up Zoom on Defender's Visor/Eyes + -12.5° Counter-Dutch Angle!
-              _camTargetPos.set(defWorldX - 0.82, defWorldY + 1.24, defWorldZ + 1.42);
-              _camLookTarget.set(defWorldX, defWorldY + 1.16, defWorldZ);
-              targetFov = 22;
-              targetDutchRoll = -0.22; // -12.5 deg Counter-Dutch tilt
-              camLerpSpeed = 24;
+              // SHOT 1: Sergio Leone Extreme Eye Counter-CRASH-ZOOM on Defender (FOV 62° -> 9.5° in 0.14s, locked dead-on Defender's glaring eyes!)
+              _camTargetPos.set(defWorldX - 1.48, defWorldY + defEyeH, defWorldZ);
+              _camLookTarget.set(defWorldX, defWorldY + defEyeH, defWorldZ);
+              targetFov = 9.5;
+              fovDampSpeed = 32; // Violent, high-speed optical crash zoom!
+              targetDutchRoll = -0.035;
+              camLerpSpeed = 40;
             } else {
-              // SHOT 2: Low-Angle Over-the-Shoulder Gunfighter Standoff Wide + +7° Dutch Angle!
-              _camTargetPos.set(midX - 0.55, 0.62, midZ + 3.9);
-              _camLookTarget.set(midX, 1.05, midZ);
-              targetFov = 32;
-              targetDutchRoll = 0.12;
-              camLerpSpeed = 16;
+              // SHOT 2: Snap-Zoom out into Human Warrior's First-Person Helmet Visor POV!
+              const hWorldX = sim.duelCenterWorld.x + human.x * 0.72;
+              const hWorldY = human.y * 0.72;
+              const hEyeH = getWarriorEyeHeightWorld(human.piece.type);
+              const oWorldX = sim.duelCenterWorld.x + opponent.x * 0.72;
+              const oWorldY = opponent.y * 0.72;
+              const oEyeH = getWarriorEyeHeightWorld(opponent.piece.type);
+
+              _camTargetPos.set(hWorldX, hWorldY + hEyeH, midZ);
+              _camLookTarget.set(oWorldX, oWorldY + oEyeH * 0.82, midZ);
+              targetFov = 56;
+              fovDampSpeed = 24;
+              targetDutchRoll = 0;
+              camLerpSpeed = 28;
             }
           } else if (sim.phase === 'FIGHT_OUTRO') {
-            // Low-Angle Dutch Victory Zoom on the surviving warrior under the spotlight!
+            // Heroic 3rd-Person Victory Shot on the surviving warrior under the spotlight!
             const winnerWorldX =
               def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp)
                 ? atkWorldX
                 : defWorldX;
             const winnerIsAtk = winnerWorldX === atkWorldX;
             _camTargetPos.set(
-              winnerWorldX + (winnerIsAtk ? 0.65 : -0.65),
-              0.68,
-              midZ + 2.45
+              winnerWorldX + (winnerIsAtk ? 0.85 : -0.85),
+              1.32,
+              midZ + 2.95
             );
             _camLookTarget.set(winnerWorldX, 1.12, midZ);
-            targetFov = 26;
-            targetDutchRoll = winnerIsAtk ? 0.17 : -0.17;
+            targetFov = 29;
+            fovDampSpeed = 14;
+            targetDutchRoll = winnerIsAtk ? 0.06 : -0.06;
             camLerpSpeed = 12;
-          } else {
-            // FIGHT_ACTIVE: Dynamic fighting camera with telephoto zoom & Dutch angle on Specials, Parries & Finishers!
-            const activeSpecialFighter =
-              atk.action === 'special' || atk.action === 'combo_finisher' || atk.action === 'parry_flash'
-                ? atk
-                : def.action === 'special' || def.action === 'combo_finisher' || def.action === 'parry_flash'
-                ? def
-                : null;
+          } else if (sim.combatCameraMode === 'first_person') {
+            // FIRST-PERSON VISOR COMBAT MODE (Default after the Western Crash Zooms!)
+            const hWorldX = sim.duelCenterWorld.x + human.x * 0.72;
+            const hWorldY = human.y * 0.72;
+            const hPhaseZ = human.wPhaseTimerMs > 0 ? human.wPhaseOffset * 0.65 : 0;
+            const hWorldZ = midZ + hPhaseZ;
+            const hEyeH = getWarriorEyeHeightWorld(human.piece.type);
 
-            if (activeSpecialFighter) {
-              const focusX = sim.duelCenterWorld.x + activeSpecialFighter.x * 0.72;
-              _camTargetPos.set(
-                (midX + focusX) * 0.5,
-                0.78 + Math.max(atk.y, def.y) * 0.2,
-                midZ + 3.65
-              );
-              _camLookTarget.set((midX + focusX) * 0.5, midY, midZ);
-              targetFov = 29;
-              targetDutchRoll = activeSpecialFighter === atk ? 0.14 : -0.14;
-              camLerpSpeed = 14;
-            } else {
-              const camDistZ = THREE.MathUtils.clamp(4.4 + sep * 0.48, 4.5, 7.8);
-              _camTargetPos.set(midX, midY + 1.05, midZ + camDistZ);
-              _camLookTarget.set(midX, midY, midZ);
-              targetFov = 39;
-              // Subtle dynamic Dutch roll during heavy hits, dashes & 4D Phase Shifts
-              const phaseTilt =
-                atk.wPhaseTimerMs > 0 ? 0.09 : def.wPhaseTimerMs > 0 ? -0.09 : 0;
-              targetDutchRoll =
-                THREE.MathUtils.clamp((atk.vx - def.vx) * 0.005, -0.06, 0.06) + phaseTilt;
-              camLerpSpeed = 10;
-            }
+            const oWorldX = sim.duelCenterWorld.x + opponent.x * 0.72;
+            const oWorldY = opponent.y * 0.72;
+            const oPhaseZ = opponent.wPhaseTimerMs > 0 ? opponent.wPhaseOffset * 0.65 : 0;
+            const oWorldZ = midZ + oPhaseZ;
+            const oEyeH = getWarriorEyeHeightWorld(opponent.piece.type);
+
+            const walkBob =
+              human.action === 'walk_fwd' || human.action === 'walk_back'
+                ? Math.sin(elapsed * 14) * 0.035
+                : Math.sin(elapsed * 2.5) * 0.008;
+
+            _camTargetPos.set(hWorldX, hWorldY + hEyeH + walkBob, hWorldZ);
+            _camLookTarget.set(oWorldX, oWorldY + oEyeH * 0.78, oWorldZ);
+            targetFov = human.action === 'special' ? 64 : human.wPhaseTimerMs > 0 ? 66 : 56;
+            fovDampSpeed = 18;
+            targetDutchRoll =
+              human.action === 'hitstun'
+                ? 0.08
+                : human.wPhaseTimerMs > 0
+                ? 0.05 * human.wPhaseOffset
+                : 0;
+            camLerpSpeed = 28;
+          } else {
+            // Optional Side Arena Camera (Toggled via 'V' key or HUD button)
+            const camDistZ = THREE.MathUtils.clamp(4.45 + sep * 0.45, 4.5, 7.2);
+            _camTargetPos.set(midX, 1.62 + Math.max(atk.y, def.y) * 0.18, midZ + camDistZ);
+            _camLookTarget.set(midX, midY, midZ);
+            targetFov = 38;
+            fovDampSpeed = 12;
+            targetDutchRoll = 0;
+            camLerpSpeed = 12;
           }
 
           if (sim.cameraShake > 0) {
-            _camTargetPos.x += (Math.random() - 0.5) * sim.cameraShake;
-            _camTargetPos.y += (Math.random() - 0.5) * sim.cameraShake;
-            targetDutchRoll += (Math.random() - 0.5) * sim.cameraShake * 0.25;
+            _camTargetPos.x += (Math.random() - 0.5) * sim.cameraShake * 0.6;
+            _camTargetPos.y += (Math.random() - 0.5) * sim.cameraShake * 0.6;
+            targetDutchRoll += (Math.random() - 0.5) * sim.cameraShake * 0.22;
             sim.cameraShake = Math.max(0, sim.cameraShake - rawDelta * 1.8);
           }
 
-          camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, camLerpSpeed, rawDelta);
+          camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, fovDampSpeed, rawDelta);
           camera.updateProjectionMatrix();
 
           camera.position.lerp(_camTargetPos, 1 - Math.exp(-camLerpSpeed * rawDelta));
-          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-(camLerpSpeed + 2) * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-(camLerpSpeed + 4) * rawDelta));
           camera.lookAt(sim.currentLookAt);
 
           // Apply Dutch Angle roll around the camera's local line-of-sight axis after lookAt!
@@ -1923,30 +2181,48 @@ export default function App() {
         className="absolute inset-0 top-[53px] z-0 w-full h-[calc(100vh-53px)] cursor-grab active:cursor-grabbing"
       />
 
-      {/* 3. Subtle Top-Left Tactical Status, 4D Slice Inspector & Unseen 4D Threat Radar (during CHESS_VIEW) */}
+      {/* 3. Top-Left Tactical / Quantum 4D Manifold Inspector & Unseen 4D Threat Radar (during CHESS_VIEW) */}
       {phase === 'CHESS_VIEW' && (
         <div className="pointer-events-auto fixed top-[68px] left-6 z-20 flex flex-col gap-2 max-w-sm">
-          <div className="bg-[#0B0E17]/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl">
+          <div
+            className={`rounded-xl px-4 py-3 shadow-xl border transition-colors ${
+              activeSliceW !== 0 || activeSliceZ !== 0
+                ? 'bg-[#090616]/95 border-cyan-400/70 shadow-[0_0_30px_rgba(56,189,248,0.18)]'
+                : 'bg-[#0B0E17]/95 border-slate-800'
+            }`}
+          >
             <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
               <span>TURN {turnNumber} · {gameMode === 'vs_ai' ? 'VS AI' : '2P LOCAL'}</span>
-              <span className="text-purple-300">
-                SLICE: {formatWName(activeSliceW)} · {formatZName(activeSliceZ)}
+              <span className={activeSliceW !== 0 || activeSliceZ !== 0 ? 'text-cyan-300 font-bold' : 'text-amber-300'}>
+                |ψ⟩ = |W={activeSliceW}, Z={activeSliceZ}⟩
               </span>
             </div>
             <div className="font-display text-base font-bold text-white mt-0.5">
-              {turnFaction === 'w' ? 'Solaris Order (White) to Move' : 'Obsidian Dominion (Black) to Move'}
+              {activeSliceW !== 0 || activeSliceZ !== 0
+                ? `Quantum Manifold: ${formatWName(activeSliceW)} · ${formatZName(activeSliceZ)}`
+                : turnFaction === 'w'
+                ? 'Solaris Order (White) to Move'
+                : 'Obsidian Dominion (Black) to Move'}
             </div>
-            <div className="text-xs text-slate-400 mt-1">
-              You observe one 3D slice at a time. Translucent pieces with spinning Tesseracts lurk in adjacent 4th-dimensional folds (<span className="text-purple-300">-W / +W</span>)!
+            <div className="text-xs text-slate-300 mt-1">
+              {activeSliceW !== 0 || activeSliceZ !== 0 ? (
+                <>
+                  Observing <span className="text-cyan-300 font-semibold">Quantum 4D Eigenstate</span>. Standing-wave rings mark probability fields; translucent pieces in <span className="text-purple-300">|W=0⟩</span> exist in superposition!
+                </>
+              ) : (
+                <>
+                  Classical Prime Sanctuary (<span className="text-amber-300">|W=0, Z=0⟩</span>). Shift slices below or project moves into <span className="text-cyan-300">Quantum 4D (-W / +W)</span>!
+                </>
+              )}
             </div>
           </div>
 
           {/* Unseen 4D Cross-Dimensional Threat Alert */}
           {unseenThreats.length > 0 && (
-            <div className="bg-[#0B0E17]/95 border border-purple-500/60 rounded-xl px-4 py-2.5 shadow-xl">
+            <div className="bg-[#090616]/95 border border-purple-500/70 rounded-xl px-4 py-2.5 shadow-xl">
               <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold text-purple-300">
                 <AlertTriangle className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                <span>{unseenThreats.length} UNSEEN 4D THREAT{unseenThreats.length > 1 ? 'S' : ''} ON THIS SLICE!</span>
+                <span>{unseenThreats.length} QUANTUM ENTANGLED THREAT{unseenThreats.length > 1 ? 'S' : ''}!</span>
               </div>
               <div className="text-[11px] text-slate-300 mt-1">
                 {unseenThreats[0].axisDescription} threatens square{' '}
@@ -1961,19 +2237,19 @@ export default function App() {
                 }
                 className="mt-1.5 px-2.5 py-1 bg-purple-950/90 hover:bg-purple-900 border border-purple-500/40 rounded text-[11px] font-mono text-purple-200 transition-colors cursor-pointer"
               >
-                Shift View to Attacker&apos;s 4D Slice ({formatWName(unseenThreats[0].attacker.w)})
+                Collapse Wavefunction to Attacker&apos;s Slice ({formatWName(unseenThreats[0].attacker.w)})
               </button>
             </div>
           )}
 
-          {/* Selected Piece + 4D Move Destination Slice Projector */}
+          {/* Selected Piece + 4D Quantum Tunneling Projector */}
           {selectedPiece && (
-            <div className="bg-[#0B0E17]/95 border border-amber-500/40 rounded-xl px-4 py-3 shadow-xl">
-              <div className="flex items-center justify-between text-xs font-mono text-amber-400">
+            <div className="bg-[#0B0E17]/95 border border-cyan-500/50 rounded-xl px-4 py-3 shadow-xl">
+              <div className="flex items-center justify-between text-xs font-mono text-cyan-300">
                 <span>
-                  {ARCHETYPES[selectedPiece.type].chessName.toUpperCase()} · W={selectedPiece.w}, Z={selectedPiece.z}
+                  {ARCHETYPES[selectedPiece.type].chessName.toUpperCase()} · |W={selectedPiece.w}, Z={selectedPiece.z}⟩
                 </span>
-                <span className="tabular-nums">
+                <span className="tabular-nums text-amber-300">
                   {selectedPiece.hp}/{selectedPiece.maxHp} HP
                 </span>
               </div>
@@ -1984,15 +2260,15 @@ export default function App() {
               {/* 4D Move Projection Selector */}
               <div className="mt-2 pt-2 border-t border-slate-800">
                 <div className="text-[10px] font-mono text-slate-400 mb-1.5 flex items-center gap-1">
-                  <Orbit className="w-3 h-3 text-purple-400" />
-                  <span>PROJECT 4D MOVE INTO W-AXIS SLICE:</span>
+                  <Orbit className="w-3 h-3 text-cyan-400" />
+                  <span>QUANTUM TUNNEL MOVE INTO EIGENSTATE:</span>
                 </div>
                 <div className="grid grid-cols-3 gap-1">
                   {(
                     [
-                      [-1, 'Kata (-W)'],
-                      [0, 'Prime (0)'],
-                      [1, 'Ana (+W)'],
+                      [-1, '|ψ₋⟩ Kata'],
+                      [0, '|ψ₀⟩ Prime'],
+                      [1, '|ψ₊⟩ Ana'],
                     ] as [number, string][]
                   ).map(([wVal, label]) => (
                     <button
@@ -2000,7 +2276,7 @@ export default function App() {
                       onClick={() => handleSelect4DSlice(wVal, targetMoveZ, false)}
                       className={`px-2 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer ${
                         targetMoveW === wVal
-                          ? 'bg-purple-600 text-white font-semibold'
+                          ? 'bg-cyan-600 text-slate-950 font-bold'
                           : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                       }`}
                     >
@@ -2021,7 +2297,7 @@ export default function App() {
                 {ARCHETYPES[selectedPiece.type].chessName} ({selectedPiece.hp} HP) vs {ARCHETYPES[hoveredCaptureMove.targetPiece.type].chessName} ({hoveredCaptureMove.targetPiece.hp} HP)
               </div>
               <div className="text-[11px] text-slate-300 mt-1">
-                Click target square to enter the 3D Arena! Use <span className="text-purple-300">4D Phase (Q)</span> and <span className="text-cyan-300">Chrono-Echo (E)</span> in combat!
+                Click square for <span className="text-amber-300">Western Crash-Zooms</span> → <span className="text-cyan-300">First-Person Visor Combat</span>!
               </div>
             </div>
           )}
@@ -2084,6 +2360,8 @@ export default function App() {
         fightTimer={fightTimer}
         duelSquareName={duelSquareName}
         introShotIndex={introShotIndex}
+        combatCameraMode={combatCameraMode}
+        onToggleCombatCameraMode={handleToggleCombatCameraMode}
         callouts={callouts}
         dockCollapsed={dockCollapsed}
         onToggleDock={() => setDockCollapsed((p) => !p)}

@@ -18,6 +18,8 @@ export interface BoardArenaRig {
   tesseractLines: THREE.LineSegments;
   tesseractVerts4D: [number, number, number, number][];
   tesseractEdgeIndices: [number, number][];
+  quantumLatticeGroup: THREE.Group;
+  quantumWaveRings: THREE.Mesh[];
 }
 
 export const TILE_SIZE = 1.35;
@@ -269,10 +271,63 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   columnsInstanced.computeBoundingSphere();
   group.add(columnsInstanced);
 
-  // Duel Ring Group
+  // Duel Ring Group (Includes an illuminated Spotlight Stage Floor Disc so fighters stand out cleanly against a warm pool of light!)
   const duelRingGroup = new THREE.Group();
   duelRingGroup.position.y = -2.5;
   group.add(duelRingGroup);
+
+  // Create procedural radial spotlight stage texture so the duel floor is brightly lit and aligned with spacing markers
+  const stageCanvas = document.createElement('canvas');
+  stageCanvas.width = 512;
+  stageCanvas.height = 512;
+  const sCtx = stageCanvas.getContext('2d')!;
+  const sGrad = sCtx.createRadialGradient(256, 256, 20, 256, 256, 250);
+  sGrad.addColorStop(0, 'rgba(254, 243, 199, 0.42)');
+  sGrad.addColorStop(0.45, 'rgba(245, 158, 11, 0.22)');
+  sGrad.addColorStop(0.78, 'rgba(15, 23, 42, 0.82)');
+  sGrad.addColorStop(1, 'rgba(7, 9, 14, 0.95)');
+  sCtx.fillStyle = sGrad;
+  sCtx.fillRect(0, 0, 512, 512);
+
+  // Draw crisp alignment & spacing lines on the duel stage floor
+  sCtx.strokeStyle = 'rgba(251, 191, 36, 0.38)';
+  sCtx.lineWidth = 3;
+  sCtx.beginPath();
+  sCtx.arc(256, 256, 175, 0, Math.PI * 2);
+  sCtx.stroke();
+
+  // Horizontal fighting plane axis & center line
+  sCtx.strokeStyle = 'rgba(254, 240, 138, 0.32)';
+  sCtx.lineWidth = 2;
+  sCtx.beginPath();
+  sCtx.moveTo(48, 256);
+  sCtx.lineTo(464, 256);
+  sCtx.moveTo(256, 180);
+  sCtx.lineTo(256, 332);
+  sCtx.stroke();
+
+  const stageFloorTex = new THREE.CanvasTexture(stageCanvas);
+  stageFloorTex.colorSpace = THREE.SRGBColorSpace;
+  stageFloorTex.needsUpdate = true;
+
+  const stageFloorDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(4.32, 64),
+    new THREE.MeshStandardMaterial({
+      map: stageFloorTex,
+      roughness: 0.38,
+      metalness: 0.15,
+      transparent: true,
+      opacity: 0.94,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    })
+  );
+  stageFloorDisc.rotation.x = -Math.PI / 2;
+  stageFloorDisc.position.y = 0.018;
+  stageFloorDisc.receiveShadow = true;
+  duelRingGroup.add(stageFloorDisc);
 
   const arenaRingMesh = new THREE.Mesh(
     new THREE.TorusGeometry(4.4, 0.075, 16, 64),
@@ -288,12 +343,12 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
       color: 0xf59e0b,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.55,
       depthWrite: false,
     })
   );
   innerRuneRing.rotation.x = -Math.PI / 2;
-  innerRuneRing.position.y = 0.02;
+  innerRuneRing.position.y = 0.024;
   duelRingGroup.add(innerRuneRing);
 
   const barrierMat = new THREE.MeshBasicMaterial({
@@ -304,17 +359,16 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     depthWrite: false,
   });
   const duelBarrierMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(4.4, 4.4, 1.35, 48, 1, true),
+    new THREE.CylinderGeometry(4.4, 4.4, 0.85, 48, 1, true),
     barrierMat
   );
-  duelBarrierMesh.position.y = 0.68;
+  duelBarrierMesh.position.y = 0.45;
   duelBarrierMesh.renderOrder = 5;
   duelRingGroup.add(duelBarrierMesh);
 
-  // High-Contrast Overhead Fight SpotLights & Tight Volumetric Shafts
-  // Narrow cone angle (Math.PI / 9) and steep decay (2.1) carve a stark pool of light around the duelists while the rest of the board plunges into darkness!
-  const spotAttacker = new THREE.SpotLight(0xfffbeb, 0, 16, Math.PI / 8.8, 0.48, 2.0);
-  spotAttacker.position.set(-1.5, 6.8, 0.35);
+  // Bright, Wide Overhead Stage SpotLights (zero decay falloff loss so the fighters and stage floor are vividly illuminated!)
+  const spotAttacker = new THREE.SpotLight(0xfffbeb, 0, 34, Math.PI / 3.8, 0.55, 0.9);
+  spotAttacker.position.set(-1.8, 6.8, 2.4);
   spotAttacker.castShadow = true;
   spotAttacker.shadow.bias = -0.0002;
   spotAttacker.shadow.mapSize.width = 1024;
@@ -322,14 +376,14 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   group.add(spotAttacker);
   group.add(spotAttacker.target);
 
-  const spotDefender = new THREE.SpotLight(0xffe4e6, 0, 16, Math.PI / 8.8, 0.48, 2.0);
-  spotDefender.position.set(1.5, 6.8, 0.35);
+  const spotDefender = new THREE.SpotLight(0xfff5f5, 0, 34, Math.PI / 3.8, 0.55, 0.9);
+  spotDefender.position.set(1.8, 6.8, 2.4);
   spotDefender.castShadow = false;
   group.add(spotDefender);
   group.add(spotDefender.target);
 
-  const coneGeo = new THREE.ConeGeometry(1.28, 6.8, 32, 1, true);
-  coneGeo.translate(0, -3.4, 0);
+  // Vertical Overhead Volumetric Light Shafts (pointing straight down from y=6.4 onto the fighters, never crossing in front of the camera!)
+  const coneGeo = new THREE.ConeGeometry(1.5, 6.4, 32, 1, true);
 
   const coneMatAttacker = new THREE.MeshBasicMaterial({
     color: 0xfef08a,
@@ -337,24 +391,26 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     opacity: 0,
     side: THREE.DoubleSide,
     depthWrite: false,
+    blending: THREE.AdditiveBlending,
   });
   const volumetricConeAttacker = new THREE.Mesh(coneGeo, coneMatAttacker);
-  volumetricConeAttacker.position.copy(spotAttacker.position);
+  volumetricConeAttacker.position.set(-1.6, 3.2, 0);
   group.add(volumetricConeAttacker);
 
   const coneMatDefender = new THREE.MeshBasicMaterial({
-    color: 0xfda4af,
+    color: 0xfecdd3,
     transparent: true,
     opacity: 0,
     side: THREE.DoubleSide,
     depthWrite: false,
+    blending: THREE.AdditiveBlending,
   });
   const volumetricConeDefender = new THREE.Mesh(coneGeo, coneMatDefender);
-  volumetricConeDefender.position.copy(spotDefender.position);
+  volumetricConeDefender.position.set(1.6, 3.2, 0);
   group.add(volumetricConeDefender);
 
-  const clashPointLight = new THREE.PointLight(0xf59e0b, 0, 4.8, 2.2);
-  clashPointLight.position.set(0, 1.3, 0);
+  const clashPointLight = new THREE.PointLight(0xfffbeb, 0, 16.0, 1.0);
+  clashPointLight.position.set(0, 2.5, 2.5);
   group.add(clashPointLight);
 
   // Floating Atmospheric Embers
@@ -385,7 +441,7 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   const ambientParticles = new THREE.Points(pGeo, pMat);
   group.add(ambientParticles);
 
-  // 4D Mathematical Tesseract (8-Cell Hypercube) Stereographic Projector
+  // 4D Mathematical Tesseract (8-Cell Hypercube) Stereographic Projector (Elevated high behind the board so it never overlaps pieces or fighters)
   const tesseractVerts4D: [number, number, number, number][] = [];
   for (let i = 0; i < 16; i++) {
     tesseractVerts4D.push([
@@ -412,11 +468,40 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   const tessMat = new THREE.LineBasicMaterial({
     color: 0x38bdf8,
     transparent: true,
-    opacity: 0.28,
+    opacity: 0.2,
   });
   const tesseractLines = new THREE.LineSegments(tessGeo, tessMat);
-  tesseractLines.position.set(0, 4.2, -7.5);
+  tesseractLines.position.set(0, 6.2, -11.5);
   group.add(tesseractLines);
+
+  // Quantum 4D Wavefunction Interference Lattice & Concentric Probability Standing Waves
+  const quantumLatticeGroup = new THREE.Group();
+  quantumLatticeGroup.position.y = 0.015;
+  group.add(quantumLatticeGroup);
+
+  const gridHelper = new THREE.GridHelper(boardSpan * 1.35, 24, 0x38bdf8, 0x7e22ce);
+  (gridHelper.material as THREE.Material).transparent = true;
+  (gridHelper.material as THREE.Material).opacity = 0.0;
+  quantumLatticeGroup.add(gridHelper);
+
+  const quantumWaveRings: THREE.Mesh[] = [];
+  for (let i = 0; i < 5; i++) {
+    const r = 1.6 + i * 1.45;
+    const waveRingGeo = new THREE.RingGeometry(r, r + 0.055, 64);
+    const waveRingMat = new THREE.MeshBasicMaterial({
+      color: i % 2 === 0 ? 0x38bdf8 : 0xc084fc,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const waveRing = new THREE.Mesh(waveRingGeo, waveRingMat);
+    waveRing.rotation.x = -Math.PI / 2;
+    waveRing.position.y = 0.01 + i * 0.004;
+    quantumLatticeGroup.add(waveRing);
+    quantumWaveRings.push(waveRing);
+  }
 
   return {
     group,
@@ -436,12 +521,14 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     tesseractLines,
     tesseractVerts4D,
     tesseractEdgeIndices,
+    quantumLatticeGroup,
+    quantumWaveRings,
   };
 }
 
 /**
- * Rotates the 16 vertices of the 4D Tesseract in 4D planes (XW, YW, ZW)
- * and stereographically projects them into 3D space!
+ * Rotates the 16 vertices of the 4D Tesseract in 4D planes (XW, YW, ZW),
+ * stereographically projects them into 3D space, and animates the Quantum 4D Wavefunction Lattice!
  */
 export function update4DTesseractProjection(
   rig: BoardArenaRig,
@@ -449,8 +536,9 @@ export function update4DTesseractProjection(
   activeW: number,
   activeZ: number
 ) {
-  const angleXW = elapsedTime * 0.55 + activeW * 0.85;
-  const angleYW = elapsedTime * 0.38 + activeZ * 0.75;
+  const isQuantumMode = activeW !== 0 || activeZ !== 0;
+  const angleXW = elapsedTime * (isQuantumMode ? 0.95 : 0.45) + activeW * 0.95;
+  const angleYW = elapsedTime * (isQuantumMode ? 0.72 : 0.32) + activeZ * 0.85;
   const angleXY = elapsedTime * 0.25;
 
   const cosXW = Math.cos(angleXW);
@@ -462,7 +550,7 @@ export function update4DTesseractProjection(
 
   const projected3D: [number, number, number][] = [];
   const cameraDist4D = 2.6;
-  const scale = 1.65;
+  const scale = isQuantumMode ? 2.15 : 1.55;
 
   for (let i = 0; i < 16; i++) {
     let [x, y, z, w] = rig.tesseractVerts4D[i];
@@ -500,18 +588,31 @@ export function update4DTesseractProjection(
   }
   posAttr.needsUpdate = true;
 
+  const primaryColorHex =
+    activeW > 0 ? 0x38bdf8 : activeW < 0 ? 0xc084fc : activeZ > 0 ? 0x34d399 : 0xf59e0b;
+
   const mat = rig.tesseractLines.material as THREE.LineBasicMaterial;
-  if (activeW > 0) {
-    mat.color.setHex(0x38bdf8); // Ana (+W) Cyan
-    mat.opacity = 0.55;
-  } else if (activeW < 0) {
-    mat.color.setHex(0xc084fc); // Kata (-W) Violet
-    mat.opacity = 0.55;
-  } else if (activeZ > 0) {
-    mat.color.setHex(0x34d399); // Astral (+Z) Emerald
-    mat.opacity = 0.55;
-  } else {
-    mat.color.setHex(0xf59e0b); // Prime (0,0) Gold
-    mat.opacity = 0.25;
+  mat.color.setHex(primaryColorHex);
+  mat.opacity = isQuantumMode ? 0.68 : 0.2;
+
+  // Animate Quantum Wavefunction Interference Lattice on the board when in a 4D Quantum Slice!
+  const gridChild = rig.quantumLatticeGroup.children[0] as THREE.LineSegments;
+  if (gridChild && gridChild.material) {
+    const gMat = gridChild.material as THREE.LineBasicMaterial;
+    gMat.opacity = THREE.MathUtils.lerp(gMat.opacity, isQuantumMode ? 0.32 : 0.0, 0.1);
+  }
+
+  for (let i = 0; i < rig.quantumWaveRings.length; i++) {
+    const ring = rig.quantumWaveRings[i];
+    const rMat = ring.material as THREE.MeshBasicMaterial;
+    if (isQuantumMode) {
+      const wave = 0.5 + 0.5 * Math.sin(elapsedTime * 3.6 - i * 1.1);
+      rMat.color.setHex(i % 2 === 0 ? primaryColorHex : 0x38bdf8);
+      rMat.opacity = 0.16 + wave * 0.28;
+      const pulseScale = 1.0 + Math.sin(elapsedTime * 2.4 + i) * 0.04;
+      ring.scale.setScalar(pulseScale);
+    } else {
+      rMat.opacity = THREE.MathUtils.lerp(rMat.opacity, 0.0, 0.12);
+    }
   }
 }
