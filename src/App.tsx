@@ -5,11 +5,14 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import confetti from 'canvas-confetti';
 import {
+  ActiveInterventionState,
   BattleLogEntry,
   BoardCoord,
+  CausalCollapseResolution,
   ChessPiece,
   CombatCallout,
   Faction,
@@ -17,29 +20,67 @@ import {
   FighterRuntime,
   GamePhase,
   MoveOption,
+  MultiverseState,
   PieceType,
+  RealmEnemySentinel,
+  RealmId,
+  RealmPortalNode,
+  RealmTemporalEcho,
+  TimelineBranch,
   TimelineSnapshot,
   UnseenThreatVector,
 } from './types/game';
 import { ARCHETYPES } from './data/archetypes';
 import {
   chooseAIMove,
+  computeSquareSupportAnalysis,
   computeUnseen4DThreats,
   createInitialBoard,
   formatSquareName,
   formatWName,
   formatZName,
   getPieceAtProjected,
+  getPieceLineageId,
   getValidMovesForPiece,
 } from './engine/chessEngine';
 import {
+  createInitialMultiverseState,
+  ensureBranchHydrated,
+  executeAIMultiverseParadoxStrike,
+  forkTimelineFromBranch,
+  getPendingCausalBreachesForTimeline,
+  reconcileTimelineConvergence,
+  recordCausalAssassination,
+  rewindCausalAssassination,
+  switchActiveTimeline,
+  syncActiveTimelineFromLiveBoard,
+  transitionTravelerToTimeline,
+} from './engine/multiverseEngine';
+import {
+  BOARD_GATEWAYS,
+  buildDeterministicTemporalEchoes,
+  buildRealmSentinels,
+  evaluateCrucibleHazards,
+  evaluatePortalBoardExit,
+  getGatewayAtSquare,
+  getPortalsForRealm,
+  PortalBoardExitEvaluation,
+  REALM_METADATA,
+  REALM_PORTALS,
+} from './engine/realmEngine';
+import {
+  applyTacticalInterventionImpact,
   createFighterRuntime,
+  getFighterSpeedMultiplier,
   stepCombatSimulation,
+  stepVictoryTaunt,
   triggerFighter4DPhaseShift,
   triggerFighterAttack,
   triggerFighterDash,
   triggerFighterJump,
   triggerFighterTemporalEcho,
+  triggerTacticalIntervention,
+  triggerVictoryTaunt,
   updateFighterAI,
 } from './engine/combatEngine';
 import {
@@ -56,21 +97,33 @@ import {
   updateQuantumEntanglementBeams,
 } from './three/arenaBuilder';
 import {
+  createSubterraneanRealms,
+  SubterraneanRealmsRig,
+  syncRealmEntities3D,
+  updateSubterraneanRealmsAndPortals,
+} from './three/realmBuilder';
+import {
   animateFighterRig,
   animateFirstPersonViewmodel,
   createVFXPool,
   spawnAuraPillar,
+  spawnBattleSmoke,
   spawnGroundDebris,
   spawnHitSparks,
+  spawnInterventionRift,
+  spawnParryImpactSparks,
   spawnShockwave,
   spawnSlashArc,
   updateVFXPool,
   VFXPool,
 } from './three/combatAnimator';
+import { BattleWornShader } from './three/battleWornShader';
 import { soundEngine } from './audio/soundEngine';
 import { CombatHudOverlay, PlayerCombatInputAction } from './components/CombatHudOverlay';
+import { RealmHudOverlay } from './components/RealmHudOverlay';
 import { CodexModal } from './components/CodexModal';
-import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle } from 'lucide-react';
+import { MultiverseModal } from './components/MultiverseModal';
+import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle, Play, Pause, GitBranch, Zap, Skull } from 'lucide-react';
 
 // Pre-allocated math helpers at module scope (Zero GC in render loop)
 const _vec3A = new THREE.Vector3();
@@ -114,6 +167,10 @@ export default function App() {
   const [dockCollapsed, setDockCollapsed] = useState<boolean>(false);
   const [muted, setMuted] = useState<boolean>(false);
   const [codexOpen, setCodexOpen] = useState<boolean>(false);
+  const [autoPlayDemo, setAutoPlayDemo] = useState<boolean>(false);
+  const [demoDirectorStage, setDemoDirectorStage] = useState<string>(
+    '4D QUANTUM MANIFOLD & TACTICAL COVERAGE'
+  );
 
   // 4D Hypercube Slice State: Which 3D slice (Z, W) the player is currently observing,
   // and which target 4D slice the selected piece is projecting moves into!
@@ -123,7 +180,32 @@ export default function App() {
   const [targetMoveZ, setTargetMoveZ] = useState<number>(0);
   const [unseenThreats, setUnseenThreats] = useState<UnseenThreatVector[]>([]);
   const [canRewindTimeline, setCanRewindTimeline] = useState<boolean>(false);
-  const [timelineBranchLabel, setTimelineBranchLabel] = useState<string>('Timeline α');
+  const [timelineBranchLabel, setTimelineBranchLabel] = useState<string>('Timeline Prime (α)');
+
+  // Multiversal Chess, Causal Assassination & Reality Convergence State
+  const initialBoardRef = useRef<ChessPiece[] | null>(null);
+  if (!initialBoardRef.current) {
+    initialBoardRef.current = createInitialBoard();
+  }
+  const initialMultiverseRef = useRef<MultiverseState | null>(null);
+  if (!initialMultiverseRef.current) {
+    initialMultiverseRef.current = createInitialMultiverseState(initialBoardRef.current);
+  }
+  const [multiverseState, setMultiverseState] = useState<MultiverseState>(
+    () => initialMultiverseRef.current!
+  );
+  const [multiverseModalOpen, setMultiverseModalOpen] = useState<boolean>(false);
+  const [activeCollapseBanner, setActiveCollapseBanner] =
+    useState<CausalCollapseResolution[] | null>(null);
+
+  // Subterranean Realms UI State
+  const [activeRealmId, setActiveRealmId] = useState<RealmId>('SHATTERED_MIRROR');
+  const [realmTraveler, setRealmTraveler] = useState<ChessPiece | null>(null);
+  const [realmParityInverted, setRealmParityInverted] = useState<boolean>(false);
+  const [realmCrucibleClaimed, setRealmCrucibleClaimed] = useState<boolean>(false);
+  const [nearbyPortal, setNearbyPortal] = useState<RealmPortalNode | null>(null);
+  const [nearbyPortalEval, setNearbyPortalEval] = useState<PortalBoardExitEvaluation | null>(null);
+  const [realmStatusBanner, setRealmStatusBanner] = useState<string | null>(null);
 
   const [selectedPiece, setSelectedPiece] = useState<ChessPiece | null>(null);
   const [hoveredCaptureMove, setHoveredCaptureMove] = useState<MoveOption | null>(null);
@@ -131,8 +213,8 @@ export default function App() {
     {
       id: 'init',
       turnNumber: 1,
-      summary: '4D Hypercube Sanctuary Initialized',
-      detail: 'Select any warrior to move on Prime (W=0) or project across the 4th spatial axis (Kata -W / Ana +W) & Spacetime trails!',
+      summary: 'Multiverse Nexus, 4D Hypercube & Subterranean Realms Initialized',
+      detail: '4 Parallel Realities active! Enter Timeline Ω-1 to assassinate the exposed Obsidian Queen and converge her death back into Prime Reality!',
       wasUpset: false,
       winnerFaction: 'w',
     },
@@ -172,6 +254,10 @@ export default function App() {
     targetMoveW: number;
     targetMoveZ: number;
     pieces: ChessPiece[];
+    multiverse: MultiverseState;
+    autoConvergeToPrimeAfterDuel: boolean;
+    activeCollapseResolution: CausalCollapseResolution[] | null;
+    collapseDoomedRigs: ArticulatedPieceRig[];
     selectedPieceId: string | null;
     validMoves: MoveOption[];
     pendingMove: MoveOption | null;
@@ -183,10 +269,18 @@ export default function App() {
     prevDefAction: FighterAction;
     bystanders: Map<string, BystanderPhysics>;
     duelCenterWorld: THREE.Vector3;
+    duelInRealm: boolean;
+    activeSentinelId: string | null;
     fightTimer: number;
     cameraShake: number;
     hitstopTimer: number;
     slowMoTimer: number;
+    activeIntervention: ActiveInterventionState | null;
+    autoPlayDemo: boolean;
+    demoBoardTimer: number;
+    demoCameraTimer: number;
+    demoMovesWithoutCapture: number;
+    demoPendingDecision: { piece: ChessPiece; move: MoveOption } | null;
     timelineSnapshots: TimelineSnapshot[];
     timelineBranchCount: number;
     keysHeld: Record<string, boolean>;
@@ -194,9 +288,33 @@ export default function App() {
     firstPersonRig: FirstPersonViewmodelRig | null;
     fpMountGroup: THREE.Group | null;
     arenaRig: BoardArenaRig | null;
+    realmsRig: SubterraneanRealmsRig | null;
     vfxPool: VFXPool | null;
     controls: OrbitControls | null;
     currentLookAt: THREE.Vector3;
+    realm: {
+      travelerPieceId: string | null;
+      entryGatewayId: string;
+      currentRealmId: RealmId;
+      localPos: THREE.Vector3;
+      velocity: THREE.Vector3;
+      yaw: number;
+      isParityInverted: boolean;
+      crucibleAnvilClaimed: boolean;
+      echoes: RealmTemporalEcho[];
+      sentinels: RealmEnemySentinel[];
+      nearbyPortal: RealmPortalNode | null;
+      nearbyPortalEval: PortalBoardExitEvaluation | null;
+      steerTargetPortalId: string | null;
+      portalCooldownSec: number;
+      hazardCooldownSec: number;
+      attackAnimTimerSec: number;
+      dashTimerSec: number;
+      ascentTargetCoord: { row: number; col: number; z: number; w: number } | null;
+      ascentTargetEnemy: ChessPiece | null;
+      ascentPortalName: string;
+      ascentTargetTimelineId: string | null;
+    };
   }>({
     phase: 'CHESS_VIEW',
     phaseTimer: 0,
@@ -211,7 +329,11 @@ export default function App() {
     activeSliceZ: 0,
     targetMoveW: 0,
     targetMoveZ: 0,
-    pieces: createInitialBoard(),
+    pieces: initialBoardRef.current,
+    multiverse: initialMultiverseRef.current,
+    autoConvergeToPrimeAfterDuel: false,
+    activeCollapseResolution: null,
+    collapseDoomedRigs: [],
     selectedPieceId: null,
     validMoves: [],
     pendingMove: null,
@@ -223,10 +345,18 @@ export default function App() {
     prevDefAction: 'idle',
     bystanders: new Map(),
     duelCenterWorld: new THREE.Vector3(0, 0, 0),
+    duelInRealm: false,
+    activeSentinelId: null,
     fightTimer: 60,
     cameraShake: 0,
     hitstopTimer: 0,
     slowMoTimer: 0,
+    activeIntervention: null,
+    autoPlayDemo: false,
+    demoBoardTimer: 0,
+    demoCameraTimer: 0,
+    demoMovesWithoutCapture: 0,
+    demoPendingDecision: null,
     timelineSnapshots: [],
     timelineBranchCount: 0,
     keysHeld: {},
@@ -234,15 +364,40 @@ export default function App() {
     firstPersonRig: null,
     fpMountGroup: null,
     arenaRig: null,
+    realmsRig: null,
     vfxPool: null,
     controls: null,
     currentLookAt: new THREE.Vector3(0, 0.4, 0),
+    realm: {
+      travelerPieceId: null,
+      entryGatewayId: 'gw_mirror_c6',
+      currentRealmId: 'SHATTERED_MIRROR',
+      localPos: new THREE.Vector3(0, 0, 10),
+      velocity: new THREE.Vector3(0, 0, 0),
+      yaw: 0,
+      isParityInverted: false,
+      crucibleAnvilClaimed: false,
+      echoes: [],
+      sentinels: [],
+      nearbyPortal: null,
+      nearbyPortalEval: null,
+      steerTargetPortalId: null,
+      portalCooldownSec: 0,
+      hazardCooldownSec: 0,
+      attackAnimTimerSec: 0,
+      dashTimerSec: 0,
+      ascentTargetCoord: null,
+      ascentTargetEnemy: null,
+      ascentPortalName: '',
+      ascentTargetTimelineId: null,
+    },
   });
 
   const saveTimelineSnapshot = useCallback(() => {
     const sim = simRef.current;
     const clonedPieces: ChessPiece[] = sim.pieces.map((p) => ({
       ...p,
+      inRealm: null,
       history: p.history.map((h) => ({ ...h })),
     }));
     const branches = ['α', 'β', 'γ', 'δ', 'ε', 'ζ'];
@@ -259,7 +414,7 @@ export default function App() {
     setCanRewindTimeline(sim.timelineSnapshots.length > 0);
   }, []);
 
-  // Spacetime Causality Rewind (Δt - 1): Fork a parallel timeline branch and restore prior board state!
+  // Spacetime Causality Rewind (Δt - 1): Fork a parallel timeline branch and restore prior board & realm state!
   const handleChronoRewind = useCallback(() => {
     const sim = simRef.current;
     if (sim.phase !== 'CHESS_VIEW' || sim.timelineSnapshots.length === 0) return;
@@ -277,11 +432,12 @@ export default function App() {
     });
     sim.pieceRigs.clear();
 
-    sim.pieces = snap.pieces;
+    sim.pieces = snap.pieces.map((p) => ({ ...p, inRealm: null }));
     sim.turnNumber = snap.turnNumber;
     sim.turnFaction = 'w';
     sim.selectedPieceId = null;
     sim.validMoves = [];
+    sim.realm.travelerPieceId = null;
 
     if (scene) {
       for (const p of sim.pieces) {
@@ -305,7 +461,7 @@ export default function App() {
         id: `rewind_${Date.now()}`,
         turnNumber: sim.turnNumber,
         summary: `Causality Rewound (Δt = -1) → Branched into ${newBranchName}`,
-        detail: `Quantum wavefunction collapsed back to Turn ${snap.turnNumber} before the timeline diverged.`,
+        detail: `Quantum wavefunction & Subterranean Realm states collapsed back to Turn ${snap.turnNumber} before the timeline diverged.`,
         wasUpset: false,
         winnerFaction: 'w',
       },
@@ -427,7 +583,13 @@ export default function App() {
         if (hl) {
           hl.visible = true;
           const mat = hl.material as THREE.MeshBasicMaterial;
-          if (mv.dimensionType === 'TEMPORAL_INTERCEPT') {
+          if (
+            mv.dimensionType === 'REALM_GATEWAY_DESCENT' ||
+            mv.dimensionType === 'REALM_PORTAL_TRAVERSAL'
+          ) {
+            mat.color.setHex(0x34d399); // Emerald-Cyan Dimensional Gateway
+            mat.opacity = 0.72;
+          } else if (mv.dimensionType === 'TEMPORAL_INTERCEPT') {
             mat.color.setHex(0x22d3ee); // Cyan Chrono-Intercept
             mat.opacity = 0.68;
           } else if (mv.isCapture) {
@@ -472,26 +634,44 @@ export default function App() {
     [syncBoardHighlights]
   );
 
-  // Start a capture duel on the board
+  // Start a capture duel on the board OR inside a Subterranean Realm!
   const initiateCombatDuel = useCallback(
-    (attackerPiece: ChessPiece, move: MoveOption, isExhibition: boolean = false) => {
+    (
+      attackerPiece: ChessPiece,
+      move: MoveOption,
+      isExhibition: boolean = false,
+      inRealmWorldCenter?: { x: number; y: number; z: number; realmTitle: string; sentinelId?: string }
+    ) => {
       const sim = simRef.current;
       if (!move.targetPiece) return;
 
       const defenderPiece = move.targetPiece;
       sim.pendingMove = move;
       sim.isExhibitionDuel = isExhibition;
+      sim.duelInRealm = Boolean(inRealmWorldCenter);
+      sim.activeSentinelId = inRealmWorldCenter?.sentinelId || null;
       sim.selectedPieceId = null;
       sim.validMoves = [];
       setHoveredCaptureMove(null);
       syncBoardHighlights();
 
-      boardToWorld(move.to.row, move.to.col, sim.duelCenterWorld);
-      const sqName = `${formatSquareName(move.to)} · ${formatWName(move.to.w)}`;
-      setDuelSquareName(sqName);
+      if (inRealmWorldCenter) {
+        sim.duelCenterWorld.set(
+          inRealmWorldCenter.x,
+          inRealmWorldCenter.y,
+          inRealmWorldCenter.z
+        );
+        setDuelSquareName(inRealmWorldCenter.realmTitle);
+      } else {
+        boardToWorld(move.to.row, move.to.col, sim.duelCenterWorld);
+        const sqName = `${formatSquareName(move.to)} · ${formatWName(move.to.w)}`;
+        setDuelSquareName(sqName);
+      }
 
-      const atkIsAI = sim.gameMode === 'vs_ai' && attackerPiece.faction === 'b';
-      const defIsAI = sim.gameMode === 'vs_ai' && defenderPiece.faction === 'b';
+      const atkIsAI =
+        sim.autoPlayDemo || (sim.gameMode === 'vs_ai' && attackerPiece.faction === 'b');
+      const defIsAI =
+        sim.autoPlayDemo || (sim.gameMode === 'vs_ai' && defenderPiece.faction === 'b');
 
       const atkPartner = attackerPiece.entangledWithId
         ? sim.pieces.find((p) => p.id === attackerPiece.entangledWithId)
@@ -500,26 +680,42 @@ export default function App() {
         ? sim.pieces.find((p) => p.id === defenderPiece.entangledWithId)
         : undefined;
 
+      // TACTICAL INTERVENTION: THE BOARD FIGHTS BACK
+      const supportAnalysis = computeSquareSupportAnalysis(
+        sim.pieces,
+        move.to,
+        attackerPiece.faction,
+        defenderPiece.faction,
+        [attackerPiece.id, defenderPiece.id]
+      );
+
       sim.attackerRuntime = createFighterRuntime(
         attackerPiece,
         true,
         atkIsAI,
-        atkPartner ? ARCHETYPES[atkPartner.type].chessName : undefined
+        atkPartner ? ARCHETYPES[atkPartner.type].chessName : undefined,
+        supportAnalysis.attackerSupporters
       );
       sim.defenderRuntime = createFighterRuntime(
         defenderPiece,
         false,
         defIsAI,
-        defPartner ? ARCHETYPES[defPartner.type].chessName : undefined
+        defPartner ? ARCHETYPES[defPartner.type].chessName : undefined,
+        supportAnalysis.defenderSupporters
       );
       sim.prevAtkAction = 'idle';
       sim.prevDefAction = 'idle';
       sim.fightTimer = 60;
       sim.slowMoTimer = 0;
+      sim.activeIntervention = null;
+      sim.demoCameraTimer = 0;
       sim.phase = 'TRANSITION_TO_FIGHT';
       sim.phaseTimer = 0;
       sim.introShotIndex = -1;
       setIntroShotIndex(-1);
+      if (sim.autoPlayDemo) {
+        setDemoDirectorStage('SERGIO LEONE OPTICAL CRASH-ZOOM (FOV 62° → 9.5°)');
+      }
 
       // Build First-Person Weapon & Shield Viewmodel Rig matching the human player's warrior!
       const humanRuntime = !sim.attackerRuntime.isAI
@@ -544,6 +740,36 @@ export default function App() {
         sim.controls.enabled = false;
       }
 
+      if (!inRealmWorldCenter) {
+        const tempHome = new THREE.Vector3();
+        for (const p of sim.pieces) {
+          if (p.id === attackerPiece.id || p.id === defenderPiece.id) continue;
+          boardToWorld(p.row, p.col, tempHome);
+          const dx = tempHome.x - sim.duelCenterWorld.x;
+          const dz = tempHome.z - sim.duelCenterWorld.z;
+          const dist = Math.hypot(dx, dz);
+          const inCorridor =
+            dz > -0.9 && dz < 7.8 && Math.abs(dx) < 4.6;
+          let bys = sim.bystanders.get(p.id);
+          if (!bys) {
+            bys = { offsetX: 0, offsetZ: 0, vx: 0, vz: 0, y: 0, vy: 0, panickedTimer: 0 };
+            sim.bystanders.set(p.id, bys);
+          }
+          if (inCorridor || dist < 4.75) {
+            const sideSign = dx >= 0 ? 1 : -1;
+            const targetX = sim.duelCenterWorld.x + sideSign * (4.85 + (p.row % 2) * 0.45);
+            const targetZ =
+              dz > 0
+                ? sim.duelCenterWorld.z + Math.min(dz, 3.2)
+                : sim.duelCenterWorld.z - 2.4;
+            bys.offsetX = targetX - tempHome.x;
+            bys.offsetZ = targetZ - tempHome.z;
+            bys.vx = 0;
+            bys.vz = 0;
+          }
+        }
+      }
+
       soundEngine.playArenaTransition();
       setPhase('TRANSITION_TO_FIGHT');
       setCallouts([]);
@@ -551,11 +777,23 @@ export default function App() {
       setHudAttacker({ ...sim.attackerRuntime });
       setHudDefender({ ...sim.defenderRuntime });
 
-      if (move.dimensionType && move.dimensionType !== '3D_SLICE') {
+      if (inRealmWorldCenter) {
+        setTimeout(() => {
+          addCallout({
+            text: `REALM ENCOUNTER IN ${inRealmWorldCenter.realmTitle}!`,
+            subtext: 'DEFEAT THE REALM SENTINEL TO CONTINUE YOUR JOURNEY',
+            x: 0,
+            y: 2.35,
+            color: '#34d399',
+          });
+        }, 400);
+      } else if (move.dimensionType && move.dimensionType !== '3D_SLICE') {
         setTimeout(() => {
           addCallout({
             text:
-              move.dimensionType === 'TEMPORAL_INTERCEPT'
+              move.dimensionType === 'REALM_PORTAL_TRAVERSAL'
+                ? 'REALM EMERGENCE AMBUSH DUEL!'
+                : move.dimensionType === 'TEMPORAL_INTERCEPT'
                 ? 'CHRONO-INTERCEPT DUEL (Δt = -1)!'
                 : '4D CROSS-DIMENSIONAL AMBUSH!',
             subtext: move.dimensionLabel || 'HYPERCUBE COLLISION',
@@ -569,13 +807,630 @@ export default function App() {
     [addCallout, syncBoardHighlights]
   );
 
-  // Execute a non-capture chess move (including 4D Hyper-Shifts!) or trigger a capture duel
+  // Initiate descent of a warrior through a BoardGateway into one of the Three Subterranean Realms!
+  const initiateRealmDescent = useCallback(
+    (
+      piece: ChessPiece,
+      gatewayId: string,
+      entryCoord: { row: number; col: number; z: number; w: number },
+      autoTargetPortalId?: string
+    ) => {
+      const sim = simRef.current;
+      const gw = BOARD_GATEWAYS.find((g) => g.id === gatewayId) || BOARD_GATEWAYS[0];
+
+      // Move piece onto the entry gateway square first, then mark it as physically inside the realm
+      piece.row = entryCoord.row;
+      piece.col = entryCoord.col;
+      piece.z = entryCoord.z;
+      piece.w = entryCoord.w;
+      piece.hasMoved = true;
+      piece.inRealm = gw.realmId;
+
+      const echoes = buildDeterministicTemporalEchoes(sim.pieces, piece.id);
+      const sentinels = buildRealmSentinels(sim.pieces, piece.faction, piece.id);
+      if (sim.realmsRig) {
+        syncRealmEntities3D(sim.realmsRig, echoes, sentinels);
+      }
+
+      sim.realm.travelerPieceId = piece.id;
+      sim.realm.entryGatewayId = gw.id;
+      sim.realm.currentRealmId = gw.realmId;
+      sim.realm.localPos.set(gw.spawnLocalPos.x, 0, gw.spawnLocalPos.z);
+      sim.realm.velocity.set(0, 0, 0);
+      sim.realm.yaw = gw.spawnYaw;
+      sim.realm.isParityInverted = Boolean(piece.mirrorInvertedParity);
+      sim.realm.crucibleAnvilClaimed = false;
+      sim.realm.echoes = echoes;
+      sim.realm.sentinels = sentinels;
+      sim.realm.nearbyPortal = null;
+      sim.realm.nearbyPortalEval = null;
+      sim.realm.portalCooldownSec = 1.1;
+      sim.realm.hazardCooldownSec = 0;
+      sim.realm.attackAnimTimerSec = 0;
+      sim.realm.dashTimerSec = 0;
+      sim.realm.ascentTargetCoord = null;
+      sim.realm.ascentTargetEnemy = null;
+      sim.realm.ascentPortalName = '';
+
+      // If AI or Auto-Play Demo is controlling this piece, choose an intelligent target portal in the realm
+      const isControlledByAI =
+        sim.autoPlayDemo || (sim.gameMode === 'vs_ai' && piece.faction === 'b');
+      if (autoTargetPortalId) {
+        sim.realm.steerTargetPortalId = autoTargetPortalId;
+      } else if (isControlledByAI) {
+        const portals = getPortalsForRealm(gw.realmId).filter(
+          (p) => p.kind === 'BOARD_ASCENT' && p.targetGatewayId !== gw.id
+        );
+        const validExit = portals.find((p) => {
+          const ev = evaluatePortalBoardExit(p, piece, sim.pieces, true, true);
+          return ev && ev.status !== 'ALLY_OBSTRUCTED';
+        });
+        sim.realm.steerTargetPortalId = validExit ? validExit.id : portals[0]?.id || null;
+      } else {
+        sim.realm.steerTargetPortalId = null;
+      }
+
+      sim.selectedPieceId = null;
+      sim.validMoves = [];
+      setHoveredCaptureMove(null);
+      syncBoardHighlights();
+
+      if (sim.controls) {
+        sim.controls.enabled = false;
+      }
+
+      if (sim.vfxPool) {
+        const entryWorld = boardToWorld(entryCoord.row, entryCoord.col);
+        spawnShockwave(sim.vfxPool, entryWorld.x, 0.08, entryWorld.z, gw.colorHex, 5.5);
+        spawnAuraPillar(sim.vfxPool, entryWorld.x, entryWorld.z, gw.colorHex);
+      }
+
+      soundEngine.playRealmPortalTransition(true);
+      sim.phase = 'REALM_DESCENT';
+      sim.phaseTimer = 0;
+      setPhase('REALM_DESCENT');
+      setActiveRealmId(gw.realmId);
+      setRealmTraveler({ ...piece });
+      setRealmParityInverted(sim.realm.isParityInverted);
+      setRealmCrucibleClaimed(false);
+      setNearbyPortal(null);
+      setNearbyPortalEval(null);
+      setRealmStatusBanner(
+        `DESCENDING THROUGH ${gw.name.toUpperCase()} INTO ${REALM_METADATA[gw.realmId].title}`
+      );
+    },
+    [syncBoardHighlights]
+  );
+
+  // Traverse a physical portal inside a Subterranean Realm (Board Ascent, Inter-Realm Rift, or Mirror Parity Inverter!)
+  const handleTraverseRealmPortal = useCallback(
+    (portal: RealmPortalNode) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'REALM_EXPLORATION') return;
+      const traveler = sim.pieces.find((p) => p.id === sim.realm.travelerPieceId);
+      if (!traveler) return;
+
+      if (portal.kind === 'MIRROR_INVERTER') {
+        // Flip Chiral Parity across The Great Looking-Glass!
+        const nextParity = !sim.realm.isParityInverted;
+        sim.realm.isParityInverted = nextParity;
+        traveler.mirrorInvertedParity = nextParity;
+        traveler.meter = Math.min(100, traveler.meter + 20);
+        sim.realm.localPos.x = -sim.realm.localPos.x;
+        sim.realm.localPos.z = sim.realm.localPos.z >= 0 ? -3.0 : 3.0;
+        sim.realm.portalCooldownSec = 1.25;
+        sim.realm.steerTargetPortalId = null;
+
+        soundEngine.playMirrorParityFlip();
+        if (sim.vfxPool) {
+          const meta = REALM_METADATA[sim.realm.currentRealmId];
+          spawnShockwave(
+            sim.vfxPool,
+            meta.worldCenter.x,
+            meta.worldCenter.y + 0.2,
+            meta.worldCenter.z,
+            0x38bdf8,
+            7.5
+          );
+        }
+
+        setRealmParityInverted(nextParity);
+        setRealmTraveler({ ...traveler });
+        setRealmStatusBanner(
+          nextParity
+            ? 'CHIRAL PARITY INVERTED: (r, c, w) ↦ (7−r, 7−c, −w) · MIRROR AEGIS GRANTED!'
+            : 'CHIRAL PARITY RESTORED TO PRIME ORIENTATION'
+        );
+        return;
+      }
+
+      if (portal.kind === 'INTER_REALM' && portal.targetRealmId) {
+        const targetRealmId = portal.targetRealmId;
+        const dstPortal = REALM_PORTALS.find((p) => p.id === portal.targetPortalId);
+        const dstYaw = dstPortal ? dstPortal.yaw : 0;
+        const inwardX = dstPortal
+          ? dstPortal.localPos.x - Math.sin(dstYaw) * 3.2
+          : 0;
+        const inwardZ = dstPortal
+          ? dstPortal.localPos.z - Math.cos(dstYaw) * 3.2
+          : 0;
+
+        sim.realm.currentRealmId = targetRealmId;
+        traveler.inRealm = targetRealmId;
+        sim.realm.localPos.set(inwardX, 0, inwardZ);
+        sim.realm.yaw = dstYaw + Math.PI;
+        sim.realm.portalCooldownSec = 1.35;
+        sim.realm.steerTargetPortalId = null;
+
+        soundEngine.playRealmPortalTransition(true);
+        setActiveRealmId(targetRealmId);
+        setRealmTraveler({ ...traveler });
+        setRealmStatusBanner(
+          `CROSSED INTER-REALM RIFT → ENTERED ${REALM_METADATA[targetRealmId].title}`
+        );
+        return;
+      }
+
+      if (portal.kind === 'BOARD_ASCENT' || portal.kind === 'TIMELINE_PORTAL') {
+        const targetTimelineId =
+          portal.kind === 'TIMELINE_PORTAL' && portal.targetTimelineId
+            ? portal.targetTimelineId === sim.multiverse.activeTimelineId
+              ? 'TL-PRIME'
+              : portal.targetTimelineId
+            : sim.multiverse.activeTimelineId;
+
+        const targetBranch =
+          ensureBranchHydrated(sim.multiverse, targetTimelineId) ||
+          ensureBranchHydrated(sim.multiverse, 'TL-PRIME')!;
+        const evalPieces =
+          targetTimelineId === sim.multiverse.activeTimelineId
+            ? sim.pieces
+            : targetBranch.pieces;
+
+        const evalRes = evaluatePortalBoardExit(
+          portal,
+          traveler,
+          evalPieces,
+          sim.realm.isParityInverted,
+          sim.realm.crucibleAnvilClaimed,
+          targetBranch.name
+        );
+        if (!evalRes) return;
+
+        if (evalRes.status === 'ALLY_OBSTRUCTED') {
+          soundEngine.playBlock(false);
+          setRealmStatusBanner(
+            `EXIT ${evalRes.squareLabel} IN ${targetTimelineId} OBSTRUCTED BY ALLIED ${ARCHETYPES[evalRes.occupant!.type].chessName.toUpperCase()}!`
+          );
+          sim.realm.localPos.multiplyScalar(0.82);
+          sim.realm.portalCooldownSec = 0.85;
+          return;
+        }
+
+        // Valid exit (either CLEAR or ENEMY_OCCUPIED ambush, possibly in an alternate timeline!)
+        sim.realm.ascentTargetCoord = { ...evalRes.coord };
+        sim.realm.ascentTargetEnemy =
+          evalRes.status === 'ENEMY_OCCUPIED' ? evalRes.occupant || null : null;
+        sim.realm.ascentPortalName = `${portal.name} → ${targetTimelineId} ${evalRes.squareLabel}`;
+        sim.realm.ascentTargetTimelineId = targetTimelineId;
+        sim.realm.steerTargetPortalId = null;
+        sim.phase = 'REALM_ASCENT';
+        sim.phaseTimer = 0;
+        soundEngine.playRealmPortalTransition(false);
+        setPhase('REALM_ASCENT');
+        setRealmStatusBanner(
+          evalRes.status === 'ENEMY_OCCUPIED'
+            ? `EMERGING IN ${targetTimelineId} AT ${evalRes.squareLabel} — ASSASSINATING ${ARCHETYPES[evalRes.occupant!.type].chessName.toUpperCase()}!`
+            : `EMERGING IN ${targetTimelineId} AT ${evalRes.squareLabel}`
+        );
+      }
+    },
+    []
+  );
+
+  const handleSteerTowardPortal = useCallback((portal: RealmPortalNode) => {
+    const sim = simRef.current;
+    if (sim.phase !== 'REALM_EXPLORATION') return;
+    sim.realm.steerTargetPortalId = portal.id;
+    soundEngine.playChessSelect();
+    setRealmStatusBanner(`STEERING TOWARD ${portal.name.toUpperCase()}...`);
+  }, []);
+
+  const handleRealmAction = useCallback((action: 'jump' | 'dash' | 'strike') => {
+    const sim = simRef.current;
+    if (sim.phase !== 'REALM_EXPLORATION') return;
+    if (action === 'jump' && sim.realm.localPos.y <= 0.05) {
+      sim.realm.velocity.y = 10.5;
+      soundEngine.playBystanderHop();
+    } else if (action === 'dash' && sim.realm.dashTimerSec <= 0) {
+      sim.realm.dashTimerSec = 0.32;
+      soundEngine.playSwing(false);
+    } else if (action === 'strike' && sim.realm.attackAnimTimerSec <= 0) {
+      sim.realm.attackAnimTimerSec = 0.42;
+      soundEngine.playSwing(true);
+    }
+  }, []);
+
+  // ============================================================================
+  // MULTIVERSAL CHESS, CAUSAL ASSASSINATION & REALITY CONVERGENCE HANDLERS
+  // ============================================================================
+  const syncActiveBranchFromSim = useCallback(() => {
+    const sim = simRef.current;
+    syncActiveTimelineFromLiveBoard(
+      sim.multiverse,
+      sim.pieces,
+      sim.turnNumber,
+      sim.turnFaction
+    );
+  }, []);
+
+  const rebuildSceneRigsForTimeline = useCallback(
+    (branch: TimelineBranch) => {
+      const sim = simRef.current;
+      const scene = sim.arenaRig?.group.parent;
+
+      sim.pieceRigs.forEach((rig) => {
+        rig.root.parent?.remove(rig.root);
+      });
+      sim.pieceRigs.clear();
+      sim.bystanders.clear();
+
+      sim.pieces = branch.pieces.map((p) => ({
+        ...p,
+        inRealm: null,
+        history: p.history.map((h) => ({ ...h })),
+      }));
+      sim.turnNumber = branch.turnNumber;
+      sim.turnFaction = branch.turnFaction;
+      sim.activeSliceW = 0;
+      sim.activeSliceZ = 0;
+      sim.targetMoveW = 0;
+      sim.targetMoveZ = 0;
+      sim.selectedPieceId = null;
+      sim.validMoves = [];
+
+      if (scene) {
+        for (const p of sim.pieces) {
+          const rig = createArticulatedPiece(p.type, p.faction);
+          boardToWorld(p.row, p.col, rig.root.position);
+          rig.root.rotation.y = p.faction === 'w' ? Math.PI : 0;
+          scene.add(rig.root);
+          sim.pieceRigs.set(p.id, rig);
+          sim.bystanders.set(p.id, {
+            offsetX: 0,
+            offsetZ: 0,
+            vx: 0,
+            vz: 0,
+            y: 0,
+            vy: 0,
+            panickedTimer: 0,
+          });
+        }
+      }
+
+      setTurnNumber(branch.turnNumber);
+      setTurnFaction(branch.turnFaction);
+      setActiveSliceW(sim.activeSliceW);
+      setActiveSliceZ(sim.activeSliceZ);
+      setTargetMoveW(sim.targetMoveW);
+      setTargetMoveZ(sim.targetMoveZ);
+      setTimelineBranchLabel(`${branch.id} · ${branch.name}`);
+      setMultiverseState({ ...sim.multiverse });
+      syncBoardHighlights();
+    },
+    [syncBoardHighlights]
+  );
+
+  // Trigger Reality Convergence: Propagate pending CausalDeathEvents into a target timeline with a 3D Quantum Singularity Collapse!
+  const handleTriggerConvergence = useCallback(
+    (targetTimelineId: string = 'TL-PRIME') => {
+      const sim = simRef.current;
+      syncActiveBranchFromSim();
+
+      // Switch to the target timeline first so its board and the doomed piece(s) are visible in 3D!
+      if (sim.multiverse.activeTimelineId !== targetTimelineId) {
+        const targetBranch = switchActiveTimeline(sim.multiverse, targetTimelineId);
+        rebuildSceneRigsForTimeline(targetBranch);
+      }
+
+      // Capture the 3D rigs of any pieces about to be erased by causal assassination so we can animate their 3D quantum implosion!
+      const pendingBreaches = getPendingCausalBreachesForTimeline(
+        sim.multiverse,
+        targetTimelineId
+      );
+      const doomedRigs: ArticulatedPieceRig[] = [];
+      for (const breach of pendingBreaches) {
+        const rig = sim.pieceRigs.get(breach.manifestation.id);
+        if (rig) {
+          doomedRigs.push(rig);
+          sim.pieceRigs.delete(breach.manifestation.id);
+        }
+      }
+
+      const resolutions = reconcileTimelineConvergence(sim.multiverse, targetTimelineId);
+      const updatedBranch =
+        ensureBranchHydrated(sim.multiverse, targetTimelineId) ||
+        ensureBranchHydrated(sim.multiverse, 'TL-PRIME')!;
+      sim.pieces = updatedBranch.pieces.map((p) => ({
+        ...p,
+        inRealm: null,
+        history: p.history.map((h) => ({ ...h })),
+      }));
+      setMultiverseState({ ...sim.multiverse });
+
+      if (resolutions.length === 0) {
+        for (const r of doomedRigs) {
+          r.root.parent?.remove(r.root);
+        }
+        syncBoardHighlights();
+        return;
+      }
+
+      // Spawn dramatic 3D Quantum Singularity & Rift VFX at each assassinated piece's square!
+      if (sim.vfxPool) {
+        for (const res of resolutions) {
+          const ep = res.erasedPiece;
+          const worldPos = boardToWorld(ep.row, ep.col);
+          spawnAuraPillar(sim.vfxPool, worldPos.x, worldPos.z, 0xd946ef);
+          spawnShockwave(sim.vfxPool, worldPos.x, 0.1, worldPos.z, 0xf43f5e, 7.5);
+          spawnHitSparks(sim.vfxPool, worldPos.x, 1.2, worldPos.z, 0xf59e0b, 32);
+          spawnGroundDebris(sim.vfxPool, worldPos.x, worldPos.z, 16);
+          spawnInterventionRift(
+            sim.vfxPool,
+            worldPos.x,
+            4.8,
+            worldPos.z,
+            worldPos.x,
+            0.6,
+            worldPos.z,
+            0xd946ef
+          );
+        }
+      }
+
+      soundEngine.playKO();
+      soundEngine.playQuantumEntangle(true);
+
+      sim.activeCollapseResolution = resolutions;
+      sim.collapseDoomedRigs = doomedRigs;
+      sim.phase = 'CAUSAL_COLLAPSE';
+      sim.phaseTimer = 0;
+      if (sim.controls) sim.controls.enabled = false;
+      setPhase('CAUSAL_COLLAPSE');
+      setActiveCollapseBanner(resolutions);
+
+      setBattleLogs((prev) => [
+        {
+          id: `converge_${Date.now()}`,
+          turnNumber: sim.turnNumber,
+          summary: `Reality Convergence in ${targetTimelineId}: ${resolutions.length} Counterpart(s) Erased!`,
+          detail: resolutions
+            .map(
+              (r) =>
+                `${ARCHETYPES[r.erasedPiece.type].warriorTitle} (${ARCHETYPES[r.erasedPiece.type].chessName}) erased from ${r.erasedSquareLabel} in ${targetTimelineId} [Lineage ${r.event.victimLineageId}]`
+            )
+            .join(' · '),
+          wasUpset: true,
+          winnerFaction: resolutions[0]?.event.killerFaction || 'w',
+        },
+        ...prev.slice(0, 7),
+      ]);
+    },
+    [rebuildSceneRigsForTimeline, syncActiveBranchFromSim, syncBoardHighlights]
+  );
+
+  // Switch active timeline in the Multiverse
+  const handleSwitchTimeline = useCallback(
+    (targetTimelineId: string) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'CHESS_VIEW') return;
+      syncActiveBranchFromSim();
+
+      const targetBranch = switchActiveTimeline(sim.multiverse, targetTimelineId);
+      rebuildSceneRigsForTimeline(targetBranch);
+
+      if (sim.vfxPool) {
+        spawnShockwave(sim.vfxPool, 0, 0.1, 0, 0xd946ef, 8.5);
+      }
+      soundEngine.playQuantumEntangle(false);
+
+      // If switching into a timeline that has unpropagated CausalDeathEvents, automatically converge them!
+      const unpropagated = getPendingCausalBreachesForTimeline(
+        sim.multiverse,
+        targetTimelineId
+      );
+      if (unpropagated.length > 0) {
+        setTimeout(() => {
+          handleTriggerConvergence(targetTimelineId);
+        }, 350);
+      } else {
+        setBattleLogs((prev) => [
+          {
+            id: `tl_switch_${Date.now()}`,
+            turnNumber: targetBranch.turnNumber,
+            summary: `Shifted Focus to ${targetBranch.id} (${targetBranch.name})`,
+            detail: `${targetBranch.divergenceSummary} · Solaris ${targetBranch.pieces.filter((p) => p.faction === 'w').length} vs Obsidian ${targetBranch.pieces.filter((p) => p.faction === 'b').length}`,
+            wasUpset: false,
+            winnerFaction: targetBranch.turnFaction,
+          },
+          ...prev.slice(0, 7),
+        ]);
+      }
+    },
+    [handleTriggerConvergence, rebuildSceneRigsForTimeline, syncActiveBranchFromSim]
+  );
+
+  // Fork a brand-new independent timeline branch from any existing timeline
+  const handleForkTimeline = useCallback(
+    (sourceTimelineId: string, exposeTargetLineageId?: string) => {
+      const sim = simRef.current;
+      syncActiveBranchFromSim();
+
+      const newBranch = forkTimelineFromBranch(
+        sim.multiverse,
+        sourceTimelineId,
+        exposeTargetLineageId ? { exposeTargetLineageId } : undefined
+      );
+      const switched = switchActiveTimeline(sim.multiverse, newBranch.id);
+      rebuildSceneRigsForTimeline(switched);
+      soundEngine.playSpecialActivate();
+
+      if (sim.vfxPool) {
+        spawnShockwave(sim.vfxPool, 0, 0.12, 0, 0x38bdf8, 9.0);
+      }
+
+      setBattleLogs((prev) => [
+        {
+          id: `fork_${Date.now()}`,
+          turnNumber: newBranch.turnNumber,
+          summary: `Forked New Reality ${newBranch.id} from ${sourceTimelineId}!`,
+          detail: newBranch.divergenceSummary,
+          wasUpset: false,
+          winnerFaction: newBranch.turnFaction,
+        },
+        ...prev.slice(0, 7),
+      ]);
+    },
+    [rebuildSceneRigsForTimeline, syncActiveBranchFromSim]
+  );
+
+  // Send a piece directly into an alternate timeline
+  const handleDeployPieceToTimeline = useCallback(
+    (pieceId: string, targetTimelineId: string) => {
+      const sim = simRef.current;
+      const sel = sim.pieces.find((p) => p.id === pieceId);
+      if (!sel) return;
+
+      syncActiveBranchFromSim();
+
+      const deployRes = transitionTravelerToTimeline(
+        sim.multiverse,
+        sel,
+        sim.multiverse.activeTimelineId,
+        targetTimelineId,
+        { row: sel.row, col: sel.col, z: sel.z, w: sel.w }
+      );
+
+      const targetBranch = switchActiveTimeline(sim.multiverse, targetTimelineId);
+      rebuildSceneRigsForTimeline(targetBranch);
+      sim.selectedPieceId = deployRes.mergedTraveler.id;
+      sim.validMoves = getValidMovesForPiece(
+        deployRes.mergedTraveler,
+        sim.pieces,
+        deployRes.mergedTraveler.z,
+        deployRes.mergedTraveler.w
+      );
+      syncBoardHighlights();
+      soundEngine.playRealmPortalTransition(false);
+
+      setBattleLogs((prev) => [
+        {
+          id: `deploy_${Date.now()}`,
+          turnNumber: targetBranch.turnNumber,
+          summary: `Cross-Timeline Incursion: ${ARCHETYPES[deployRes.mergedTraveler.type].chessName} Entered ${targetTimelineId}!`,
+          detail: `${ARCHETYPES[deployRes.mergedTraveler.type].warriorTitle} [Lineage ${getPieceLineageId(deployRes.mergedTraveler)}] materialized at ${formatSquareName(deployRes.mergedTraveler)} in ${targetBranch.name}.`,
+          wasUpset: false,
+          winnerFaction: deployRes.mergedTraveler.faction,
+        },
+        ...prev.slice(0, 7),
+      ]);
+    },
+    [rebuildSceneRigsForTimeline, syncActiveBranchFromSim, syncBoardHighlights]
+  );
+
+  // Rewind the latest Causal Assassination across the Multiverse
+  const handleRewindLastAssassination = useCallback(() => {
+    const sim = simRef.current;
+    rewindCausalAssassination(sim.multiverse);
+    const activeBranch =
+      ensureBranchHydrated(sim.multiverse, sim.multiverse.activeTimelineId) ||
+      ensureBranchHydrated(sim.multiverse, 'TL-PRIME')!;
+    rebuildSceneRigsForTimeline(activeBranch);
+    soundEngine.playQuantumEntangle(true);
+    setBattleLogs((prev) => [
+      {
+        id: `cp_restore_${Date.now()}`,
+        turnNumber: activeBranch.turnNumber,
+        summary: `Multiverse Causality Rewound`,
+        detail: `Latest cross-timeline Causal Assassination revoked and piece lineages restored.`,
+        wasUpset: false,
+        winnerFaction: 'w',
+      },
+      ...prev.slice(0, 7),
+    ]);
+  }, [rebuildSceneRigsForTimeline]);
+
+  // 1-Click Guided Causal Assassination Showcase:
+  // Shifts into Timeline Ω-1 where the Obsidian Queen (lineage_b_q_3) is exposed at F6,
+  // launches the Solaris Knight's capture duel against her, and automatically converges her death back into Prime Reality (D8)!
+  const handleTriggerGuidedAssassinationDemo = useCallback(() => {
+    const sim = simRef.current;
+    if (sim.phase !== 'CHESS_VIEW') return;
+    setMultiverseModalOpen(false);
+    syncActiveBranchFromSim();
+
+    const omegaBranch = switchActiveTimeline(sim.multiverse, 'TL-OMEGA-1');
+    rebuildSceneRigsForTimeline(omegaBranch);
+
+    let exposedQueen = sim.pieces.find(
+      (p) => p.faction === 'b' && p.type === 'q'
+    );
+    let strikerKnight = sim.pieces.find(
+      (p) => p.faction === 'w' && p.type === 'n' && p.row === 4 && p.col === 4
+    ) || sim.pieces.find((p) => p.faction === 'w' && p.type === 'n');
+
+    if (exposedQueen && strikerKnight) {
+      exposedQueen.row = 2;
+      exposedQueen.col = 5; // F6 exposed!
+      exposedQueen.z = 0;
+      exposedQueen.w = 0;
+      exposedQueen.hp = Math.min(exposedQueen.hp, 75);
+
+      strikerKnight.row = 4;
+      strikerKnight.col = 4; // E4 poised to strike F6!
+      strikerKnight.z = 0;
+      strikerKnight.w = 0;
+      strikerKnight.hp = strikerKnight.maxHp;
+      strikerKnight.meter = 100;
+
+      sim.autoConvergeToPrimeAfterDuel = true;
+
+      const assassinateMove: MoveOption = {
+        from: { row: 4, col: 4, z: 0, w: 0 },
+        to: { row: 2, col: 5, z: 0, w: 0 },
+        isCapture: true,
+        targetPiece: exposedQueen,
+        dimensionType: '3D_SLICE',
+        dimensionLabel: 'CAUSAL ASSASSINATION IN TIMELINE Ω-1',
+      };
+
+      initiateCombatDuel(strikerKnight, assassinateMove, false);
+    }
+  }, [initiateCombatDuel, rebuildSceneRigsForTimeline, syncActiveBranchFromSim]);
+
+  // Execute a non-capture chess move (including 4D Hyper-Shifts & Subterranean Gateway Descents!) or trigger a capture duel
   const executeChessMove = useCallback(
     (piece: ChessPiece, move: MoveOption) => {
       const sim = simRef.current;
 
       if (piece.faction === 'w') {
         saveTimelineSnapshot();
+      }
+
+      // If this move enters a Subterranean Gateway (or traverses a realm portal), descend into the 3D Realm!
+      if (
+        (move.dimensionType === 'REALM_GATEWAY_DESCENT' ||
+          move.dimensionType === 'REALM_PORTAL_TRAVERSAL') &&
+        move.gatewayId
+      ) {
+        const gw = BOARD_GATEWAYS.find((g) => g.id === move.gatewayId) || BOARD_GATEWAYS[0];
+        initiateRealmDescent(
+          piece,
+          gw.id,
+          { row: gw.row, col: gw.col, z: gw.z, w: gw.w },
+          move.exitGatewayId
+        );
+        return;
       }
 
       if (move.isCapture && move.targetPiece) {
@@ -632,18 +1487,43 @@ export default function App() {
 
       sim.selectedPieceId = null;
       sim.validMoves = [];
+      sim.demoPendingDecision = null;
+      sim.demoBoardTimer = 0;
+      sim.demoMovesWithoutCapture += 1;
       syncBoardHighlights();
 
       const nextFaction: Faction = sim.turnFaction === 'w' ? 'b' : 'w';
       sim.turnFaction = nextFaction;
       sim.turnNumber += 1;
+      syncActiveBranchFromSim();
+      setMultiverseState({ ...sim.multiverse });
       setTurnFaction(nextFaction);
       setTurnNumber(sim.turnNumber);
 
-      if (sim.gameMode === 'vs_ai' && nextFaction === 'b') {
+      if (!sim.autoPlayDemo && sim.gameMode === 'vs_ai' && nextFaction === 'b') {
         setTimeout(() => {
           const currentSim = simRef.current;
-          if (currentSim.phase !== 'CHESS_VIEW' || currentSim.turnFaction !== 'b') return;
+          if (currentSim.autoPlayDemo || currentSim.phase !== 'CHESS_VIEW' || currentSim.turnFaction !== 'b') return;
+
+          // Check if AI can execute a cross-timeline Multiverse Paradox Strike (after Turn 4 with 25% tactical probability)
+          if (currentSim.turnNumber >= 4 && Math.random() < 0.25) {
+            const paradoxStrike = executeAIMultiverseParadoxStrike(
+              currentSim.multiverse,
+              currentSim.multiverse.activeTimelineId,
+              'b'
+            );
+            if (paradoxStrike) {
+              // Advance turn and trigger Reality Convergence on the player's active timeline!
+              currentSim.turnFaction = 'w';
+              currentSim.turnNumber += 1;
+              syncActiveBranchFromSim();
+              setTurnFaction('w');
+              setTurnNumber(currentSim.turnNumber);
+              handleTriggerConvergence(currentSim.multiverse.activeTimelineId);
+              return;
+            }
+          }
+
           const aiDecision = chooseAIMove(currentSim.pieces, 'b');
           if (aiDecision) {
             executeChessMove(aiDecision.piece, aiDecision.move);
@@ -651,7 +1531,14 @@ export default function App() {
         }, 650);
       }
     },
-    [initiateCombatDuel, syncBoardHighlights]
+    [
+      handleTriggerConvergence,
+      initiateCombatDuel,
+      initiateRealmDescent,
+      saveTimelineSnapshot,
+      syncActiveBranchFromSim,
+      syncBoardHighlights,
+    ]
   );
 
   // Instant Exhibition Duel from anywhere
@@ -723,6 +1610,34 @@ export default function App() {
       initiateCombatDuel(tempAtk, exhibMove, true);
     },
     [initiateCombatDuel]
+  );
+
+  // Trigger an immediate descent into the Subterranean Realms (cycles between Shattered Mirror, Ashen Crucible, and Echoing Remnant!)
+  const handleTriggerRealmShowcase = useCallback(
+    (preferredRealm?: RealmId) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'CHESS_VIEW') return;
+
+      const realmsOrder: RealmId[] = ['SHATTERED_MIRROR', 'ASHEN_CRUCIBLE', 'ECHOING_REMNANT'];
+      const nextRealm =
+        preferredRealm ||
+        realmsOrder[(realmsOrder.indexOf(sim.realm.currentRealmId) + 1) % realmsOrder.length];
+
+      const gw =
+        BOARD_GATEWAYS.find((g) => g.realmId === nextRealm && g.row >= 4) ||
+        BOARD_GATEWAYS.find((g) => g.realmId === nextRealm) ||
+        BOARD_GATEWAYS[0];
+
+      const warrior =
+        sim.pieces.find((p) => p.faction === 'w' && p.type === 'n') ||
+        sim.pieces.find((p) => p.faction === 'w' && p.type === 'q') ||
+        sim.pieces.find((p) => p.faction === 'w');
+
+      if (!warrior) return;
+      saveTimelineSnapshot();
+      initiateRealmDescent(warrior, gw.id, { row: gw.row, col: gw.col, z: gw.z, w: gw.w });
+    },
+    [initiateRealmDescent, saveTimelineSnapshot]
   );
 
   // Trigger a 4D Hyper-Space Scenario on the board (shifts pieces into Ana +W and Kata -W so unseen 4D threats & cross-dimensional ambushes appear immediately!)
@@ -801,6 +1716,9 @@ export default function App() {
       sim.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4) ||
       sim.pieces.find((p) => p.faction === 'w' && p.type === 'p');
     const blackQueen = sim.pieces.find((p) => p.faction === 'b' && p.type === 'q');
+    const whiteBishop = sim.pieces.find((p) => p.faction === 'w' && p.type === 'b');
+    const whiteKnight = sim.pieces.find((p) => p.faction === 'w' && p.type === 'n');
+    const blackRook = sim.pieces.find((p) => p.faction === 'b' && p.type === 'r');
 
     if (whitePawn && blackQueen) {
       whitePawn.row = 4;
@@ -809,6 +1727,30 @@ export default function App() {
       blackQueen.row = 3;
       blackQueen.col = 3;
       blackQueen.w = 0;
+
+      // Position a White Bishop in Ana (+W) along the (5,5)->(3,3) diagonal and a White Knight at (5,2)
+      // so the contested square D5 (3,3) has both 4D Cross-Dimensional & Prime Tactical Support ready!
+      if (whiteBishop) {
+        whiteBishop.row = 5;
+        whiteBishop.col = 5;
+        whiteBishop.w = 1; // +W Ana Rift supporter!
+        whiteBishop.z = 0;
+        whiteBishop.meter = Math.max(whiteBishop.meter, 45);
+      }
+      if (whiteKnight) {
+        whiteKnight.row = 5;
+        whiteKnight.col = 2;
+        whiteKnight.w = 0;
+        whiteKnight.z = 0;
+        whiteKnight.meter = Math.max(whiteKnight.meter, 40);
+      }
+      if (blackRook) {
+        blackRook.row = 0;
+        blackRook.col = 3;
+        blackRook.w = 0;
+        blackRook.z = 0;
+        blackRook.meter = Math.max(blackRook.meter, 35);
+      }
 
       const move: MoveOption = {
         from: { row: 4, col: 4, z: 0, w: 0 },
@@ -821,10 +1763,41 @@ export default function App() {
     }
   }, [executeChessMove, initiateCombatDuel]);
 
+  // Claim the Hellfire Tempering Anvil in The Ashen Crucible
+  const handleTemperAtCrucibleAnvil = useCallback(() => {
+    const sim = simRef.current;
+    if (sim.phase !== 'REALM_EXPLORATION' || sim.realm.currentRealmId !== 'ASHEN_CRUCIBLE') return;
+    if (sim.realm.crucibleAnvilClaimed) return;
+    const traveler = sim.pieces.find((p) => p.id === sim.realm.travelerPieceId);
+    if (!traveler) return;
+
+    sim.realm.crucibleAnvilClaimed = true;
+    traveler.meter = Math.min(100, traveler.meter + 40);
+    traveler.hp = Math.min(traveler.maxHp, traveler.hp + 15);
+    delete traveler.persistentBurnMs;
+    soundEngine.playCrucibleHazard(true);
+
+    if (sim.vfxPool) {
+      const meta = REALM_METADATA.ASHEN_CRUCIBLE;
+      spawnAuraPillar(sim.vfxPool, meta.worldCenter.x, meta.worldCenter.z, 0xf59e0b);
+      spawnShockwave(sim.vfxPool, meta.worldCenter.x, meta.worldCenter.y + 0.2, meta.worldCenter.z, 0xf59e0b, 7.5);
+    }
+
+    setRealmCrucibleClaimed(true);
+    setRealmTraveler({ ...traveler });
+    setRealmStatusBanner(
+      'HELLFIRE ANVIL CLAIMED: +40% METER, +15 HP & DEEP FLANK ASCENT UNLOCKED!'
+    );
+  }, []);
+
   // Reset full game
   const handleResetGame = useCallback(() => {
     const sim = simRef.current;
     const scene = sim.arenaRig?.group.parent;
+
+    if (sim.realmsRig) {
+      syncRealmEntities3D(sim.realmsRig, [], []);
+    }
 
     sim.pieceRigs.forEach((rig) => {
       rig.root.parent?.remove(rig.root);
@@ -834,7 +1807,15 @@ export default function App() {
     sim.exhibitionTempRigs = [];
 
     const freshPieces = createInitialBoard();
+    const freshMultiverse = createInitialMultiverseState(freshPieces);
     sim.pieces = freshPieces;
+    sim.multiverse = freshMultiverse;
+    sim.autoConvergeToPrimeAfterDuel = false;
+    sim.activeCollapseResolution = null;
+    for (const r of sim.collapseDoomedRigs) {
+      r.root.parent?.remove(r.root);
+    }
+    sim.collapseDoomedRigs = [];
     sim.phase = 'CHESS_VIEW';
     sim.turnFaction = 'w';
     sim.turnNumber = 1;
@@ -847,6 +1828,14 @@ export default function App() {
     sim.pendingMove = null;
     sim.attackerRuntime = null;
     sim.defenderRuntime = null;
+    sim.realm.travelerPieceId = null;
+    sim.realm.nearbyPortal = null;
+    sim.realm.nearbyPortalEval = null;
+    sim.realm.steerTargetPortalId = null;
+    sim.realm.ascentTargetTimelineId = null;
+    sim.duelInRealm = false;
+    sim.activeSentinelId = null;
+    sim.duelCenterWorld.set(0, 0, 0);
 
     if (scene) {
       for (const p of freshPieces) {
@@ -862,10 +1851,17 @@ export default function App() {
       sim.controls.enabled = true;
     }
 
+    setMultiverseState(freshMultiverse);
+    setActiveCollapseBanner(null);
+    setTimelineBranchLabel('TL-PRIME · Prime Reality (α)');
     setActiveSliceW(0);
     setActiveSliceZ(0);
     setTargetMoveW(0);
     setTargetMoveZ(0);
+    setRealmTraveler(null);
+    setNearbyPortal(null);
+    setNearbyPortalEval(null);
+    setRealmStatusBanner(null);
     syncBoardHighlights();
     setPhase('CHESS_VIEW');
     setTurnFaction('w');
@@ -876,8 +1872,8 @@ export default function App() {
       {
         id: `reset_${Date.now()}`,
         turnNumber: 1,
-        summary: 'New 4D Campaign Initialized',
-        detail: 'All 32 warriors restored to Prime Slice (W=0, Z=0).',
+        summary: 'New Multiversal 4D Campaign Initialized',
+        detail: 'All 32 warriors restored to Prime Reality (TL-PRIME) and parallel timelines Ω-1, Δ-2, and Σ-3 reset.',
         wasUpset: false,
         winnerFaction: 'w',
       },
@@ -918,15 +1914,237 @@ export default function App() {
       } else if (action === 'dash_back') {
         triggerFighterDash(human, false);
       } else if (action === 'left') {
-        human.vx = -human.spec.walkSpeed;
+        human.vx = -human.spec.walkSpeed * getFighterSpeedMultiplier(human);
         human.action = human.facing === -1 ? 'walk_fwd' : 'walk_back';
       } else if (action === 'right') {
-        human.vx = human.spec.walkSpeed;
+        human.vx = human.spec.walkSpeed * getFighterSpeedMultiplier(human);
         human.action = human.facing === 1 ? 'walk_fwd' : 'walk_back';
       }
     },
     [addCallout]
   );
+
+  // TACTICAL INTERVENTION: Execute an intervention from a supporting board piece (for either Human or AI!)
+  const executeFighterIntervention = useCallback(
+    (caller: FighterRuntime, requestedIndex?: number) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'FIGHT_ACTIVE') return;
+      const atk = sim.attackerRuntime;
+      const def = sim.defenderRuntime;
+      if (!atk || !def) return;
+
+      const opponent = caller === atk ? def : atk;
+      const supporter = triggerTacticalIntervention(
+        caller,
+        requestedIndex,
+        sim.pieces,
+        addCallout
+      );
+      if (!supporter) return;
+
+      sim.activeIntervention = {
+        supporter,
+        callerIsAttacker: caller === atk,
+        timerSec: 0,
+        durationSec: 0.72,
+        impactApplied: false,
+      };
+
+      // Spawn 3D Quantum Rift Portal & Directional Intervention Beam!
+      if (sim.vfxPool) {
+        const targetFighter = supporter.type === 'k' ? caller : opponent;
+        const targetWorldX = sim.duelCenterWorld.x + targetFighter.x * 0.72;
+        const targetWorldY = 1.05 + targetFighter.y * 0.72;
+        const targetWorldZ = sim.duelCenterWorld.z;
+
+        const supRig = sim.pieceRigs.get(supporter.pieceId);
+        let originX = sim.duelCenterWorld.x + caller.x * 0.72 - caller.facing * 1.4;
+        let originY = supporter.isCrossDimensional ? 2.55 : 1.45;
+        let originZ = sim.duelCenterWorld.z - 1.1;
+
+        if (!supporter.isCrossDimensional && supRig) {
+          originX = supRig.root.position.x;
+          originY = Math.max(1.25, supRig.root.position.y + 1.1);
+          originZ = supRig.root.position.z;
+        }
+
+        spawnInterventionRift(
+          sim.vfxPool,
+          originX,
+          originY,
+          originZ,
+          targetWorldX,
+          targetWorldY,
+          targetWorldZ,
+          supporter.riftColorHex
+        );
+        spawnAuraPillar(sim.vfxPool, originX, originZ, supporter.riftColorHex);
+      }
+
+      const sq = formatSquareName({ row: supporter.row, col: supporter.col });
+      setBattleLogs((prev) => [
+        {
+          id: `interv_${Date.now()}`,
+          turnNumber: sim.turnNumber,
+          summary: `Tactical Intervention: ${ARCHETYPES[supporter.type].chessName} (${sq}) → ${supporter.interventionName}!`,
+          detail: `${supporter.vectorLabel} intervened for ${caller.spec.chessName} (-25 Supporter Meter).`,
+          wasUpset: false,
+          winnerFaction: caller.piece.faction,
+        },
+        ...prev.slice(0, 7),
+      ]);
+
+      setHudAttacker({ ...atk });
+      setHudDefender({ ...def });
+    },
+    [addCallout]
+  );
+
+  const handleTriggerIntervention = useCallback(
+    (supporterIndex?: number) => {
+      const sim = simRef.current;
+      const atk = sim.attackerRuntime;
+      const def = sim.defenderRuntime;
+      if (!atk || !def) return;
+      const human = !atk.isAI ? atk : !def.isAI ? def : atk;
+      executeFighterIntervention(human, supporterIndex);
+    },
+    [executeFighterIntervention]
+  );
+
+  const handleSelectSupporter = useCallback((index: number) => {
+    const sim = simRef.current;
+    const atk = sim.attackerRuntime;
+    const def = sim.defenderRuntime;
+    if (!atk || !def) return;
+    const human = !atk.isAI ? atk : !def.isAI ? def : atk;
+    if (index >= 0 && index < human.supporters.length) {
+      human.selectedSupporterIndex = index;
+      setHudAttacker({ ...atk });
+      setHudDefender({ ...def });
+    }
+  }, []);
+
+  const handleCycleSupporter = useCallback((delta: number) => {
+    const sim = simRef.current;
+    const atk = sim.attackerRuntime;
+    const def = sim.defenderRuntime;
+    if (!atk || !def) return;
+    const human = !atk.isAI ? atk : !def.isAI ? def : atk;
+    const len = human.supporters.length;
+    if (len === 0) return;
+    human.selectedSupporterIndex = (human.selectedSupporterIndex + delta + len) % len;
+    soundEngine.playChessSelect();
+    setHudAttacker({ ...atk });
+    setHudDefender({ ...def });
+  }, []);
+
+  // Toggle Director's Auto-Play / Demo Mode (autonomous 4D chess + AI-vs-AI combat showcase!)
+  const handleToggleAutoPlayDemo = useCallback(() => {
+    const sim = simRef.current;
+    const next = !sim.autoPlayDemo;
+    sim.autoPlayDemo = next;
+    sim.demoBoardTimer = 0;
+    sim.demoCameraTimer = 0;
+    sim.demoPendingDecision = null;
+    setAutoPlayDemo(next);
+
+    if (next) {
+      soundEngine.playQuantumEntangle(false);
+      setWarVictor(null);
+
+      // If currently in a duel, set both fighters to AI so they immediately battle autonomously!
+      if (sim.attackerRuntime && sim.defenderRuntime) {
+        sim.attackerRuntime.isAI = true;
+        sim.defenderRuntime.isAI = true;
+        setHudAttacker({ ...sim.attackerRuntime });
+        setHudDefender({ ...sim.defenderRuntime });
+        setDemoDirectorStage('AI-VS-AI SHOWCASE DUEL · 4D PHASE & BOARD INTERVENTION');
+      } else if (sim.phase === 'CHESS_VIEW') {
+        // Stage an immediate 4D tactical configuration if the board has no active captures yet
+        // so viewers see 4D Quantum Manifold geometry, Tactical Support coverage, and an explosive duel within ~1 second!
+        const hasAnyCapture = sim.pieces
+          .filter((p) => p.faction === sim.turnFaction)
+          .some((p) =>
+            getValidMovesForPiece(p, sim.pieces, p.z, p.w).some((m) => m.isCapture)
+          );
+
+        if (!hasAnyCapture) {
+          const wPawn = sim.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4);
+          const bQueen = sim.pieces.find((p) => p.faction === 'b' && p.type === 'q');
+          const wBishop = sim.pieces.find((p) => p.faction === 'w' && p.type === 'b');
+          const wKnight = sim.pieces.find((p) => p.faction === 'w' && p.type === 'n');
+          const bRook = sim.pieces.find((p) => p.faction === 'b' && p.type === 'r');
+
+          if (wPawn && bQueen) {
+            wPawn.row = 4;
+            wPawn.col = 4;
+            wPawn.w = 0;
+            bQueen.row = 3;
+            bQueen.col = 3;
+            bQueen.w = 0;
+          }
+          if (wBishop) {
+            wBishop.row = 5;
+            wBishop.col = 5;
+            wBishop.w = 1; // +W Ana Rift Supporter!
+            wBishop.meter = Math.max(wBishop.meter, 50);
+          }
+          if (wKnight) {
+            wKnight.row = 5;
+            wKnight.col = 2;
+            wKnight.w = 0;
+            wKnight.meter = Math.max(wKnight.meter, 45);
+          }
+          if (bRook) {
+            bRook.row = 0;
+            bRook.col = 3;
+            bRook.w = 0;
+            bRook.meter = Math.max(bRook.meter, 45);
+          }
+          syncBoardHighlights();
+        }
+        setDemoDirectorStage('4D QUANTUM MANIFOLD · COMPUTING TACTICAL SUPPORT VECTORS');
+      }
+
+      setBattleLogs((prev) => [
+        {
+          id: `demo_on_${Date.now()}`,
+          turnNumber: sim.turnNumber,
+          summary: "Director's Auto-Play Demo Mode Activated",
+          detail: 'Autonomous 4D Chess + AI-vs-AI Visor Combat & Tactical Intervention showcase active. Click "Take Control" or press [P] anytime!',
+          wasUpset: false,
+          winnerFaction: sim.turnFaction,
+        },
+        ...prev.slice(0, 7),
+      ]);
+    } else {
+      // Restore human control immediately!
+      soundEngine.playChessSelect();
+      if (sim.controls) {
+        sim.controls.autoRotate = false;
+      }
+      if (sim.attackerRuntime && sim.defenderRuntime) {
+        sim.attackerRuntime.isAI =
+          sim.gameMode === 'vs_ai' && sim.attackerRuntime.piece.faction === 'b';
+        sim.defenderRuntime.isAI =
+          sim.gameMode === 'vs_ai' && sim.defenderRuntime.piece.faction === 'b';
+        setHudAttacker({ ...sim.attackerRuntime });
+        setHudDefender({ ...sim.defenderRuntime });
+      }
+      setBattleLogs((prev) => [
+        {
+          id: `demo_off_${Date.now()}`,
+          turnNumber: sim.turnNumber,
+          summary: 'Manual Command Restored',
+          detail: 'You now have full control of your warriors on the 4D board and in combat!',
+          wasUpset: false,
+          winnerFaction: sim.turnFaction,
+        },
+        ...prev.slice(0, 7),
+      ]);
+    }
+  }, [syncBoardHighlights]);
 
   // Initialize Three.js Scene, Calibrated Bloom, Studio & Cinematic Fight Lighting, Board, 4D Tesseract, Pieces, and Loop
   useEffect(() => {
@@ -973,9 +2191,10 @@ export default function App() {
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
-    // Post-Processing Composer with restrained, high-threshold UnrealBloomPass (scaled down glow!)
+    // Post-Processing Composer with restrained UnrealBloomPass + Battle-Worn Critical Duel ShaderPass (< 30% HP)
     let composer: EffectComposer | null = null;
     let bloomPass: UnrealBloomPass | null = null;
+    let battleWornPass: ShaderPass | null = null;
     if (!isHeadless) {
       composer = new EffectComposer(renderer);
       composer.addPass(new RenderPass(scene, camera));
@@ -986,6 +2205,12 @@ export default function App() {
         0.88 // high threshold so only true emissive weapon sparks/slashes bloom
       );
       composer.addPass(bloomPass);
+
+      battleWornPass = new ShaderPass(BattleWornShader);
+      battleWornPass.uniforms.uAspect.value =
+        container.clientWidth / Math.max(1, container.clientHeight);
+      composer.addPass(battleWornPass);
+
       composer.addPass(new OutputPass());
     }
 
@@ -1040,6 +2265,13 @@ export default function App() {
     const arenaRig = createBoardArena(renderer);
     scene.add(arenaRig.group);
     simRef.current.arenaRig = arenaRig;
+
+    // Build 3D Subterranean Impossible Realms (The Shattered Mirror, The Ashen Crucible, The Echoing Remnant)
+    // and Live Perspective Render-To-Texture Portals + 6 Board Gateway Wells!
+    const realmsRig = createSubterraneanRealms(renderer);
+    scene.add(realmsRig.rootGroup);
+    scene.add(realmsRig.boardGatewaysGroup);
+    simRef.current.realmsRig = realmsRig;
 
     // Build Combat VFX Pool
     const vfxPool = createVFXPool();
@@ -1110,6 +2342,9 @@ export default function App() {
     };
 
     const onPointerDown = (ev: PointerEvent) => {
+      if (!soundEngine.muted) {
+        soundEngine.startMusic();
+      }
       pointerDownPos = { x: ev.clientX, y: ev.clientY };
     };
 
@@ -1138,8 +2373,14 @@ export default function App() {
 
       if (sim.selectedPieceId) {
         const activePiece = sim.pieces.find((p) => p.id === sim.selectedPieceId);
-        // Prioritize captures/chrono-intercepts on that square, or moves into the selected targetMoveW/targetMoveZ slice
+        // Prioritize gateway descent if clicking the piece's own gateway square, or captures/chrono-intercepts, or moves into the selected targetMoveW/targetMoveZ slice
         const chosenMove =
+          sim.validMoves.find(
+            (m) =>
+              m.to.row === coord.row &&
+              m.to.col === coord.col &&
+              m.dimensionType === 'REALM_GATEWAY_DESCENT'
+          ) ||
           sim.validMoves.find(
             (m) => m.to.row === coord.row && m.to.col === coord.col && m.isCapture
           ) ||
@@ -1191,15 +2432,49 @@ export default function App() {
     renderer.domElement.addEventListener('pointerup', onPointerUp);
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!soundEngine.muted) {
+        soundEngine.startMusic();
+      }
       if (e.key === 'h' || e.key === 'H') {
         setDockCollapsed((prev) => !prev);
+      } else if (e.key === 'm' || e.key === 'M') {
+        setMultiverseModalOpen((prev) => !prev);
+        return;
       } else if (e.key === 'v' || e.key === 'V') {
         const next = sim.combatCameraMode === 'first_person' ? 'side_arena' : 'first_person';
         sim.combatCameraMode = next;
         setCombatCameraMode(next);
+      } else if (e.key === 'p' || e.key === 'P') {
+        handleToggleAutoPlayDemo();
+        return;
       }
 
       sim.keysHeld[e.code] = true;
+
+      // SUBTERRANEAN REALM 3RD-PERSON EXPLORATION CONTROLS
+      if (sim.phase === 'REALM_EXPLORATION' && sim.realm.travelerPieceId) {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          handleRealmAction('jump');
+        } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyL') {
+          handleRealmAction('dash');
+        } else if (e.code === 'KeyJ' || e.code === 'KeyK') {
+          handleRealmAction('strike');
+        } else if (e.code === 'KeyE') {
+          if (
+            sim.realm.currentRealmId === 'ASHEN_CRUCIBLE' &&
+            !sim.realm.crucibleAnvilClaimed &&
+            Math.hypot(sim.realm.localPos.x, sim.realm.localPos.z) < 2.9
+          ) {
+            handleTemperAtCrucibleAnvil();
+            return;
+          }
+          if (sim.realm.nearbyPortal) {
+            handleTraverseRealmPortal(sim.realm.nearbyPortal);
+          }
+        }
+        return;
+      }
 
       if (sim.phase !== 'FIGHT_ACTIVE') return;
       const atk = sim.attackerRuntime;
@@ -1218,6 +2493,20 @@ export default function App() {
         triggerFighter4DPhaseShift(human, addCallout);
       } else if (e.code === 'KeyE') {
         triggerFighterTemporalEcho(human, addCallout);
+      } else if (e.code === 'KeyT') {
+        executeFighterIntervention(human);
+      } else if (e.code === 'BracketLeft') {
+        const len = human.supporters.length;
+        if (len > 0) {
+          human.selectedSupporterIndex = (human.selectedSupporterIndex - 1 + len) % len;
+          soundEngine.playChessSelect();
+        }
+      } else if (e.code === 'BracketRight') {
+        const len = human.supporters.length;
+        if (len > 0) {
+          human.selectedSupporterIndex = (human.selectedSupporterIndex + 1) % len;
+          soundEngine.playChessSelect();
+        }
       } else if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space') {
         triggerFighterJump(human);
       } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
@@ -1264,13 +2553,14 @@ export default function App() {
       renderer.setSize(w, h);
       if (composer) composer.setSize(w, h);
       if (bloomPass) bloomPass.resolution.set(w, h);
+      if (battleWornPass) battleWornPass.uniforms.uAspect.value = w / Math.max(1, h);
     };
     window.addEventListener('resize', onResize);
 
     const checkFighterActionVFX = (f: FighterRuntime, prevAction: FighterAction) => {
       if (f.action === prevAction) return;
       const worldX = sim.duelCenterWorld.x + f.x * 0.72;
-      const worldY = 0.85 + f.y * 0.72;
+      const worldY = sim.duelCenterWorld.y + 0.85 + f.y * 0.72;
       const worldZ = sim.duelCenterWorld.z;
       const colorHex = f.piece.faction === 'w' ? 0x38bdf8 : 0xf43f5e;
 
@@ -1292,6 +2582,10 @@ export default function App() {
     const clock = new THREE.Clock();
     let animFrameId = 0;
     let hudSyncAccumulator = 0;
+    let battleWornIntensity = 0;
+    let battleWornPulse = 0;
+    let battleSmokeTimer = 0;
+    let prevCombatCamMode = sim.combatCameraMode;
 
     const animate = () => {
       animFrameId = requestAnimationFrame(animate);
@@ -1395,6 +2689,12 @@ export default function App() {
             8,
             rawDelta
           );
+        arenaRig.duelFloorScarMesh.visible = false;
+        battleWornIntensity = THREE.MathUtils.damp(battleWornIntensity, 0, 8, rawDelta);
+        battleWornPulse = THREE.MathUtils.damp(battleWornPulse, 0, 10, rawDelta);
+        battleSmokeTimer += rawDelta;
+        const shouldEmitBoardSmoke = battleSmokeTimer >= 0.14;
+        if (shouldEmitBoardSmoke) battleSmokeTimer = 0;
 
         // Position & render all 32 pieces with Single-3D-Slice 4D Quantum Perception!
         for (const piece of sim.pieces) {
@@ -1428,6 +2728,8 @@ export default function App() {
           rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, targetYaw, 8, rawDelta);
 
           rig.surpriseGroup.visible = false;
+          rig.statusShaderMesh.visible = false;
+          rig.statusIndicatorGroup.visible = false;
           const showQuantumOrbits =
             piece.w !== 0 || piece.z !== 0 || !isSameSlice || Boolean(piece.entangledWithId);
           rig.tesseractBadge.visible = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
@@ -1449,21 +2751,105 @@ export default function App() {
             }
           }
 
+          rig.bodyPivot.position.y = THREE.MathUtils.damp(rig.bodyPivot.position.y, 0.18, 10, rawDelta);
           rig.bodyPivot.rotation.x = Math.sin(elapsed * 2.2 + piece.col) * 0.03;
           rig.bodyPivot.rotation.y = 0;
           rig.bodyPivot.rotation.z = 0;
-          rig.rightArmPivot.rotation.set(-0.1, 0, 0);
-          rig.leftArmPivot.rotation.set(-0.08, 0, 0);
+          rig.pelvisGroup.position.y = rig.bodyPivot.position.y;
+          rig.pelvisGroup.rotation.set(0, 0, 0);
+          rig.leftLegPivot.rotation.set(0, 0, 0);
+          rig.rightLegPivot.rotation.set(0, 0, 0);
+          const isSelected = piece.id === sim.selectedPieceId;
+          const boardScanYaw = Math.sin(elapsed * 0.9 + piece.row * 1.7 + piece.col * 2.3) * 0.14;
+          rig.headGroup.rotation.set(
+            isSelected ? -0.05 : 0,
+            isSelected ? 0 : boardScanYaw * 0.45,
+            0
+          );
+          const eyeScanX = isSelected ? 0 : boardScanYaw * 0.025;
+          rig.leftPupilPivot.position.set(-eyeScanX, 0, 0.006);
+          rig.rightPupilPivot.position.set(eyeScanX, 0, 0.006);
+          rig.leftPupilPivot.scale.setScalar(isSelected ? 1.2 : 1.0);
+          rig.rightPupilPivot.scale.setScalar(isSelected ? 1.2 : 1.0);
+          rig.leftUpperLid.position.y = isSelected ? 0.009 : 0.0125;
+          rig.rightUpperLid.position.y = isSelected ? 0.009 : 0.0125;
+
+          rig.rightArmPivot.rotation.set(-0.14, 0, -0.05);
+          rig.rightElbowPivot.rotation.set(-0.28, 0, 0);
+          rig.leftArmPivot.rotation.set(-0.1, 0, 0.05);
+          rig.leftElbowPivot.rotation.set(-0.25, 0, 0);
           rig.capePivot.rotation.x = 0.14 + Math.sin(elapsed * 2.5 + piece.row) * 0.04;
 
           if (piece.type === 'q') {
+            rig.specialOrbitGroup.rotation.x = 0;
             rig.specialOrbitGroup.rotation.y += rawDelta * 1.6;
             rig.specialOrbitGroup.scale.setScalar(1.0);
           }
 
-          const isSelected = piece.id === sim.selectedPieceId;
+          const boardHpRatio = piece.hp / Math.max(1, piece.maxHp);
           const ringMat = rig.hpRingMesh.material as THREE.MeshBasicMaterial;
-          ringMat.opacity = isSelected ? 0.95 : piece.hp < piece.maxHp ? 0.7 : 0.35;
+          ringMat.color.setHex(
+            boardHpRatio > 0.65
+              ? piece.faction === 'w'
+                ? 0xf59e0b
+                : 0x38bdf8
+              : boardHpRatio > 0.3
+              ? 0xf97316
+              : 0xf43f5e
+          );
+          ringMat.opacity = isSelected ? 0.95 : piece.hp < piece.maxHp ? 0.72 : 0.32;
+
+          // Diegetic 3D Vitality on the Chessboard: Soul-Crown Halo, Beating Heart Core & Pauldron Sundering!
+          const boardSpecialReady = piece.meter >= ARCHETYPES[piece.type].special.meterCost;
+          rig.vitalityHaloMesh.visible = isSelected || piece.hp < piece.maxHp || boardSpecialReady;
+          if (rig.vitalityHaloMesh.visible) {
+            rig.vitalityHaloUniforms.uTime.value = elapsed;
+            rig.vitalityHaloUniforms.uHpRatio.value = boardHpRatio;
+            rig.vitalityHaloUniforms.uRecoverableRatio.value = boardHpRatio;
+            rig.vitalityHaloUniforms.uGuardRatio.value = 1.0;
+            rig.vitalityHaloUniforms.uSpecialReady.value = boardSpecialReady ? 1.0 : 0.0;
+          }
+          const boardHeartBeat =
+            1.0 + 0.22 * Math.pow(Math.abs(Math.sin(elapsed * (2.8 + (1 - boardHpRatio) * 7.5))), 3);
+          rig.coreGem.scale.setScalar(boardHeartBeat);
+
+          if (rig.pauldronMeshes.length >= 2) {
+            const leftP = rig.pauldronMeshes[0];
+            const rightP = rig.pauldronMeshes[1];
+            leftP.visible = boardHpRatio >= 0.42;
+            if (leftP.visible) {
+              const dmgTilt = boardHpRatio < 0.65 ? (0.65 - boardHpRatio) * 1.1 : 0;
+              leftP.rotation.z = (leftP.userData.baseRotZ ?? 0.35) + dmgTilt;
+            }
+            rightP.visible = boardHpRatio >= 0.22;
+            if (rightP.visible) {
+              const dmgTiltR = boardHpRatio < 0.48 ? (0.48 - boardHpRatio) * 1.2 : 0;
+              rightP.rotation.z = (rightP.userData.baseRotZ ?? -0.35) - dmgTiltR;
+            }
+          }
+
+          // Persistent Battle-Worn Armor Cracks, Flickering Emissive Scars & Smoke on surviving board pieces < 30% HP!
+          if (boardHpRatio < 0.3 && piece.hp > 0) {
+            const severity = Math.min(1, (0.3 - boardHpRatio) / 0.22 + 0.35);
+            const flicker =
+              0.55 +
+              0.45 * Math.sin(elapsed * 28 + piece.col * 3) * Math.cos(elapsed * 17 + piece.row);
+            rig.primaryArmorMat.emissiveIntensity = severity * flicker * 1.55;
+            rig.primaryArmorMat.bumpScale = 0.04 * severity;
+            if (shouldEmitBoardSmoke && isSameSlice) {
+              spawnBattleSmoke(
+                vfxPool,
+                rig.root.position.x,
+                rig.root.position.y + 0.65,
+                rig.root.position.z,
+                severity,
+                piece.faction === 'w' ? 0xf59e0b : 0xf43f5e
+              );
+            }
+          } else {
+            rig.primaryArmorMat.emissiveIntensity = 0.0;
+            rig.primaryArmorMat.bumpScale = 0.0;
+          }
         }
 
         // Render 3D Double-Helix Quantum Entanglement Arcs between |Φ⁺⟩ Bell Pairs!
@@ -1489,6 +2875,83 @@ export default function App() {
         }
         updateQuantumEntanglementBeams(arenaRig, entangledPairs, elapsed);
 
+        // DIRECTOR'S AUTO-PLAY DEMO CHOREOGRAPHY (during CHESS_VIEW)
+        if (sim.autoPlayDemo) {
+          controls.autoRotate = true;
+          controls.autoRotateSpeed = 1.35;
+          sim.demoBoardTimer += rawDelta;
+
+          // Step 1 (0.45s): Select the best showcase move & highlight its 4D trajectory + Tactical Support preview!
+          if (!sim.demoPendingDecision && sim.demoBoardTimer >= 0.45) {
+            // If 2 moves have passed without a capture duel, stage a dramatic clash on the board!
+            if (sim.demoMovesWithoutCapture >= 2) {
+              const friendly = sim.pieces.find((p) => p.faction === sim.turnFaction && p.type !== 'k');
+              const enemy = sim.pieces.find((p) => p.faction !== sim.turnFaction && p.type !== 'k');
+              if (friendly && enemy) {
+                friendly.row = 4;
+                friendly.col = 3;
+                friendly.w = 0;
+                enemy.row = 3;
+                enemy.col = 3;
+                enemy.w = 0;
+              }
+              sim.demoMovesWithoutCapture = 0;
+            }
+
+            const decision = chooseAIMove(sim.pieces, sim.turnFaction, true);
+            if (decision) {
+              sim.demoPendingDecision = decision;
+              sim.selectedPieceId = decision.piece.id;
+              sim.targetMoveW = decision.move.to.w;
+              sim.targetMoveZ = decision.move.to.z;
+              setTargetMoveW(decision.move.to.w);
+              setTargetMoveZ(decision.move.to.z);
+
+              // Shift viewed 4D slice if the move targets Ana (+W) or Kata (-W) so the Quantum Lattice lights up!
+              if (decision.move.to.w !== sim.activeSliceW || decision.move.to.z !== sim.activeSliceZ) {
+                sim.activeSliceW = decision.move.to.w;
+                sim.activeSliceZ = decision.move.to.z;
+                setActiveSliceW(decision.move.to.w);
+                setActiveSliceZ(decision.move.to.z);
+              }
+
+              sim.validMoves = getValidMovesForPiece(
+                decision.piece,
+                sim.pieces,
+                decision.move.to.z,
+                decision.move.to.w
+              );
+              syncBoardHighlights();
+              soundEngine.playChessSelect();
+
+              if (decision.move.isCapture && decision.move.targetPiece) {
+                setHoveredCaptureMove(decision.move);
+                setDemoDirectorStage(
+                  `IMMINENT DUEL AT ${formatSquareName(decision.move.to)} · ${ARCHETYPES[decision.piece.type].chessName.toUpperCase()} VS ${ARCHETYPES[decision.move.targetPiece.type].chessName.toUpperCase()}`
+                );
+              } else {
+                setHoveredCaptureMove(null);
+                setDemoDirectorStage(
+                  `4D MANIFOLD ADVANCE · ${ARCHETYPES[decision.piece.type].chessName.toUpperCase()} → ${formatSquareName(decision.move.to)} (${formatWName(decision.move.to.w)})`
+                );
+              }
+            }
+          }
+
+          // Step 2 (1.50s): Execute the highlighted move or launch the capture duel!
+          if (sim.demoPendingDecision && sim.demoBoardTimer >= 1.5) {
+            const { piece, move } = sim.demoPendingDecision;
+            sim.demoPendingDecision = null;
+            sim.demoBoardTimer = 0;
+            if (move.isCapture) {
+              sim.demoMovesWithoutCapture = 0;
+            }
+            executeChessMove(piece, move);
+          }
+        } else {
+          controls.autoRotate = false;
+        }
+
         controls.update();
       } else if (
         sim.phase === 'TRANSITION_TO_FIGHT' ||
@@ -1504,13 +2967,14 @@ export default function App() {
           arenaRig.entanglementHelixLines.visible = false;
           sim.phaseTimer += rawDelta;
 
+          const baseStageY = sim.duelCenterWorld.y;
           const atkWorldX = sim.duelCenterWorld.x + atk.x * 0.72;
-          const atkWorldY = atk.y * 0.72;
+          const atkWorldY = baseStageY + atk.y * 0.72;
           const atkWorldZ = sim.duelCenterWorld.z;
           const atkEyeH = getWarriorEyeHeightWorld(atk.piece.type);
 
           const defWorldX = sim.duelCenterWorld.x + def.x * 0.72;
-          const defWorldY = def.y * 0.72;
+          const defWorldY = baseStageY + def.y * 0.72;
           const defWorldZ = sim.duelCenterWorld.z;
           const defEyeH = getWarriorEyeHeightWorld(def.piece.type);
 
@@ -1559,10 +3023,10 @@ export default function App() {
                 const human = !atk.isAI ? atk : !def.isAI ? def : atk;
                 const opp = human === atk ? def : atk;
                 const hWorldX = sim.duelCenterWorld.x + human.x * 0.72;
-                const hWorldY = human.y * 0.72;
+                const hWorldY = baseStageY + human.y * 0.72;
                 const hEyeH = getWarriorEyeHeightWorld(human.piece.type);
                 const oWorldX = sim.duelCenterWorld.x + opp.x * 0.72;
-                const oWorldY = opp.y * 0.72;
+                const oWorldY = baseStageY + opp.y * 0.72;
                 const oEyeH = getWarriorEyeHeightWorld(opp.piece.type);
 
                 camera.position.set(hWorldX, hWorldY + hEyeH, sim.duelCenterWorld.z);
@@ -1607,45 +3071,76 @@ export default function App() {
           rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 1.25, 8, rawDelta);
           warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.18, 8, rawDelta);
 
-          // Position blazing overhead spotlights so both fighters' eyes, armor, and stage floor are vividly lit!
-          arenaRig.spotAttacker.position.set(atkWorldX + 0.45, 6.8, atkWorldZ + 2.2);
+          // Position balanced, atmospheric overhead spotlights (toned down so highlights never blow out!)
+          const isOutro = sim.phase === 'FIGHT_OUTRO';
+          const atkWonOutro =
+            def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp);
+
+          arenaRig.spotAttacker.position.set(atkWorldX + 0.45, baseStageY + 6.8, atkWorldZ + 2.2);
           arenaRig.spotAttacker.target.position.set(atkWorldX, atkWorldY + 0.95, atkWorldZ);
-          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 210.0, 10, rawDelta);
+          arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(
+            arenaRig.spotAttacker.intensity,
+            isOutro ? (atkWonOutro ? 92.0 : 18.0) : 82.0,
+            10,
+            rawDelta
+          );
 
-          arenaRig.spotDefender.position.set(defWorldX - 0.45, 6.8, defWorldZ + 2.2);
+          arenaRig.spotDefender.position.set(defWorldX - 0.45, baseStageY + 6.8, defWorldZ + 2.2);
           arenaRig.spotDefender.target.position.set(defWorldX, defWorldY + 0.95, defWorldZ);
-          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 210.0, 10, rawDelta);
+          arenaRig.spotDefender.intensity = THREE.MathUtils.damp(
+            arenaRig.spotDefender.intensity,
+            isOutro ? (!atkWonOutro ? 92.0 : 18.0) : 82.0,
+            10,
+            rawDelta
+          );
 
-          // Vertical overhead volumetric light shafts descending directly onto each fighter
-          arenaRig.volumetricConeAttacker.position.set(atkWorldX, 3.2, atkWorldZ);
+          // Subtle vertical overhead volumetric light shafts descending onto each fighter
+          arenaRig.volumetricConeAttacker.position.set(atkWorldX, baseStageY + 3.2, atkWorldZ);
           arenaRig.volumetricConeAttacker.rotation.set(0, 0, 0);
           (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity =
             THREE.MathUtils.damp(
               (arenaRig.volumetricConeAttacker.material as THREE.MeshBasicMaterial).opacity,
-              sim.phase === 'FIGHT_INTRO' ? 0.0 : 0.05,
+              sim.phase === 'FIGHT_INTRO'
+                ? 0.0
+                : isOutro
+                ? atkWonOutro
+                  ? 0.038
+                  : 0.0
+                : 0.026,
               6,
               rawDelta
             );
 
-          arenaRig.volumetricConeDefender.position.set(defWorldX, 3.2, defWorldZ);
+          arenaRig.volumetricConeDefender.position.set(defWorldX, baseStageY + 3.2, defWorldZ);
           arenaRig.volumetricConeDefender.rotation.set(0, 0, 0);
           (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity =
             THREE.MathUtils.damp(
               (arenaRig.volumetricConeDefender.material as THREE.MeshBasicMaterial).opacity,
-              sim.phase === 'FIGHT_INTRO' ? 0.0 : 0.05,
+              sim.phase === 'FIGHT_INTRO'
+                ? 0.0
+                : isOutro
+                ? !atkWonOutro
+                  ? 0.038
+                  : 0.0
+                : 0.026,
               6,
               rawDelta
             );
 
-          // Strong front-stage fill light illuminating both duelists
-          arenaRig.clashPointLight.position.set(midWorldX, 2.15, sim.duelCenterWorld.z + 2.2);
-          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(arenaRig.clashPointLight.intensity, 28.0, 8, rawDelta);
+          // Balanced front-stage fill light illuminating both duelists without over-brightening
+          arenaRig.clashPointLight.position.set(midWorldX, baseStageY + 2.15, sim.duelCenterWorld.z + 2.2);
+          arenaRig.clashPointLight.intensity = THREE.MathUtils.damp(
+            arenaRig.clashPointLight.intensity,
+            10.5,
+            8,
+            rawDelta
+          );
 
           arenaRig.duelRingGroup.position.x = sim.duelCenterWorld.x;
           arenaRig.duelRingGroup.position.z = sim.duelCenterWorld.z;
           arenaRig.duelRingGroup.position.y = THREE.MathUtils.damp(
             arenaRig.duelRingGroup.position.y,
-            0.0,
+            baseStageY,
             9,
             rawDelta
           );
@@ -1696,23 +3191,24 @@ export default function App() {
             const distToDef = Math.hypot(curWorldX - defWorldX, curWorldZ - defWorldZ);
             const minFighterDist = Math.min(distToAtk, distToDef);
 
-            // Check if this bystander is inside the 4.65-unit Duel Ring OR in the foreground camera sightline corridor!
-            const inArenaRing = distToRingCenter < 4.65;
+            // Check if this bystander is inside the 4.75-unit Duel Ring OR in the foreground camera sightline corridor!
+            const inArenaRing = distToRingCenter < 4.75;
             const inCameraCorridor =
-              curWorldZ > sim.duelCenterWorld.z - 0.6 &&
-              curWorldZ < sim.duelCenterWorld.z + 6.0 &&
-              Math.abs(curWorldX - midWorldX) < 3.8;
+              curWorldZ > sim.duelCenterWorld.z - 0.9 &&
+              curWorldZ < sim.duelCenterWorld.z + 7.8 &&
+              Math.abs(curWorldX - sim.duelCenterWorld.x) < 4.6;
 
-            if (inArenaRing || inCameraCorridor || minFighterDist < 2.6) {
+            if (inArenaRing || inCameraCorridor || minFighterDist < 2.8) {
+              // Use stable home-square side relative to duelCenterWorld so push direction never oscillates!
+              const stableSide = _vec3A.x >= sim.duelCenterWorld.x ? 1 : -1;
               let pushDirX = curWorldX - sim.duelCenterWorld.x;
               let pushDirZ = curWorldZ - sim.duelCenterWorld.z;
 
               if (inCameraCorridor) {
-                // Push sideways to the left/right flanks of the camera frustum so the fighters are 100% unobstructed!
-                pushDirX = curWorldX >= midWorldX ? 1.6 : -1.6;
-                pushDirZ = curWorldZ < sim.duelCenterWorld.z ? -0.9 : 0.25;
+                pushDirX = stableSide * 1.8;
+                pushDirZ = curWorldZ < sim.duelCenterWorld.z ? -1.0 : -0.35;
               } else if (Math.hypot(pushDirX, pushDirZ) < 0.25) {
-                pushDirX = piece.col < 4 ? -1.2 : 1.2;
+                pushDirX = stableSide * 1.4;
                 pushDirZ = piece.row < 4 ? -1.2 : 1.2;
               }
 
@@ -1721,10 +3217,10 @@ export default function App() {
               pushDirZ /= len;
 
               const urgency = inCameraCorridor
-                ? 0.95
-                : Math.max(0.45, (4.75 - distToRingCenter) / 4.75);
-              bys.vx += pushDirX * (22.0 * urgency) * rawDelta;
-              bys.vz += pushDirZ * (22.0 * urgency) * rawDelta;
+                ? 1.0
+                : Math.max(0.5, (4.85 - distToRingCenter) / 4.85);
+              bys.vx += pushDirX * (24.0 * urgency) * rawDelta;
+              bys.vz += pushDirZ * (24.0 * urgency) * rawDelta;
 
               if (bys.y <= 0.02) {
                 bys.vy = 5.4 + Math.random() * 2.0;
@@ -1737,11 +3233,11 @@ export default function App() {
                 _vec3A.z - sim.duelCenterWorld.z
               );
               const homeInCameraCorridor =
-                _vec3A.z > sim.duelCenterWorld.z - 0.6 &&
-                _vec3A.z < sim.duelCenterWorld.z + 6.0 &&
-                Math.abs(_vec3A.x - midWorldX) < 3.8;
+                _vec3A.z > sim.duelCenterWorld.z - 0.9 &&
+                _vec3A.z < sim.duelCenterWorld.z + 7.8 &&
+                Math.abs(_vec3A.x - sim.duelCenterWorld.x) < 4.6;
 
-              if (!homeInCameraCorridor && homeDistToCenter > 4.95) {
+              if (!homeInCameraCorridor && homeDistToCenter > 5.1) {
                 bys.vx += -bys.offsetX * 5.0 * rawDelta;
                 bys.vz += -bys.offsetZ * 5.0 * rawDelta;
                 if (Math.hypot(bys.offsetX, bys.offsetZ) > 0.35 && bys.y <= 0.01) {
@@ -1775,6 +3271,8 @@ export default function App() {
 
             const isPanicking = bys.panickedTimer > 0 || bys.y > 0.05;
             rig.surpriseGroup.visible = isPanicking;
+            rig.statusShaderMesh.visible = false;
+            rig.statusIndicatorGroup.visible = false;
             if (isPanicking) {
               rig.surpriseGroup.rotation.y += rawDelta * 10;
               rig.bodyPivot.rotation.z = Math.sin(elapsed * 28 + piece.col) * 0.26;
@@ -1802,20 +3300,22 @@ export default function App() {
             sim.fightTimer = Math.max(0, sim.fightTimer - combatDelta);
 
             const human = !atk.isAI ? atk : !def.isAI ? def : atk;
+            const humanSpdMult = getFighterSpeedMultiplier(human);
             if (
-              human.action === 'idle' ||
-              human.action === 'walk_fwd' ||
-              human.action === 'walk_back'
+              !sim.autoPlayDemo &&
+              (human.action === 'idle' ||
+                human.action === 'walk_fwd' ||
+                human.action === 'walk_back')
             ) {
               const leftHeld = sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft'];
               const rightHeld = sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight'];
               if (sim.combatCameraMode === 'first_person') {
                 // In First-Person Visor POV, D advances toward the opponent and A steps back!
                 if (rightHeld && !leftHeld) {
-                  human.vx = human.facing * human.spec.walkSpeed;
+                  human.vx = human.facing * human.spec.walkSpeed * humanSpdMult;
                   human.action = 'walk_fwd';
                 } else if (leftHeld && !rightHeld) {
-                  human.vx = -human.facing * human.spec.walkSpeed;
+                  human.vx = -human.facing * human.spec.walkSpeed * humanSpdMult;
                   human.action = 'walk_back';
                 } else {
                   human.vx = 0;
@@ -1823,10 +3323,10 @@ export default function App() {
                 }
               } else {
                 if (leftHeld && !rightHeld) {
-                  human.vx = -human.spec.walkSpeed;
+                  human.vx = -human.spec.walkSpeed * humanSpdMult;
                   human.action = human.facing === -1 ? 'walk_fwd' : 'walk_back';
                 } else if (rightHeld && !leftHeld) {
-                  human.vx = human.spec.walkSpeed;
+                  human.vx = human.spec.walkSpeed * humanSpdMult;
                   human.action = human.facing === 1 ? 'walk_fwd' : 'walk_back';
                 } else {
                   human.vx = 0;
@@ -1835,8 +3335,145 @@ export default function App() {
               }
             }
 
-            if (atk.isAI) updateFighterAI(atk, def, combatDelta, nowMs, addCallout);
-            if (def.isAI) updateFighterAI(def, atk, combatDelta, nowMs, addCallout);
+            // Emit localized particles for active Burn / Slow / Weakened status effects!
+            for (const f of [atk, def]) {
+              if (f.hp <= 0) continue;
+              const fWorldX = sim.duelCenterWorld.x + f.x * 0.72;
+              const fWorldY = 0.8 + f.y * 0.72;
+              const fWorldZ = sim.duelCenterWorld.z;
+              if (f.statusBurnTimerMs > 0 && Math.random() < rawDelta * 14) {
+                spawnBattleSmoke(vfxPool, fWorldX, fWorldY, fWorldZ, 0.9, 0xf97316);
+              }
+              if (f.statusSlowTimerMs > 0 && Math.random() < rawDelta * 8) {
+                spawnHitSparks(vfxPool, fWorldX, fWorldY, fWorldZ, 0x38bdf8, 2);
+              }
+              if (f.statusWeakenedTimerMs > 0 && Math.random() < rawDelta * 8) {
+                spawnHitSparks(vfxPool, fWorldX, fWorldY, fWorldZ, 0xc084fc, 2);
+              }
+            }
+
+            if (atk.isAI || sim.autoPlayDemo) {
+              updateFighterAI(
+                atk,
+                def,
+                combatDelta,
+                nowMs,
+                addCallout,
+                (aiCaller, idx) => executeFighterIntervention(aiCaller, idx),
+                sim.autoPlayDemo
+              );
+            }
+            if (def.isAI || sim.autoPlayDemo) {
+              updateFighterAI(
+                def,
+                atk,
+                combatDelta,
+                nowMs,
+                addCallout,
+                (aiCaller, idx) => executeFighterIntervention(aiCaller, idx),
+                sim.autoPlayDemo
+              );
+            }
+
+            // Director's Auto-Play Camera & Telemetry Switcher during active duels:
+            // Alternates between First-Person Visor POV and 3rd-Person Side Arena Camera so viewers experience both!
+            if (sim.autoPlayDemo) {
+              sim.demoCameraTimer += rawDelta;
+              if (sim.activeIntervention) {
+                if (sim.combatCameraMode !== 'side_arena') {
+                  sim.combatCameraMode = 'side_arena';
+                  setCombatCameraMode('side_arena');
+                }
+                setDemoDirectorStage(
+                  `TACTICAL INTERVENTION · ${ARCHETYPES[sim.activeIntervention.supporter.type].chessName.toUpperCase()} (${sim.activeIntervention.supporter.interventionName.toUpperCase()})!`
+                );
+              } else if (sim.demoCameraTimer >= 4.2) {
+                sim.demoCameraTimer = 0;
+                const nextCam =
+                  sim.combatCameraMode === 'first_person' ? 'side_arena' : 'first_person';
+                sim.combatCameraMode = nextCam;
+                setCombatCameraMode(nextCam);
+                setDemoDirectorStage(
+                  nextCam === 'first_person'
+                    ? 'FIRST-PERSON VISOR POV · PARRY, COMBOS & 4D PHASE-SHIFT'
+                    : '3RD-PERSON COLOSSEUM CAMERA · BYSTANDERS & FULL-BODY RIGS'
+                );
+              }
+            }
+
+            // Step Active Tactical Intervention Sequence (0.72s Rift & Supporter Strike Climax!)
+            if (sim.activeIntervention) {
+              const interv = sim.activeIntervention;
+              interv.timerSec += rawDelta;
+              const caller = interv.callerIsAttacker ? atk : def;
+              const opponent = interv.callerIsAttacker ? def : atk;
+
+              // Animate the actual supporting board piece rig leaping & projecting energy into the rift!
+              const supRig = sim.pieceRigs.get(interv.supporter.pieceId);
+              if (supRig) {
+                const arc = Math.sin(Math.min(1, interv.timerSec / interv.durationSec) * Math.PI);
+                supRig.root.position.y += arc * 1.45;
+                supRig.rightArmPivot.rotation.x = -1.85 * arc;
+                supRig.leftArmPivot.rotation.x = -1.4 * arc;
+                supRig.quantumWaveGroup.visible = true;
+                supRig.tesseractBadge.visible = interv.supporter.isCrossDimensional;
+                supRig.quantumWaveGroup.rotation.y += rawDelta * 12;
+              }
+
+              // Apply combat impact at 0.26s into the rift sequence!
+              if (!interv.impactApplied && interv.timerSec >= 0.26) {
+                interv.impactApplied = true;
+                const intervEvents = {
+                  hitstopMs: 0,
+                  cameraShake: 0,
+                  sparkWorldPos: null as { x: number; y: number; color: number } | null,
+                  slowMoDurationMs: 0,
+                  parryImpact: null,
+                };
+                applyTacticalInterventionImpact(
+                  caller,
+                  opponent,
+                  interv.supporter,
+                  intervEvents,
+                  addCallout
+                );
+
+                if (intervEvents.slowMoDurationMs > 0) {
+                  sim.slowMoTimer = Math.max(sim.slowMoTimer, intervEvents.slowMoDurationMs / 1000);
+                }
+                if (intervEvents.cameraShake > 0) {
+                  sim.cameraShake = Math.max(sim.cameraShake, intervEvents.cameraShake);
+                }
+                if (intervEvents.sparkWorldPos) {
+                  const impactWorldX = sim.duelCenterWorld.x + intervEvents.sparkWorldPos.x * 0.72;
+                  const impactWorldY = intervEvents.sparkWorldPos.y;
+                  const impactWorldZ = sim.duelCenterWorld.z;
+                  spawnHitSparks(
+                    vfxPool,
+                    impactWorldX,
+                    impactWorldY,
+                    impactWorldZ,
+                    intervEvents.sparkWorldPos.color,
+                    24
+                  );
+                  spawnShockwave(
+                    vfxPool,
+                    impactWorldX,
+                    0.06,
+                    impactWorldZ,
+                    intervEvents.sparkWorldPos.color,
+                    5.8
+                  );
+                  spawnAuraPillar(vfxPool, impactWorldX, impactWorldZ, intervEvents.sparkWorldPos.color);
+                  spawnGroundDebris(vfxPool, impactWorldX, impactWorldZ, 10);
+                  sim.hitstopTimer = 0.048;
+                }
+              }
+
+              if (interv.timerSec >= interv.durationSec) {
+                sim.activeIntervention = null;
+              }
+            }
 
             checkFighterActionVFX(atk, sim.prevAtkAction);
             checkFighterActionVFX(def, sim.prevDefAction);
@@ -1850,19 +3487,55 @@ export default function App() {
             if (stepEvents.cameraShake > 0) {
               sim.cameraShake = Math.max(sim.cameraShake, stepEvents.cameraShake);
             }
+            if (stepEvents.parryImpact) {
+              const pi = stepEvents.parryImpact;
+              const fallbackWorldX = sim.duelCenterWorld.x + pi.x * 0.72;
+              const fallbackWorldY = pi.y;
+              const fallbackWorldZ = sim.duelCenterWorld.z;
+              const parryDefRig = pi.defenderIsAttacker ? atkRig : defRig;
+              const parryAtkRig = pi.defenderIsAttacker ? defRig : atkRig;
+              spawnParryImpactSparks(
+                vfxPool,
+                fallbackWorldX,
+                fallbackWorldY,
+                fallbackWorldZ,
+                pi.facing,
+                pi.defenderFaction,
+                parryDefRig,
+                parryAtkRig
+              );
+              sim.hitstopTimer = Math.max(sim.hitstopTimer, 0.055);
+              arenaRig.clashPointLight.color.setHex(0xffffff);
+              arenaRig.clashPointLight.intensity = 24.0;
+            }
             if (stepEvents.sparkWorldPos) {
               const worldX = sim.duelCenterWorld.x + stepEvents.sparkWorldPos.x * 0.72;
               const worldY = stepEvents.sparkWorldPos.y;
               const worldZ = sim.duelCenterWorld.z;
-              spawnHitSparks(vfxPool, worldX, worldY, worldZ, stepEvents.sparkWorldPos.color, 16);
+              spawnHitSparks(
+                vfxPool,
+                worldX,
+                worldY,
+                worldZ,
+                stepEvents.sparkWorldPos.color,
+                stepEvents.parryImpact ? 22 : 16
+              );
 
-              arenaRig.clashPointLight.color.setHex(stepEvents.sparkWorldPos.color);
-              arenaRig.clashPointLight.intensity = 16.0;
+              if (!stepEvents.parryImpact) {
+                arenaRig.clashPointLight.color.setHex(stepEvents.sparkWorldPos.color);
+                arenaRig.clashPointLight.intensity = 16.0;
+              }
 
               if (stepEvents.cameraShake >= 0.25) {
-                sim.hitstopTimer = 0.042;
+                sim.hitstopTimer = Math.max(sim.hitstopTimer, 0.042);
                 spawnShockwave(vfxPool, worldX, 0.05, worldZ, stepEvents.sparkWorldPos.color, 4.5);
                 spawnGroundDebris(vfxPool, worldX, worldZ, 8);
+              }
+              if (
+                atk.hp / Math.max(1, atk.maxHp) < 0.3 ||
+                def.hp / Math.max(1, def.maxHp) < 0.3
+              ) {
+                battleWornPulse = 1.0;
               }
             }
 
@@ -1873,8 +3546,7 @@ export default function App() {
               const winner = attackerWon ? atk : def;
               const loser = attackerWon ? def : atk;
 
-              winner.action = 'victory';
-              loser.action = 'defeat';
+              const tauntSpec = triggerVictoryTaunt(winner, loser);
               sim.phase = 'FIGHT_OUTRO';
               sim.phaseTimer = 0;
               setPhase('FIGHT_OUTRO');
@@ -1883,7 +3555,12 @@ export default function App() {
               const koWorldX = sim.duelCenterWorld.x + loser.x * 0.72;
               spawnShockwave(vfxPool, koWorldX, 0.05, sim.duelCenterWorld.z, 0xf59e0b, 6.5);
               spawnGroundDebris(vfxPool, koWorldX, sim.duelCenterWorld.z, 14);
-              spawnAuraPillar(vfxPool, sim.duelCenterWorld.x + winner.x * 0.72, sim.duelCenterWorld.z, 0xfef08a);
+              spawnAuraPillar(
+                vfxPool,
+                sim.duelCenterWorld.x + winner.x * 0.72,
+                sim.duelCenterWorld.z,
+                tauntSpec.flourishColorHex
+              );
 
               const wasUpset =
                 winner.spec.tacticalValue < loser.spec.tacticalValue || !attackerWon;
@@ -1897,133 +3574,333 @@ export default function App() {
               }
 
               setKoBanner({
-                title: attackerWon
-                  ? `${atk.spec.warriorTitle} Claims the Square!`
-                  : `UPSET! Defending ${def.spec.chessName} Repels & Destroys ${atk.spec.chessName}!`,
-                subtitle: wasUpset
-                  ? `Tactical Upset: Value ${winner.spec.tacticalValue} ${winner.spec.chessName} defeated Value ${loser.spec.tacticalValue} ${loser.spec.chessName}!`
-                  : `${winner.spec.chessName} survives with ${winner.hp} HP.`,
+                title: `${winner.spec.warriorTitle} · ${tauntSpec.name}`,
+                subtitle: `"${tauntSpec.quote}" — ${
+                  wasUpset
+                    ? `Tactical Upset: Value ${winner.spec.tacticalValue} ${winner.spec.chessName} felled Value ${loser.spec.tacticalValue} ${loser.spec.chessName}!`
+                    : `${winner.spec.chessName} claims the square with ${winner.hp} HP.`
+                }`,
                 wasUpset,
               });
             }
-          } else if (sim.phase === 'FIGHT_OUTRO' && sim.phaseTimer >= 2.3) {
+          } else if (sim.phase === 'FIGHT_OUTRO' && sim.phaseTimer < 2.65) {
+            const attackerWon =
+              def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp);
+            const winner = attackerWon ? atk : def;
+            const loser = attackerWon ? def : atk;
+            const { triggeredClimaxVFX, climaxColorHex } = stepVictoryTaunt(
+              winner,
+              loser,
+              rawDelta
+            );
+            if (triggeredClimaxVFX) {
+              const winWorldX = sim.duelCenterWorld.x + winner.x * 0.72;
+              spawnShockwave(vfxPool, winWorldX, 0.05, sim.duelCenterWorld.z, climaxColorHex, 5.2);
+              spawnHitSparks(vfxPool, winWorldX, 1.35, sim.duelCenterWorld.z, climaxColorHex, 18);
+              spawnAuraPillar(vfxPool, winWorldX, sim.duelCenterWorld.z, climaxColorHex);
+              soundEngine.playSpecialActivate();
+            }
+          } else if (sim.phase === 'FIGHT_OUTRO' && sim.phaseTimer >= 2.65) {
             const attackerWon =
               def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp);
 
-            if (sim.isExhibitionDuel) {
-              for (const rig of sim.exhibitionTempRigs) {
-                rig.root.parent?.remove(rig.root);
-              }
-              sim.exhibitionTempRigs = [];
-            } else if (sim.pendingMove) {
-              const winnerRuntime = attackerWon ? atk : def;
-              const loserRuntime = attackerWon ? def : atk;
+            // CASE A: SUBTERRANEAN REALM SENTINEL DUEL RESOLUTION!
+            if (sim.duelInRealm && sim.realm.travelerPieceId) {
+              const exploringPiece = sim.pieces.find((p) => p.id === sim.realm.travelerPieceId);
+              const realmMeta = REALM_METADATA[sim.realm.currentRealmId];
 
-              sim.pieces = sim.pieces.filter((p) => p.id !== loserRuntime.piece.id);
-              const loserRig = sim.pieceRigs.get(loserRuntime.piece.id);
-              if (loserRig) {
-                loserRig.root.parent?.remove(loserRig.root);
-                sim.pieceRigs.delete(loserRuntime.piece.id);
-              }
-
-              const survivorPiece = sim.pieces.find((p) => p.id === winnerRuntime.piece.id);
-              if (survivorPiece) {
-                const adrenalineHeal = Math.round(survivorPiece.maxHp * 0.15);
-                survivorPiece.hp = Math.min(
-                  survivorPiece.maxHp,
-                  Math.max(12, winnerRuntime.hp + adrenalineHeal)
+              if (attackerWon && exploringPiece) {
+                // Exploring warrior defeated the Realm Sentinel!
+                // Record authoritative Multiversal Lineage Death Event!
+                recordCausalAssassination(
+                  sim.multiverse,
+                  sim.multiverse.activeTimelineId,
+                  exploringPiece,
+                  def.piece,
+                  { row: def.piece.row, col: def.piece.col, z: def.piece.z, w: def.piece.w },
+                  sim.turnNumber,
+                  `Subterranean Sentinel slain in ${realmMeta.title}`
                 );
-                survivorPiece.meter = Math.min(100, winnerRuntime.meter + 15);
-                survivorPiece.kills += 1;
 
-                if (attackerWon) {
-                  survivorPiece.row = sim.pendingMove.to.row;
-                  survivorPiece.col = sim.pendingMove.to.col;
-                  survivorPiece.z = sim.pendingMove.to.z;
-                  survivorPiece.w = sim.pendingMove.to.w;
-                  survivorPiece.hasMoved = true;
-                  survivorPiece.history.push({
-                    row: survivorPiece.row,
-                    col: survivorPiece.col,
-                    z: survivorPiece.z,
-                    w: survivorPiece.w,
-                    turn: sim.turnNumber + 1,
-                  });
+                // Remove the corresponding enemy chess piece from the active 4D board!
+                sim.pieces = sim.pieces.filter((p) => p.id !== def.piece.id);
+                syncActiveBranchFromSim();
+                setMultiverseState({ ...sim.multiverse });
+                const loserRig = sim.pieceRigs.get(def.piece.id);
+                if (loserRig) {
+                  loserRig.root.parent?.remove(loserRig.root);
+                  sim.pieceRigs.delete(def.piece.id);
+                }
 
-                  if (
-                    survivorPiece.type === 'p' &&
-                    (survivorPiece.row === 0 || survivorPiece.row === 7)
-                  ) {
-                    survivorPiece.type = 'q';
-                    survivorPiece.maxHp = ARCHETYPES.q.maxHp;
-                    survivorPiece.hp = ARCHETYPES.q.maxHp;
-                    const oldRig = sim.pieceRigs.get(survivorPiece.id);
-                    if (oldRig && oldRig.root.parent) {
-                      const parent = oldRig.root.parent;
-                      parent.remove(oldRig.root);
-                      const promotedRig = createArticulatedPiece('q', survivorPiece.faction);
-                      parent.add(promotedRig.root);
-                      sim.pieceRigs.set(survivorPiece.id, promotedRig);
+                // Mark the sentinel defeated inside the realm & hide its 3D sentinel rig
+                const sent = sim.realm.sentinels.find((s) => s.id === sim.activeSentinelId);
+                if (sent) {
+                  sent.defeated = true;
+                  if (sim.realmsRig) {
+                    const sRig = sim.realmsRig.sentinelRigs.get(sent.id);
+                    if (sRig) {
+                      sRig.root.visible = false;
                     }
                   }
                 }
+
+                const adrenalineHeal = Math.round(exploringPiece.maxHp * 0.18);
+                exploringPiece.hp = Math.min(
+                  exploringPiece.maxHp,
+                  Math.max(15, atk.hp + adrenalineHeal)
+                );
+                exploringPiece.meter = Math.min(100, atk.meter + 25);
+                exploringPiece.kills += 1;
+
+                setBattleLogs((prev) => [
+                  {
+                    id: `realm_duel_${Date.now()}`,
+                    turnNumber: sim.turnNumber,
+                    summary: `Subterranean Victory: ${atk.spec.chessName} slew Sentinel ${def.spec.chessName} in ${realmMeta.title}!`,
+                    detail: `Lineage [${getPieceLineageId(def.piece)}] marked for Multiversal Death! ${atk.spec.chessName} continues exploring the realm (+${adrenalineHeal} HP, +25 Meter).`,
+                    wasUpset: atk.spec.tacticalValue < def.spec.tacticalValue,
+                    winnerFaction: atk.piece.faction,
+                  },
+                  ...prev.slice(0, 7),
+                ]);
+
+                // Resume 3D Realm Exploration right where the warrior stands!
+                sim.duelInRealm = false;
+                sim.activeSentinelId = null;
+                sim.attackerRuntime = null;
+                sim.defenderRuntime = null;
+                sim.phase = 'REALM_EXPLORATION';
+                setPhase('REALM_EXPLORATION');
+                setKoBanner(null);
+                setRealmTraveler({ ...exploringPiece });
+                setRealmStatusBanner(
+                  `FELLED REALM SENTINEL ${def.spec.chessName.toUpperCase()} — LINEAGE DEATH RECORDED!`
+                );
+              } else {
+                // Exploring warrior fell to the Subterranean Sentinel!
+                recordCausalAssassination(
+                  sim.multiverse,
+                  sim.multiverse.activeTimelineId,
+                  def.piece,
+                  atk.piece,
+                  { row: atk.piece.row, col: atk.piece.col, z: atk.piece.z, w: atk.piece.w },
+                  sim.turnNumber,
+                  `Subterranean fall in ${realmMeta.title}`
+                );
+                sim.pieces = sim.pieces.filter((p) => p.id !== atk.piece.id);
+                syncActiveBranchFromSim();
+                setMultiverseState({ ...sim.multiverse });
+                const loserRig = sim.pieceRigs.get(atk.piece.id);
+                if (loserRig) {
+                  loserRig.root.parent?.remove(loserRig.root);
+                  sim.pieceRigs.delete(atk.piece.id);
+                }
+
+                if (sim.realmsRig) {
+                  syncRealmEntities3D(sim.realmsRig, [], []);
+                }
+
+                setBattleLogs((prev) => [
+                  {
+                    id: `realm_loss_${Date.now()}`,
+                    turnNumber: sim.turnNumber,
+                    summary: `Subterranean Fall: ${atk.spec.chessName} fell to Sentinel ${def.spec.chessName} in ${realmMeta.title}!`,
+                    detail: `${atk.spec.chessName} [Lineage ${getPieceLineageId(atk.piece)}] was lost in the underworld.`,
+                    wasUpset: true,
+                    winnerFaction: def.piece.faction,
+                  },
+                  ...prev.slice(0, 7),
+                ]);
+
+                const nextFaction: Faction = sim.turnFaction === 'w' ? 'b' : 'w';
+                sim.turnFaction = nextFaction;
+                sim.turnNumber += 1;
+                syncActiveBranchFromSim();
+                setTurnFaction(nextFaction);
+                setTurnNumber(sim.turnNumber);
+
+                sim.duelInRealm = false;
+                sim.activeSentinelId = null;
+                sim.realm.travelerPieceId = null;
+                sim.attackerRuntime = null;
+                sim.defenderRuntime = null;
+                sim.duelCenterWorld.set(0, 0, 0);
+                sim.phase = 'CHESS_VIEW';
+                if (sim.controls) sim.controls.enabled = true;
+                setRealmTraveler(null);
+                setNearbyPortal(null);
+                setNearbyPortalEval(null);
+                setRealmStatusBanner(null);
+                setPhase('CHESS_VIEW');
+                setKoBanner(null);
+                syncBoardHighlights();
               }
+            } else {
+              // CASE B: STANDARD OR REALM-EMERGENCE CHESSBOARD DUEL RESOLUTION
+              if (sim.isExhibitionDuel) {
+                for (const rig of sim.exhibitionTempRigs) {
+                  rig.root.parent?.remove(rig.root);
+                }
+                sim.exhibitionTempRigs = [];
+              } else if (sim.pendingMove) {
+                const winnerRuntime = attackerWon ? atk : def;
+                const loserRuntime = attackerWon ? def : atk;
+                const sq = formatSquareName(sim.pendingMove.to);
+                const targetWLabel = formatWName(sim.pendingMove.to.w);
 
-              const sq = formatSquareName(sim.pendingMove.to);
-              const targetWLabel = formatWName(sim.pendingMove.to.w);
-              const wasUpset =
-                !attackerWon ||
-                winnerRuntime.spec.tacticalValue < loserRuntime.spec.tacticalValue;
+                // Record Authoritative Multiversal Death Event for the slain piece's lineage!
+                const causalDeath = recordCausalAssassination(
+                  sim.multiverse,
+                  sim.multiverse.activeTimelineId,
+                  winnerRuntime.piece,
+                  loserRuntime.piece,
+                  sim.pendingMove.to,
+                  sim.turnNumber,
+                  `${winnerRuntime.spec.chessName} slew ${loserRuntime.spec.chessName} at ${sq} [${targetWLabel}]`
+                );
 
-              const duelLogEntry: BattleLogEntry = {
-                id: `duel_${Date.now()}`,
-                turnNumber: sim.turnNumber,
-                summary: attackerWon
-                  ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq} [${targetWLabel}]`
-                  : `UPSET AT ${sq}: Defending ${def.spec.chessName} slew Attacking ${atk.spec.chessName}!`,
-                detail: `${winnerRuntime.spec.warriorTitle} survived with ${survivorPiece?.hp ?? winnerRuntime.hp} HP (${survivorPiece?.kills ?? 1} Kills).`,
-                wasUpset,
-                winnerFaction: winnerRuntime.piece.faction,
-              };
+                sim.pieces = sim.pieces.filter((p) => p.id !== loserRuntime.piece.id);
+                const loserRig = sim.pieceRigs.get(loserRuntime.piece.id);
+                if (loserRig) {
+                  loserRig.root.parent?.remove(loserRig.root);
+                  sim.pieceRigs.delete(loserRuntime.piece.id);
+                }
 
-              setBattleLogs((prev) => [duelLogEntry, ...prev.slice(0, 7)]);
+                const survivorPiece = sim.pieces.find((p) => p.id === winnerRuntime.piece.id);
+                if (survivorPiece) {
+                  const adrenalineHeal = Math.round(survivorPiece.maxHp * 0.15);
+                  survivorPiece.hp = Math.min(
+                    survivorPiece.maxHp,
+                    Math.max(12, winnerRuntime.hp + adrenalineHeal)
+                  );
+                  survivorPiece.meter = Math.min(100, winnerRuntime.meter + 15);
+                  survivorPiece.kills += 1;
 
-              if (loserRuntime.piece.type === 'k') {
-                setWarVictor({
-                  faction: winnerRuntime.piece.faction,
-                  reason: `Regicide at Square ${sq}! ${winnerRuntime.spec.warriorTitle} defeated the Eternal Monarch in single combat.`,
-                });
-                confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
-              }
+                  if (attackerWon) {
+                    survivorPiece.row = sim.pendingMove.to.row;
+                    survivorPiece.col = sim.pendingMove.to.col;
+                    survivorPiece.z = sim.pendingMove.to.z;
+                    survivorPiece.w = sim.pendingMove.to.w;
+                    survivorPiece.hasMoved = true;
+                    survivorPiece.history.push({
+                      row: survivorPiece.row,
+                      col: survivorPiece.col,
+                      z: survivorPiece.z,
+                      w: survivorPiece.w,
+                      turn: sim.turnNumber + 1,
+                    });
 
-              const nextFaction: Faction = sim.turnFaction === 'w' ? 'b' : 'w';
-              sim.turnFaction = nextFaction;
-              sim.turnNumber += 1;
-              setTurnFaction(nextFaction);
-              setTurnNumber(sim.turnNumber);
-
-              if (sim.gameMode === 'vs_ai' && nextFaction === 'b' && loserRuntime.piece.type !== 'k') {
-                setTimeout(() => {
-                  const currentSim = simRef.current;
-                  if (currentSim.phase !== 'CHESS_VIEW' || currentSim.turnFaction !== 'b') return;
-                  const aiDecision = chooseAIMove(currentSim.pieces, 'b');
-                  if (aiDecision) {
-                    executeChessMove(aiDecision.piece, aiDecision.move);
+                    if (
+                      survivorPiece.type === 'p' &&
+                      (survivorPiece.row === 0 || survivorPiece.row === 7)
+                    ) {
+                      survivorPiece.type = 'q';
+                      survivorPiece.maxHp = ARCHETYPES.q.maxHp;
+                      survivorPiece.hp = ARCHETYPES.q.maxHp;
+                      const oldRig = sim.pieceRigs.get(survivorPiece.id);
+                      if (oldRig && oldRig.root.parent) {
+                        const parent = oldRig.root.parent;
+                        parent.remove(oldRig.root);
+                        const promotedRig = createArticulatedPiece('q', survivorPiece.faction);
+                        parent.add(promotedRig.root);
+                        sim.pieceRigs.set(survivorPiece.id, promotedRig);
+                      }
+                    }
                   }
-                }, 1100);
-              }
-            }
+                }
 
-            sim.phase = 'CHESS_VIEW';
-            sim.attackerRuntime = null;
-            sim.defenderRuntime = null;
-            sim.pendingMove = null;
-            if (sim.controls) {
-              sim.controls.enabled = true;
+                const wasUpset =
+                  !attackerWon ||
+                  winnerRuntime.spec.tacticalValue < loserRuntime.spec.tacticalValue;
+
+                const isAlternateRealityKill =
+                  sim.multiverse.activeTimelineId !== 'TL-PRIME';
+
+                const duelLogEntry: BattleLogEntry = {
+                  id: `duel_${Date.now()}`,
+                  turnNumber: sim.turnNumber,
+                  summary: isAlternateRealityKill
+                    ? `CAUSAL ASSASSINATION IN ${sim.multiverse.activeTimelineId}: ${loserRuntime.spec.chessName} [${causalDeath.victimLineageId}] Slain!`
+                    : attackerWon
+                    ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq} [${targetWLabel}]`
+                    : `UPSET AT ${sq}: Defending ${def.spec.chessName} slew Attacking ${atk.spec.chessName}!`,
+                  detail: isAlternateRealityKill
+                    ? `Lineage ${causalDeath.victimLineageId} terminated in ${sim.multiverse.activeTimelineId}! Converge with Prime Reality to erase its counterpart there!`
+                    : `${winnerRuntime.spec.warriorTitle} survived with ${survivorPiece?.hp ?? winnerRuntime.hp} HP (${survivorPiece?.kills ?? 1} Kills).`,
+                  wasUpset,
+                  winnerFaction: winnerRuntime.piece.faction,
+                };
+
+                setBattleLogs((prev) => [duelLogEntry, ...prev.slice(0, 7)]);
+
+                if (loserRuntime.piece.type === 'k' && !sim.autoConvergeToPrimeAfterDuel) {
+                  setWarVictor({
+                    faction: winnerRuntime.piece.faction,
+                    reason: `Regicide at Square ${sq} in ${sim.multiverse.activeTimelineId}! ${winnerRuntime.spec.warriorTitle} defeated the Eternal Monarch in single combat.`,
+                  });
+                  confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
+
+                  if (sim.autoPlayDemo) {
+                    setTimeout(() => {
+                      if (simRef.current.autoPlayDemo) {
+                        handleResetGame();
+                        simRef.current.autoPlayDemo = true;
+                        setAutoPlayDemo(true);
+                      }
+                    }, 3200);
+                  }
+                }
+
+                const nextFaction: Faction = sim.turnFaction === 'w' ? 'b' : 'w';
+                sim.turnFaction = nextFaction;
+                sim.turnNumber += 1;
+                syncActiveBranchFromSim();
+                setMultiverseState({ ...sim.multiverse });
+                setTurnFaction(nextFaction);
+                setTurnNumber(sim.turnNumber);
+
+                // If this was a Guided Causal Assassination in an alternate timeline, automatically converge back to TL-PRIME!
+                if (sim.autoConvergeToPrimeAfterDuel) {
+                  sim.autoConvergeToPrimeAfterDuel = false;
+                  sim.phase = 'CHESS_VIEW';
+                  sim.attackerRuntime = null;
+                  sim.defenderRuntime = null;
+                  sim.pendingMove = null;
+                  sim.duelCenterWorld.set(0, 0, 0);
+                  setPhase('CHESS_VIEW');
+                  setKoBanner(null);
+                  setTimeout(() => {
+                    handleTriggerConvergence('TL-PRIME');
+                  }, 250);
+                  return;
+                }
+
+                if (!sim.autoPlayDemo && sim.gameMode === 'vs_ai' && nextFaction === 'b' && loserRuntime.piece.type !== 'k') {
+                  setTimeout(() => {
+                    const currentSim = simRef.current;
+                    if (currentSim.autoPlayDemo || currentSim.phase !== 'CHESS_VIEW' || currentSim.turnFaction !== 'b') return;
+                    const aiDecision = chooseAIMove(currentSim.pieces, 'b');
+                    if (aiDecision) {
+                      executeChessMove(aiDecision.piece, aiDecision.move);
+                    }
+                  }, 1100);
+                }
+              }
+
+              sim.phase = 'CHESS_VIEW';
+              sim.attackerRuntime = null;
+              sim.defenderRuntime = null;
+              sim.pendingMove = null;
+              sim.duelCenterWorld.set(0, 0, 0);
+              sim.demoBoardTimer = 0;
+              sim.demoPendingDecision = null;
+              if (sim.controls) {
+                sim.controls.enabled = true;
+              }
+              setPhase('CHESS_VIEW');
+              setKoBanner(null);
+              syncBoardHighlights();
             }
-            setPhase('CHESS_VIEW');
-            setKoBanner(null);
-            syncBoardHighlights();
           }
 
           // Position and animate the two dueling 3D rigs on the Duel Stage
@@ -2042,7 +3919,7 @@ export default function App() {
           for (const [f, rig] of fighterPairs) {
             if (!rig) continue;
             const targetWorldX = sim.duelCenterWorld.x + f.x * 0.72;
-            const targetWorldY = f.y * 0.72;
+            const targetWorldY = baseStageY + f.y * 0.72;
             const phaseOffsetZ = f.wPhaseTimerMs > 0 ? f.wPhaseOffset * 0.65 : 0;
             const targetWorldZ = sim.duelCenterWorld.z + phaseOffsetZ;
 
@@ -2104,10 +3981,19 @@ export default function App() {
 
             animateFighterRig(rig, f, elapsed, rawDelta);
 
-            // Keep head level during extreme eye Crash-Zooms so the glowing eyes lock dead-center into the lens!
+            // Keep head level and lock iris/pupil focus + fierce standoff squint dead-center into the lens during Sergio Leone Crash-Zooms!
             if (sim.phase === 'FIGHT_INTRO' && (sim.introShotIndex === 0 || sim.introShotIndex === 1)) {
               rig.headGroup.rotation.set(0, 0, 0);
               rig.bodyPivot.rotation.set(0, 0, 0);
+              const microTremor = Math.sin(elapsed * 24) * 0.0008;
+              rig.leftPupilPivot.position.set(microTremor, 0, 0.006);
+              rig.rightPupilPivot.position.set(microTremor, 0, 0.006);
+              rig.leftPupilPivot.scale.setScalar(1.24);
+              rig.rightPupilPivot.scale.setScalar(1.24);
+              rig.leftUpperLid.position.y = 0.0082;
+              rig.rightUpperLid.position.y = 0.0082;
+              rig.leftUpperLid.rotation.z = 0.19;
+              rig.rightUpperLid.rotation.z = 0.19;
             }
           }
 
@@ -2121,7 +4007,7 @@ export default function App() {
 
           // 4. SPAGHETTI WESTERN OPTICAL CRASH-ZOOMS -> FIRST-PERSON VISOR COMBAT CAMERA
           const midX = sim.duelCenterWorld.x + ((atk.x + def.x) * 0.5) * 0.72;
-          const midY = 0.96 + Math.max(atk.y, def.y) * 0.22;
+          const midY = baseStageY + 0.96 + Math.max(atk.y, def.y) * 0.22;
           const midZ = sim.duelCenterWorld.z;
           const sep = Math.abs(atk.x - def.x);
 
@@ -2131,8 +4017,8 @@ export default function App() {
           let camLerpSpeed = 14;
 
           if (sim.phase === 'TRANSITION_TO_FIGHT') {
-            _camTargetPos.set(midX, 1.75, midZ + 5.0);
-            _camLookTarget.set(midX, 1.0, midZ);
+            _camTargetPos.set(midX, baseStageY + 1.75, midZ + 5.0);
+            _camLookTarget.set(midX, baseStageY + 1.0, midZ);
             targetFov = 42;
             fovDampSpeed = 12;
             targetDutchRoll = 0.03;
@@ -2157,10 +4043,10 @@ export default function App() {
             } else {
               // SHOT 2: Snap-Zoom out into Human Warrior's First-Person Helmet Visor POV!
               const hWorldX = sim.duelCenterWorld.x + human.x * 0.72;
-              const hWorldY = human.y * 0.72;
+              const hWorldY = baseStageY + human.y * 0.72;
               const hEyeH = getWarriorEyeHeightWorld(human.piece.type);
               const oWorldX = sim.duelCenterWorld.x + opponent.x * 0.72;
-              const oWorldY = opponent.y * 0.72;
+              const oWorldY = baseStageY + opponent.y * 0.72;
               const oEyeH = getWarriorEyeHeightWorld(opponent.piece.type);
 
               _camTargetPos.set(hWorldX, hWorldY + hEyeH, midZ);
@@ -2171,32 +4057,34 @@ export default function App() {
               camLerpSpeed = 28;
             }
           } else if (sim.phase === 'FIGHT_OUTRO') {
-            // Heroic 3rd-Person Victory Shot on the surviving warrior under the spotlight!
+            // Unobstructed Heroic 3rd-Person Low-Angle Orbit around the Victorious Warrior!
             const winnerWorldX =
               def.hp <= 0 || (atk.hp > 0 && atk.hp / atk.maxHp >= def.hp / def.maxHp)
                 ? atkWorldX
                 : defWorldX;
             const winnerIsAtk = winnerWorldX === atkWorldX;
+            const orbitSweep = Math.sin(sim.phaseTimer * 0.75) * 0.95;
             _camTargetPos.set(
-              winnerWorldX + (winnerIsAtk ? 0.85 : -0.85),
-              1.32,
-              midZ + 2.95
+              winnerWorldX + (winnerIsAtk ? 0.65 : -0.65) + orbitSweep,
+              baseStageY + 1.18,
+              midZ + 2.75
             );
-            _camLookTarget.set(winnerWorldX, 1.12, midZ);
-            targetFov = 29;
+            _camLookTarget.set(winnerWorldX, baseStageY + 1.08, midZ);
+            targetFov = 28;
             fovDampSpeed = 14;
-            targetDutchRoll = winnerIsAtk ? 0.06 : -0.06;
+            targetDutchRoll = winnerIsAtk ? 0.045 : -0.045;
             camLerpSpeed = 12;
           } else if (sim.combatCameraMode === 'first_person') {
             // FIRST-PERSON VISOR COMBAT MODE (Default after the Western Crash Zooms!)
-            const hWorldX = sim.duelCenterWorld.x + human.x * 0.72;
-            const hWorldY = human.y * 0.72;
+            // Offset camera slightly back (-human.facing * 0.26) so opponent never clips into the near plane at point-blank range!
+            const hWorldX = sim.duelCenterWorld.x + human.x * 0.72 - human.facing * 0.26;
+            const hWorldY = baseStageY + human.y * 0.72;
             const hPhaseZ = human.wPhaseTimerMs > 0 ? human.wPhaseOffset * 0.65 : 0;
             const hWorldZ = midZ + hPhaseZ;
             const hEyeH = getWarriorEyeHeightWorld(human.piece.type);
 
             const oWorldX = sim.duelCenterWorld.x + opponent.x * 0.72;
-            const oWorldY = opponent.y * 0.72;
+            const oWorldY = baseStageY + opponent.y * 0.72;
             const oPhaseZ = opponent.wPhaseTimerMs > 0 ? opponent.wPhaseOffset * 0.65 : 0;
             const oWorldZ = midZ + oPhaseZ;
             const oEyeH = getWarriorEyeHeightWorld(opponent.piece.type);
@@ -2208,7 +4096,13 @@ export default function App() {
 
             _camTargetPos.set(hWorldX, hWorldY + hEyeH + walkBob, hWorldZ);
             _camLookTarget.set(oWorldX, oWorldY + oEyeH * 0.78, oWorldZ);
-            targetFov = human.action === 'special' ? 64 : human.wPhaseTimerMs > 0 ? 66 : 56;
+            targetFov = sim.activeIntervention
+              ? 68
+              : human.action === 'special'
+              ? 64
+              : human.wPhaseTimerMs > 0
+              ? 66
+              : 56;
             fovDampSpeed = 18;
             targetDutchRoll =
               human.action === 'hitstun'
@@ -2220,12 +4114,20 @@ export default function App() {
           } else {
             // Optional Side Arena Camera (Toggled via 'V' key or HUD button)
             const camDistZ = THREE.MathUtils.clamp(4.45 + sep * 0.45, 4.5, 7.2);
-            _camTargetPos.set(midX, 1.62 + Math.max(atk.y, def.y) * 0.18, midZ + camDistZ);
+            _camTargetPos.set(midX, baseStageY + 1.62 + Math.max(atk.y, def.y) * 0.18, midZ + camDistZ);
             _camLookTarget.set(midX, midY, midZ);
             targetFov = 38;
             fovDampSpeed = 12;
             targetDutchRoll = 0;
             camLerpSpeed = 12;
+          }
+
+          // If combatCameraMode just switched between first_person and side_arena, snap camera immediately
+          // so it never flies through the back of a warrior's helmet or across bystander pieces!
+          if (sim.combatCameraMode !== prevCombatCamMode) {
+            prevCombatCamMode = sim.combatCameraMode;
+            camera.position.copy(_camTargetPos);
+            sim.currentLookAt.copy(_camLookTarget);
           }
 
           if (sim.cameraShake > 0) {
@@ -2251,6 +4153,139 @@ export default function App() {
           );
           camera.rotateZ(sim.currentDutchRoll);
 
+          // 4B. STRICT CAMERA SIGHTLINE & PROXIMITY OCCLUSION GUARD:
+          // Guarantees no 3D fighter or bystander chess piece can EVER sit in front of the camera lens
+          // and cast a black silhouette across the viewport during any fight phase!
+          for (const [f, rig] of fighterPairs) {
+            if (!rig) continue;
+            const distCamToFighter = Math.hypot(
+              camera.position.x - rig.root.position.x,
+              camera.position.z - rig.root.position.z
+            );
+            if (sim.phase === 'FIGHT_INTRO' && sim.introShotIndex === 0) {
+              rig.root.visible = f === atk;
+            } else if (sim.phase === 'FIGHT_INTRO' && sim.introShotIndex === 1) {
+              rig.root.visible = f === def;
+            } else if ((isFirstPersonActive && f === human) || distCamToFighter < 1.05) {
+              rig.root.visible = false;
+            } else {
+              rig.root.visible = true;
+            }
+          }
+
+          const camX = camera.position.x;
+          const camZ = camera.position.z;
+          const lookX = sim.currentLookAt.x;
+          const lookZ = sim.currentLookAt.z;
+          const rayDX = lookX - camX;
+          const rayDZ = lookZ - camZ;
+          const rayLenSq = rayDX * rayDX + rayDZ * rayDZ;
+
+          for (const piece of sim.pieces) {
+            if (piece.id === atk.piece.id || piece.id === def.piece.id) continue;
+            const rig = sim.pieceRigs.get(piece.id);
+            if (!rig) continue;
+
+            // Hide all bystanders during extreme eye Crash-Zooms or Subterranean Realm Duels so the lens is 100% clear
+            if (
+              sim.duelInRealm ||
+              (sim.phase === 'FIGHT_INTRO' && (sim.introShotIndex === 0 || sim.introShotIndex === 1))
+            ) {
+              rig.root.visible = false;
+              continue;
+            }
+
+            const px = rig.root.position.x;
+            const pz = rig.root.position.z;
+            const distToCam = Math.hypot(px - camX, pz - camZ);
+            const distToStage = Math.hypot(
+              px - sim.duelCenterWorld.x,
+              pz - sim.duelCenterWorld.z
+            );
+
+            // Distance from piece to the camera -> lookAt sightline segment
+            let tProj = rayLenSq > 0.0001 ? ((px - camX) * rayDX + (pz - camZ) * rayDZ) / rayLenSq : 0;
+            tProj = Math.max(-0.15, Math.min(1.25, tProj));
+            const closestX = camX + tProj * rayDX;
+            const closestZ = camZ + tProj * rayDZ;
+            const distToSightline = Math.hypot(px - closestX, pz - closestZ);
+
+            const isInterveningSupporter =
+              sim.activeIntervention?.supporter.pieceId === piece.id;
+
+            // Hide any bystander that is close to the camera lens, inside the sightline corridor, or inside the duel stage!
+            if (
+              distToCam < 2.85 ||
+              (tProj > -0.1 && tProj < 1.15 && distToSightline < 2.35) ||
+              (!isInterveningSupporter && distToStage < 4.35)
+            ) {
+              rig.root.visible = false;
+            } else {
+              rig.root.visible = true;
+            }
+          }
+
+          // 5. BATTLE-WORN CRITICAL DUEL SHADER, 3D ARENA FLOOR FRACTURES & LOCALIZED SMOKE (< 30% HP)
+          const atkHpRatio = atk.hp / Math.max(1, atk.maxHp);
+          const defHpRatio = def.hp / Math.max(1, def.maxHp);
+          const minHpRatio = Math.min(atkHpRatio, defHpRatio);
+
+          if (minHpRatio < 0.3) {
+            const targetScar = Math.min(1.0, (0.3 - minHpRatio) / 0.22 + 0.38);
+            battleWornIntensity = THREE.MathUtils.damp(
+              battleWornIntensity,
+              targetScar,
+              7,
+              rawDelta
+            );
+            battleWornPulse = THREE.MathUtils.damp(battleWornPulse, 0, 5, rawDelta);
+
+            arenaRig.duelFloorScarMesh.visible = battleWornIntensity > 0.01;
+            arenaRig.duelFloorScarUniforms.uTime.value = elapsed;
+            arenaRig.duelFloorScarUniforms.uIntensity.value = battleWornIntensity;
+
+            battleSmokeTimer += rawDelta;
+            if (battleSmokeTimer >= 0.065) {
+              battleSmokeTimer = 0;
+              if (atkHpRatio < 0.3) {
+                spawnBattleSmoke(
+                  vfxPool,
+                  atkWorldX,
+                  atkWorldY + 0.85,
+                  atkWorldZ,
+                  battleWornIntensity,
+                  0xf59e0b
+                );
+              }
+              if (defHpRatio < 0.3) {
+                spawnBattleSmoke(
+                  vfxPool,
+                  defWorldX,
+                  defWorldY + 0.85,
+                  defWorldZ,
+                  battleWornIntensity,
+                  0xf43f5e
+                );
+              }
+              // Emit localized smoke & cinders rising from the fractured duel arena floor!
+              const crackAngle = Math.random() * Math.PI * 2;
+              const crackRad = 0.6 + Math.random() * 2.8;
+              spawnBattleSmoke(
+                vfxPool,
+                sim.duelCenterWorld.x + Math.cos(crackAngle) * crackRad,
+                baseStageY + 0.06,
+                sim.duelCenterWorld.z + Math.sin(crackAngle) * crackRad * 0.65,
+                battleWornIntensity * 0.85,
+                0xf59e0b
+              );
+            }
+          } else {
+            battleWornIntensity = THREE.MathUtils.damp(battleWornIntensity, 0, 8, rawDelta);
+            battleWornPulse = THREE.MathUtils.damp(battleWornPulse, 0, 8, rawDelta);
+            arenaRig.duelFloorScarMesh.visible = battleWornIntensity > 0.01;
+            arenaRig.duelFloorScarUniforms.uIntensity.value = battleWornIntensity;
+          }
+
           hudSyncAccumulator += rawDelta;
           if (hudSyncAccumulator >= 0.05) {
             hudSyncAccumulator = 0;
@@ -2259,6 +4294,625 @@ export default function App() {
             setFightTimer(sim.fightTimer);
           }
         }
+      } else if (
+        sim.phase === 'REALM_DESCENT' ||
+        sim.phase === 'REALM_EXPLORATION' ||
+        sim.phase === 'REALM_ASCENT'
+      ) {
+        // ============================================================================
+        // SUBTERRANEAN IMPOSSIBLE REALMS: DESCENT, 3RD-PERSON EXPLORATION & ASCENT
+        // ============================================================================
+        const rm = sim.realm;
+        const exploringPiece = sim.pieces.find((p) => p.id === rm.travelerPieceId) || null;
+        const playerRig = rm.travelerPieceId ? sim.pieceRigs.get(rm.travelerPieceId) : undefined;
+        const realmMeta = REALM_METADATA[rm.currentRealmId];
+        const realmCenter = realmMeta.worldCenter;
+
+        if (sim.firstPersonRig) sim.firstPersonRig.root.visible = false;
+        arenaRig.tesseractLines.visible = false;
+        arenaRig.entanglementHelixLines.visible = false;
+        arenaRig.spotAttacker.intensity = THREE.MathUtils.damp(arenaRig.spotAttacker.intensity, 0, 10, rawDelta);
+        arenaRig.spotDefender.intensity = THREE.MathUtils.damp(arenaRig.spotDefender.intensity, 0, 10, rawDelta);
+
+        sim.phaseTimer += rawDelta;
+
+        if (sim.phase === 'REALM_DESCENT') {
+          const t = Math.min(1, sim.phaseTimer / 1.15);
+          const smoothT = t * t * (3 - 2 * t);
+
+          const entryGateway = BOARD_GATEWAYS.find((g) => g.id === rm.entryGatewayId) || BOARD_GATEWAYS[0];
+          boardToWorld(entryGateway.row, entryGateway.col, _vec3A);
+
+          const dstX = realmCenter.x + rm.localPos.x;
+          const dstY = realmCenter.y + 0.05;
+          const dstZ = realmCenter.z + rm.localPos.z;
+
+          const curX = THREE.MathUtils.lerp(_vec3A.x, dstX, smoothT);
+          const curY = THREE.MathUtils.lerp(0.2, dstY, smoothT);
+          const curZ = THREE.MathUtils.lerp(_vec3A.z, dstZ, smoothT);
+
+          if (playerRig) {
+            playerRig.root.visible = true;
+            playerRig.root.position.set(curX, curY, curZ);
+            playerRig.root.scale.setScalar(THREE.MathUtils.lerp(1.0, 1.32, smoothT));
+            playerRig.root.rotation.y = rm.yaw + (1 - smoothT) * Math.PI * 2;
+          }
+
+          _camTargetPos.set(curX, curY + 3.2 + (1 - smoothT) * 2.5, curZ + 5.8);
+          _camLookTarget.set(curX, curY + 0.9, curZ - 1.5);
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-14 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-16 * rawDelta));
+          camera.lookAt(sim.currentLookAt);
+          camera.fov = THREE.MathUtils.damp(camera.fov, 54, 10, rawDelta);
+          camera.updateProjectionMatrix();
+
+          if (t >= 1) {
+            sim.phase = 'REALM_EXPLORATION';
+            sim.phaseTimer = 0;
+            setPhase('REALM_EXPLORATION');
+          }
+        } else if (sim.phase === 'REALM_ASCENT') {
+          const t = Math.min(1, sim.phaseTimer / 1.1);
+          const smoothT = t * t * (3 - 2 * t);
+
+          const entryGateway = BOARD_GATEWAYS.find((g) => g.id === rm.entryGatewayId) || BOARD_GATEWAYS[0];
+          const exitCoord = rm.ascentTargetCoord || {
+            row: entryGateway.row,
+            col: entryGateway.col,
+            z: entryGateway.z,
+            w: entryGateway.w,
+          };
+          boardToWorld(exitCoord.row, exitCoord.col, _vec3A);
+
+          const srcX = realmCenter.x + rm.localPos.x;
+          const srcY = realmCenter.y + 0.5;
+          const srcZ = realmCenter.z + rm.localPos.z;
+
+          const curX = THREE.MathUtils.lerp(srcX, _vec3A.x, smoothT);
+          const curY = THREE.MathUtils.lerp(srcY, 0.0, smoothT);
+          const curZ = THREE.MathUtils.lerp(srcZ, _vec3A.z, smoothT);
+
+          if (playerRig) {
+            playerRig.root.visible = true;
+            playerRig.root.position.set(curX, curY, curZ);
+            playerRig.root.scale.setScalar(THREE.MathUtils.lerp(1.32, 1.0, smoothT));
+            playerRig.root.rotation.y =
+              (exploringPiece?.faction === 'w' ? Math.PI : 0) + (1 - smoothT) * Math.PI * 2;
+          }
+
+          _camTargetPos.set(curX, curY + 4.5 + smoothT * 5.0, curZ + 7.5);
+          _camLookTarget.set(curX, curY + 0.6, curZ);
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-14 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-16 * rawDelta));
+          camera.lookAt(sim.currentLookAt);
+          camera.fov = THREE.MathUtils.damp(camera.fov, 45, 10, rawDelta);
+          camera.updateProjectionMatrix();
+
+          if (t >= 1 && exploringPiece) {
+            if (sim.realmsRig) {
+              syncRealmEntities3D(sim.realmsRig, [], []);
+            }
+
+            exploringPiece.inRealm = null;
+            exploringPiece.realmTraversals = (exploringPiece.realmTraversals ?? 0) + 1;
+            const targetTimelineId =
+              rm.ascentTargetTimelineId || sim.multiverse.activeTimelineId;
+            rm.travelerPieceId = null;
+            rm.nearbyPortal = null;
+            rm.nearbyPortalEval = null;
+            rm.ascentTargetTimelineId = null;
+            setRealmTraveler(null);
+            setNearbyPortal(null);
+            setNearbyPortalEval(null);
+            setRealmStatusBanner(null);
+
+            let activeTraveler = exploringPiece;
+            let targetEnemy = rm.ascentTargetEnemy;
+
+            // If emerging through a TIMELINE_PORTAL into an alternate timeline!
+            if (targetTimelineId !== sim.multiverse.activeTimelineId) {
+              syncActiveBranchFromSim();
+              const deployRes = transitionTravelerToTimeline(
+                sim.multiverse,
+                exploringPiece,
+                sim.multiverse.activeTimelineId,
+                targetTimelineId,
+                exitCoord
+              );
+              const dstBranch = switchActiveTimeline(sim.multiverse, targetTimelineId);
+              rebuildSceneRigsForTimeline(dstBranch);
+              activeTraveler = deployRes.mergedTraveler;
+              targetEnemy =
+                sim.pieces.find(
+                  (p) =>
+                    p.id !== activeTraveler.id &&
+                    p.faction !== activeTraveler.faction &&
+                    p.row === exitCoord.row &&
+                    p.col === exitCoord.col &&
+                    p.z === exitCoord.z &&
+                    p.w === exitCoord.w
+                ) || null;
+            }
+
+            // Shift active slice view to the emergence square's 4D slice!
+            sim.activeSliceW = exitCoord.w;
+            sim.activeSliceZ = exitCoord.z;
+            sim.targetMoveW = exitCoord.w;
+            sim.targetMoveZ = exitCoord.z;
+            setActiveSliceW(exitCoord.w);
+            setActiveSliceZ(exitCoord.z);
+            setTargetMoveW(exitCoord.w);
+            setTargetMoveZ(exitCoord.z);
+
+            if (targetEnemy && targetEnemy.faction !== activeTraveler.faction) {
+              const ambushMove: MoveOption = {
+                from: {
+                  row: entryGateway.row,
+                  col: entryGateway.col,
+                  z: entryGateway.z,
+                  w: entryGateway.w,
+                },
+                to: { ...exitCoord },
+                isCapture: true,
+                targetPiece: targetEnemy,
+                dimensionType: 'REALM_PORTAL_TRAVERSAL',
+                dimensionLabel: rm.ascentPortalName || realmMeta.title,
+              };
+              initiateCombatDuel(activeTraveler, ambushMove, false);
+            } else {
+              // Peaceful emergence onto the destination square — consumes 1 chess turn!
+              activeTraveler.row = exitCoord.row;
+              activeTraveler.col = exitCoord.col;
+              activeTraveler.z = exitCoord.z;
+              activeTraveler.w = exitCoord.w;
+              activeTraveler.hasMoved = true;
+              activeTraveler.history.push({
+                row: exitCoord.row,
+                col: exitCoord.col,
+                z: exitCoord.z,
+                w: exitCoord.w,
+                turn: sim.turnNumber + 1,
+              });
+
+              if (
+                activeTraveler.type === 'p' &&
+                (activeTraveler.row === 0 || activeTraveler.row === 7)
+              ) {
+                activeTraveler.type = 'q';
+                activeTraveler.maxHp = ARCHETYPES.q.maxHp;
+                activeTraveler.hp = ARCHETYPES.q.maxHp;
+                const oldRig = sim.pieceRigs.get(activeTraveler.id);
+                if (oldRig && oldRig.root.parent) {
+                  const parent = oldRig.root.parent;
+                  parent.remove(oldRig.root);
+                  const promotedRig = createArticulatedPiece('q', activeTraveler.faction);
+                  parent.add(promotedRig.root);
+                  sim.pieceRigs.set(activeTraveler.id, promotedRig);
+                }
+              }
+
+              const fromSq = formatSquareName({ row: entryGateway.row, col: entryGateway.col });
+              const toSq = formatSquareName(exitCoord);
+
+              setBattleLogs((prev) => [
+                {
+                  id: `realm_emerge_${Date.now()}`,
+                  turnNumber: sim.turnNumber,
+                  summary: `Emerged from ${realmMeta.title} in ${sim.multiverse.activeTimelineId}: ${ARCHETYPES[activeTraveler.type].chessName} ${fromSq} → ${toSq}`,
+                  detail: `Warrior HP ${activeTraveler.hp}/${activeTraveler.maxHp}, Meter ${Math.round(activeTraveler.meter)}%.${rm.isParityInverted ? ' Chiral Mirror Parity Active.' : ''}${rm.crucibleAnvilClaimed ? ' Hellfire Tempered.' : ''}`,
+                  wasUpset: false,
+                  winnerFaction: activeTraveler.faction,
+                },
+                ...prev.slice(0, 7),
+              ]);
+
+              const nextFaction: Faction = sim.turnFaction === 'w' ? 'b' : 'w';
+              sim.turnFaction = nextFaction;
+              sim.turnNumber += 1;
+              syncActiveBranchFromSim();
+              setMultiverseState({ ...sim.multiverse });
+              sim.phase = 'CHESS_VIEW';
+              if (sim.controls) sim.controls.enabled = true;
+              setTurnFaction(nextFaction);
+              setTurnNumber(sim.turnNumber);
+              setPhase('CHESS_VIEW');
+              syncBoardHighlights();
+
+              if (!sim.autoPlayDemo && sim.gameMode === 'vs_ai' && nextFaction === 'b') {
+                setTimeout(() => {
+                  const currentSim = simRef.current;
+                  if (
+                    currentSim.autoPlayDemo ||
+                    currentSim.phase !== 'CHESS_VIEW' ||
+                    currentSim.turnFaction !== 'b'
+                  )
+                    return;
+                  const aiDecision = chooseAIMove(currentSim.pieces, 'b');
+                  if (aiDecision) {
+                    executeChessMove(aiDecision.piece, aiDecision.move);
+                  }
+                }, 1000);
+              }
+            }
+          }
+        } else if (sim.phase === 'REALM_EXPLORATION' && exploringPiece) {
+          // ======================================================================
+          // REAL-TIME 3RD-PERSON REALM EXPLORATION, HAZARDS, ECHOES & SENTINELS
+          // ======================================================================
+          rm.portalCooldownSec = Math.max(0, rm.portalCooldownSec - rawDelta);
+          rm.hazardCooldownSec = Math.max(0, rm.hazardCooldownSec - rawDelta);
+          rm.attackAnimTimerSec = Math.max(0, rm.attackAnimTimerSec - rawDelta);
+          rm.dashTimerSec = Math.max(0, rm.dashTimerSec - rawDelta);
+
+          // 1. Third-Person WASD / Arrow Key Movement (or Auto-Play / Click-to-Steer navigation!)
+          let moveX = 0;
+          let moveZ = 0;
+          if (sim.keysHeld['KeyW'] || sim.keysHeld['ArrowUp']) moveZ -= 1;
+          if (sim.keysHeld['KeyS'] || sim.keysHeld['ArrowDown']) moveZ += 1;
+          if (sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft']) moveX -= 1;
+          if (sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight']) moveX += 1;
+
+          if (Math.hypot(moveX, moveZ) > 0.05) {
+            rm.steerTargetPortalId = null;
+          } else if (rm.steerTargetPortalId || sim.autoPlayDemo || (sim.gameMode === 'vs_ai' && exploringPiece.faction === 'b')) {
+            const portals = getPortalsForRealm(rm.currentRealmId);
+            const targetP =
+              portals.find((p) => p.id === rm.steerTargetPortalId) ||
+              portals.find((p) => {
+                if (p.kind !== 'BOARD_ASCENT') return false;
+                const ev = evaluatePortalBoardExit(
+                  p,
+                  exploringPiece,
+                  sim.pieces,
+                  rm.isParityInverted,
+                  rm.crucibleAnvilClaimed
+                );
+                return ev && ev.status !== 'ALLY_OBSTRUCTED';
+              }) ||
+              portals[0];
+
+            if (targetP) {
+              const dx = targetP.localPos.x - rm.localPos.x;
+              const dz = targetP.localPos.z - rm.localPos.z;
+              const dist = Math.hypot(dx, dz);
+              if (dist > 1.05) {
+                moveX = dx / dist;
+                moveZ = dz / dist;
+              } else if (rm.portalCooldownSec <= 0) {
+                handleTraverseRealmPortal(targetP);
+              }
+            }
+          }
+
+          const inputLen = Math.hypot(moveX, moveZ);
+          const baseMoveSpeed = 6.4 * (rm.dashTimerSec > 0 ? 2.15 : 1.0);
+          if (inputLen > 0.01) {
+            moveX /= inputLen;
+            moveZ /= inputLen;
+            rm.velocity.x = moveX * baseMoveSpeed;
+            rm.velocity.z = moveZ * baseMoveSpeed;
+            const targetYaw = Math.atan2(moveX, moveZ);
+            let diffYaw = targetYaw - rm.yaw;
+            while (diffYaw > Math.PI) diffYaw -= Math.PI * 2;
+            while (diffYaw < -Math.PI) diffYaw += Math.PI * 2;
+            rm.yaw += diffYaw * Math.min(1, rawDelta * 14);
+          } else {
+            rm.velocity.x *= Math.exp(-14 * rawDelta);
+            rm.velocity.z *= Math.exp(-14 * rawDelta);
+          }
+
+          rm.localPos.x = THREE.MathUtils.clamp(rm.localPos.x + rm.velocity.x * rawDelta, -16.8, 16.8);
+          rm.localPos.z = THREE.MathUtils.clamp(rm.localPos.z + rm.velocity.z * rawDelta, -16.8, 16.8);
+
+          // Vertical Jump & Gravity Physics
+          if (rm.localPos.y > 0 || rm.velocity.y !== 0) {
+            rm.localPos.y += rm.velocity.y * rawDelta;
+            rm.velocity.y -= 24.0 * rawDelta;
+            if (rm.localPos.y <= 0) {
+              rm.localPos.y = 0;
+              rm.velocity.y = 0;
+            }
+          }
+
+          // 2. REALM II MECHANIC: THE ASHEN CRUCIBLE — MOLTEN LAVA CHANNELS, FORGE PISTONS & HELLFIRE ANVIL
+          if (rm.currentRealmId === 'ASHEN_CRUCIBLE') {
+            const haz = evaluateCrucibleHazards(rm.localPos.x, rm.localPos.z, elapsed);
+            if (haz.nearHellfireAnvil && !rm.crucibleAnvilClaimed) {
+              handleTemperAtCrucibleAnvil();
+            } else if ((haz.inLavaRiver || haz.hitByForgePiston) && rm.localPos.y < 0.85 && rm.hazardCooldownSec <= 0) {
+              rm.hazardCooldownSec = 0.95;
+              const dmg = haz.hitByForgePiston ? 12 : 8;
+              exploringPiece.hp = Math.max(10, exploringPiece.hp - dmg);
+              exploringPiece.persistentBurnMs = Math.max(exploringPiece.persistentBurnMs ?? 0, 4000);
+              soundEngine.playCrucibleHazard(false);
+              spawnHitSparks(
+                vfxPool,
+                realmCenter.x + rm.localPos.x,
+                realmCenter.y + rm.localPos.y + 0.8,
+                realmCenter.z + rm.localPos.z,
+                0xf97316,
+                22
+              );
+              setRealmTraveler({ ...exploringPiece });
+              setRealmStatusBanner(
+                haz.hitByForgePiston
+                  ? `CRUSHED BY TITANIC FORGE PISTON (-${dmg} HP & PERSISTENT BURN)!`
+                  : `SCORCHED BY MOLTEN SLAG RIVER (-${dmg} HP & PERSISTENT BURN)!`
+              );
+            }
+          }
+
+          // 3. REALM III MECHANIC: THE ECHOING REMNANT — DETERMINISTIC CAUSALITY ECHO REPLAY & ABSORPTION
+          if (rm.currentRealmId === 'ECHOING_REMNANT') {
+            for (const echo of rm.echoes) {
+              if (echo.consumed) continue;
+              const ex = THREE.MathUtils.lerp(echo.startLocalPos.x, echo.endLocalPos.x, echo.progress);
+              const ez = THREE.MathUtils.lerp(echo.startLocalPos.z, echo.endLocalPos.z, echo.progress);
+              const distToEcho = Math.hypot(rm.localPos.x - ex, rm.localPos.z - ez);
+              if (distToEcho < 1.95) {
+                echo.consumed = true;
+                if (echo.faction === exploringPiece.faction) {
+                  exploringPiece.meter = Math.min(100, exploringPiece.meter + 18);
+                  exploringPiece.hp = Math.min(exploringPiece.maxHp, exploringPiece.hp + 8);
+                  soundEngine.playQuantumEntangle(false);
+                  spawnAuraPillar(vfxPool, realmCenter.x + ex, realmCenter.z + ez, 0x38bdf8);
+                  setRealmStatusBanner('ABSORBED ALLIED TEMPORAL ECHO (+18% METER, +8 HP)!');
+                } else {
+                  exploringPiece.persistentSlowMs = 3500;
+                  soundEngine.playQuantumEntangle(true);
+                  spawnShockwave(vfxPool, realmCenter.x + ex, realmCenter.y + 0.2, realmCenter.z + ez, 0xf43f5e, 4.0);
+                  setRealmStatusBanner('INTERCEPTED BY ENEMY TEMPORAL ECHO — CHRONO-STASIS APPLIED!');
+                }
+                setRealmTraveler({ ...exploringPiece });
+              }
+            }
+          }
+
+          // 4. SUBTERRANEAN ENEMY SENTINEL PATROLS & REAL-TIME COMBAT ENCOUNTERS
+          for (const sent of rm.sentinels) {
+            if (sent.defeated || sent.realmId !== rm.currentRealmId) continue;
+            const distToSent = Math.hypot(
+              rm.localPos.x - sent.localPos.x,
+              rm.localPos.z - sent.localPos.z
+            );
+            const engageRadius = rm.attackAnimTimerSec > 0 ? 3.35 : 2.15;
+            if (distToSent < engageRadius) {
+              const realmDuelMove: MoveOption = {
+                from: { row: exploringPiece.row, col: exploringPiece.col, z: exploringPiece.z, w: exploringPiece.w },
+                to: { row: sent.piece.row, col: sent.piece.col, z: sent.piece.z, w: sent.piece.w },
+                isCapture: true,
+                targetPiece: sent.piece,
+                dimensionType: 'REALM_GATEWAY_DESCENT',
+              };
+              initiateCombatDuel(exploringPiece, realmDuelMove, false, {
+                x: realmCenter.x + (rm.localPos.x + sent.localPos.x) * 0.5,
+                y: realmCenter.y,
+                z: realmCenter.z + (rm.localPos.z + sent.localPos.z) * 0.5,
+                realmTitle: realmMeta.title,
+                sentinelId: sent.id,
+              });
+              break;
+            }
+          }
+
+          // 5. CHECK PORTAL PROXIMITY & PHYSICAL THRESHOLD CROSSING
+          const realmPortals = getPortalsForRealm(rm.currentRealmId);
+          let closestPortal: RealmPortalNode | null = null;
+          let closestPortalDist = 3.4;
+          for (const pNode of realmPortals) {
+            const d = Math.hypot(rm.localPos.x - pNode.localPos.x, rm.localPos.z - pNode.localPos.z);
+            if (d < closestPortalDist) {
+              closestPortalDist = d;
+              closestPortal = pNode;
+            }
+            if (d < 1.35 && rm.portalCooldownSec <= 0) {
+              handleTraverseRealmPortal(pNode);
+              break;
+            }
+          }
+
+          if (closestPortal?.id !== rm.nearbyPortal?.id) {
+            rm.nearbyPortal = closestPortal;
+            const evalRes =
+              closestPortal &&
+              (closestPortal.kind === 'BOARD_ASCENT' || closestPortal.kind === 'TIMELINE_PORTAL')
+                ? (() => {
+                    const targetTlId =
+                      closestPortal.kind === 'TIMELINE_PORTAL' && closestPortal.targetTimelineId
+                        ? closestPortal.targetTimelineId === sim.multiverse.activeTimelineId
+                          ? 'TL-PRIME'
+                          : closestPortal.targetTimelineId
+                        : sim.multiverse.activeTimelineId;
+                    const tBranch =
+                      ensureBranchHydrated(sim.multiverse, targetTlId) ||
+                      ensureBranchHydrated(sim.multiverse, 'TL-PRIME')!;
+                    const targetPieces =
+                      targetTlId === sim.multiverse.activeTimelineId
+                        ? sim.pieces
+                        : tBranch.pieces;
+                    return evaluatePortalBoardExit(
+                      closestPortal,
+                      exploringPiece,
+                      targetPieces,
+                      rm.isParityInverted,
+                      rm.crucibleAnvilClaimed,
+                      tBranch.name
+                    );
+                  })()
+                : null;
+            rm.nearbyPortalEval = evalRes;
+            setNearbyPortal(closestPortal);
+            setNearbyPortalEval(evalRes);
+          }
+
+          // 6. POSITION & ANIMATE THE PLAYER'S 3D WARRIOR RIG IN THE REALM
+          if (playerRig) {
+            playerRig.root.visible = true;
+            playerRig.root.position.set(
+              realmCenter.x + rm.localPos.x,
+              realmCenter.y + rm.localPos.y,
+              realmCenter.z + rm.localPos.z
+            );
+            playerRig.root.scale.setScalar(1.32);
+            playerRig.root.rotation.y = rm.yaw + Math.PI;
+
+            const isMoving = Math.hypot(rm.velocity.x, rm.velocity.z) > 0.35;
+            const walkCycle = elapsed * 12;
+            playerRig.leftLegPivot.rotation.x = isMoving ? Math.sin(walkCycle) * 0.55 : 0;
+            playerRig.rightLegPivot.rotation.x = isMoving ? -Math.sin(walkCycle) * 0.55 : 0;
+            playerRig.bodyPivot.position.y =
+              0.18 + (isMoving ? Math.abs(Math.sin(walkCycle)) * 0.05 : Math.sin(elapsed * 2.5) * 0.02);
+
+            if (rm.attackAnimTimerSec > 0) {
+              const swingT = 1 - rm.attackAnimTimerSec / 0.42;
+              playerRig.rightArmPivot.rotation.set(-1.8 + Math.sin(swingT * Math.PI) * 2.2, 0, -0.2);
+            } else {
+              playerRig.rightArmPivot.rotation.set(
+                isMoving ? -Math.sin(walkCycle) * 0.35 : -0.18,
+                0,
+                -0.08
+              );
+            }
+            playerRig.leftArmPivot.rotation.set(
+              isMoving ? Math.sin(walkCycle) * 0.35 : -0.14,
+              0,
+              0.08
+            );
+            playerRig.capePivot.rotation.x =
+              0.22 + (isMoving ? 0.35 + Math.sin(walkCycle * 1.5) * 0.12 : Math.sin(elapsed * 2.5) * 0.05);
+
+            const hpRatio = exploringPiece.hp / Math.max(1, exploringPiece.maxHp);
+            playerRig.vitalityHaloMesh.visible = true;
+            playerRig.vitalityHaloUniforms.uTime.value = elapsed;
+            playerRig.vitalityHaloUniforms.uHpRatio.value = hpRatio;
+            playerRig.vitalityHaloUniforms.uRecoverableRatio.value = hpRatio;
+            playerRig.vitalityHaloUniforms.uGuardRatio.value = rm.isParityInverted ? 1.0 : 0.85;
+            playerRig.vitalityHaloUniforms.uSpecialReady.value =
+              exploringPiece.meter >= ARCHETYPES[exploringPiece.type].special.meterCost ? 1.0 : 0.0;
+          }
+
+          // 7. THIRD-PERSON FOLLOW CAMERA INSIDE THE SUBTERRANEAN REALM
+          const camBackX = -Math.sin(rm.yaw) * 5.6;
+          const camBackZ = -Math.cos(rm.yaw) * 5.6;
+          _camTargetPos.set(
+            realmCenter.x + rm.localPos.x + camBackX,
+            realmCenter.y + rm.localPos.y + 3.25,
+            realmCenter.z + rm.localPos.z + camBackZ
+          );
+          _camLookTarget.set(
+            realmCenter.x + rm.localPos.x + Math.sin(rm.yaw) * 2.4,
+            realmCenter.y + rm.localPos.y + 1.15,
+            realmCenter.z + rm.localPos.z + Math.cos(rm.yaw) * 2.4
+          );
+
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-10 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-14 * rawDelta));
+          camera.lookAt(sim.currentLookAt);
+          camera.fov = THREE.MathUtils.damp(
+            camera.fov,
+            rm.dashTimerSec > 0 ? 64 : 52,
+            12,
+            rawDelta
+          );
+          camera.updateProjectionMatrix();
+        }
+      } else if (sim.phase === 'CAUSAL_COLLAPSE') {
+        // ============================================================================
+        // REALITY CONVERGENCE & CAUSAL ASSASSINATION COLLAPSE SEQUENCE ON THE 3D BOARD
+        // ============================================================================
+        sim.phaseTimer += rawDelta;
+        const progress = Math.min(1, sim.phaseTimer / 2.4);
+        const colRes = sim.activeCollapseResolution;
+        const primaryErased = colRes?.[0]?.erasedPiece;
+
+        if (primaryErased) {
+          boardToWorld(primaryErased.row, primaryErased.col, _vec3A);
+          const orbitAngle = sim.phaseTimer * 1.4;
+          _camTargetPos.set(
+            _vec3A.x + Math.sin(orbitAngle) * 4.2,
+            3.2 + (1 - progress) * 1.5,
+            _vec3A.z + Math.cos(orbitAngle) * 4.2 + 2.5
+          );
+          _camLookTarget.set(_vec3A.x, 0.9 + Math.sin(progress * Math.PI) * 0.8, _vec3A.z);
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-10 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-14 * rawDelta));
+          camera.lookAt(sim.currentLookAt);
+          camera.fov = THREE.MathUtils.damp(camera.fov, 34, 10, rawDelta);
+          camera.updateProjectionMatrix();
+
+          if (Math.random() < rawDelta * 18) {
+            spawnHitSparks(
+              vfxPool,
+              _vec3A.x + (Math.random() - 0.5) * 0.8,
+              0.8 + progress * 1.2,
+              _vec3A.z + (Math.random() - 0.5) * 0.8,
+              0xd946ef,
+              8
+            );
+          }
+        }
+
+        // Levitate, twist, and implode the doomed 3D rig(s) in a quantum singularity!
+        for (const dRig of sim.collapseDoomedRigs) {
+          dRig.root.position.y = Math.sin(progress * Math.PI * 0.8) * 1.85;
+          dRig.root.rotation.y += rawDelta * (8 + progress * 24);
+          dRig.root.rotation.z = Math.sin(elapsed * 28) * 0.35 * progress;
+          const shrink = Math.max(0.01, 1.0 - Math.pow(progress, 2.2));
+          dRig.root.scale.setScalar(shrink);
+        }
+
+        if (sim.phaseTimer >= 2.4) {
+          for (const dRig of sim.collapseDoomedRigs) {
+            dRig.root.parent?.remove(dRig.root);
+          }
+          sim.collapseDoomedRigs = [];
+
+          const regicideItem = colRes?.find((r) => r.erasedPiece.type === 'k');
+          if (regicideItem) {
+            setWarVictor({
+              faction: regicideItem.event.killerFaction,
+              reason: `Multiversal Regicide! The Eternal Monarch's lineage [${regicideItem.event.victimLineageId}] was assassinated in ${regicideItem.event.sourceTimelineName} and erased from ${regicideItem.targetTimelineName} during Reality Convergence!`,
+            });
+            confetti({ particleCount: 140, spread: 95, origin: { y: 0.5 } });
+          }
+
+          sim.activeCollapseResolution = null;
+          sim.phase = 'CHESS_VIEW';
+          if (sim.controls) sim.controls.enabled = true;
+          setPhase('CHESS_VIEW');
+          setActiveCollapseBanner(null);
+          syncBoardHighlights();
+        }
+      }
+
+      // Update & Render Live Perspective-Correct Portals (WebGLRenderTarget RTT) for both Board Gateways and Subterranean Realm Portals!
+      if (sim.realmsRig) {
+        const exploringPiece = sim.realm.travelerPieceId
+          ? sim.pieces.find((p) => p.id === sim.realm.travelerPieceId) ?? null
+          : null;
+
+        updateSubterraneanRealmsAndPortals(
+          renderer,
+          scene,
+          camera,
+          sim.realmsRig,
+          elapsed,
+          rawDelta,
+          sim.phase,
+          sim.realm.currentRealmId,
+          exploringPiece,
+          sim.pieces,
+          sim.realm.isParityInverted,
+          sim.realm.crucibleAnvilClaimed,
+          sim.realm.echoes,
+          sim.realm.sentinels
+        );
+      }
+
+      if (battleWornPass) {
+        battleWornPass.uniforms.uTime.value = elapsed;
+        battleWornPass.uniforms.uIntensity.value = battleWornIntensity;
+        battleWornPass.uniforms.uCriticalPulse.value = battleWornPulse;
       }
 
       if (composer) {
@@ -2283,7 +4937,18 @@ export default function App() {
       if (composer) composer.dispose();
       renderer.dispose();
     };
-  }, [addCallout, executeChessMove, syncBoardHighlights]);
+  }, [
+    addCallout,
+    executeChessMove,
+    executeFighterIntervention,
+    handleRealmAction,
+    handleResetGame,
+    handleTemperAtCrucibleAnvil,
+    handleToggleAutoPlayDemo,
+    handleTraverseRealmPortal,
+    initiateCombatDuel,
+    syncBoardHighlights,
+  ]);
 
   const handleSelectCameraPreset = (preset: CameraPreset) => {
     setCameraPreset(preset);
@@ -2303,6 +4968,22 @@ export default function App() {
     }
     controls.update();
   };
+
+  useEffect(() => {
+    if (phase === 'FIGHT_INTRO' || phase === 'FIGHT_ACTIVE' || phase === 'FIGHT_OUTRO') {
+      soundEngine.setMusicMood('COMBAT');
+    } else if (
+      phase === 'REALM_DESCENT' ||
+      phase === 'REALM_EXPLORATION' ||
+      phase === 'REALM_ASCENT'
+    ) {
+      soundEngine.setMusicMood('REALM');
+    } else if (multiverseState.activeTimelineId !== 'TL-PRIME') {
+      soundEngine.setMusicMood('ALTERNATE_TIMELINE');
+    } else {
+      soundEngine.setMusicMood('CHESS');
+    }
+  }, [phase, multiverseState.activeTimelineId]);
 
   const toggleMute = () => {
     const next = !muted;
@@ -2328,28 +5009,35 @@ export default function App() {
         {/* Zone 2: 4 concise single-line navigation links */}
         <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-slate-300">
           <button
-            onClick={handleTrigger4DHyperScenario}
-            className="hover:text-purple-400 text-purple-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={() => setMultiverseModalOpen(true)}
+            className="text-fuchsia-300 hover:text-fuchsia-200 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
           >
-            4D Hyper-Ambush Demo
+            <GitBranch className="w-3.5 h-3.5 text-fuchsia-400" />
+            Multiverse Nexus ({multiverseState.timelines.size} Realities)
           </button>
           <button
-            onClick={handleTriggerFeaturedBoardClash}
-            className="hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={handleTriggerGuidedAssassinationDemo}
+            className="text-amber-300 hover:text-amber-200 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
           >
-            Pawn vs Queen Clash
+            <Zap className="w-3.5 h-3.5 text-amber-400" />
+            Causal Assassination (Ω-1 → Prime)
           </button>
           <button
-            onClick={() => setCodexOpen(true)}
-            className="hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={() => handleTriggerRealmShowcase()}
+            className="hover:text-cyan-300 text-cyan-400 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Combo Trees
+            Impossible Realms
           </button>
           <button
-            onClick={handleResetGame}
-            className="hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={handleToggleAutoPlayDemo}
+            className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 font-semibold ${
+              autoPlayDemo
+                ? 'text-emerald-400 hover:text-emerald-300'
+                : 'text-emerald-300 hover:text-emerald-200'
+            }`}
           >
-            Reset Board
+            {autoPlayDemo ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+            {autoPlayDemo ? 'Stop Auto-Demo (P)' : 'Auto-Play Demo (P)'}
           </button>
         </nav>
 
@@ -2364,175 +5052,282 @@ export default function App() {
         </div>
       </header>
 
+      {/* Director's Auto-Play Showcase Banner (Visible across Chess & Combat when Auto-Play Demo is active) */}
+      {autoPlayDemo && (
+        <div className="pointer-events-auto fixed top-[64px] right-6 z-30 bg-[#071318]/95 border border-emerald-400/70 rounded-xl px-4 py-2.5 shadow-[0_0_28px_rgba(16,185,129,0.25)] flex items-center gap-3.5 max-w-md">
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold tracking-wider text-emerald-300">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span>DIRECTOR&apos;S AUTO-PLAY SHOWCASE ACTIVE</span>
+            </div>
+            <div className="text-xs font-semibold text-white mt-0.5 truncate">
+              {demoDirectorStage}
+            </div>
+          </div>
+          <button
+            onClick={handleToggleAutoPlayDemo}
+            className="px-3 py-1.5 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-mono font-bold text-[11px] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            title="Stop Auto-Play Demo and immediately take manual control of the current board or duel (P Key)"
+          >
+            Take Control (P)
+          </button>
+        </div>
+      )}
+
+      {/* Dramatic Reality Convergence / Causal Collapse Cinematic Overlay */}
+      {phase === 'CAUSAL_COLLAPSE' && activeCollapseBanner && activeCollapseBanner.length > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 top-[74px] z-40 flex flex-col items-center px-4">
+          <div className="bg-[#0B0616]/95 border-2 border-fuchsia-400 rounded-2xl px-8 py-4 shadow-[0_0_60px_rgba(217,70,239,0.55)] text-center max-w-2xl">
+            <div className="text-xs font-mono font-bold tracking-[0.22em] text-fuchsia-300 uppercase flex items-center justify-center gap-2">
+              <Skull className="w-4 h-4 text-rose-400 animate-bounce" />
+              <span>CAUSAL ASSASSINATION CONVERGING ACROSS REALITIES</span>
+              <Skull className="w-4 h-4 text-rose-400 animate-bounce" />
+            </div>
+            <div className="font-display text-2xl font-extrabold text-white mt-1">
+              {activeCollapseBanner
+                .map((item) => ARCHETYPES[item.erasedPiece.type].chessName)
+                .join(', ')}{' '}
+              Erased From {activeCollapseBanner[0].targetTimelineName}!
+            </div>
+            <div className="mt-2 space-y-1">
+              {activeCollapseBanner.map((item) => (
+                <div key={item.erasedPiece.id} className="text-xs font-mono text-rose-300">
+                  Lineage <span className="text-amber-300 font-bold">[{item.event.victimLineageId}]</span> shattered:{' '}
+                  <span className="text-white font-bold">
+                    {ARCHETYPES[item.erasedPiece.type].warriorTitle} ({ARCHETYPES[item.erasedPiece.type].chessName})
+                  </span>{' '}
+                  erased from Square <span className="text-fuchsia-300 font-bold">{item.erasedSquareLabel}</span>!
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 2. Isolated 3D WebGL Viewport Container */}
       <div
         ref={canvasMountRef}
         className="absolute inset-0 top-[53px] z-0 w-full h-[calc(100vh-53px)] cursor-grab active:cursor-grabbing"
       />
 
-      {/* 3. Top-Left Tactical / Quantum 4D Manifold Inspector & Unseen 4D Threat Radar (during CHESS_VIEW) */}
+      {/* 3. Whisper-Quiet Story Chronicle & Multiverse Reality Switcher Strip (during CHESS_VIEW) */}
       {phase === 'CHESS_VIEW' && (
-        <div className="pointer-events-auto fixed top-[68px] left-6 z-20 flex flex-col gap-2 max-w-sm">
-          <div
-            className={`rounded-xl px-4 py-3 shadow-xl border transition-colors ${
-              activeSliceW !== 0 || activeSliceZ !== 0
-                ? 'bg-[#090616]/95 border-cyan-400/70 shadow-[0_0_30px_rgba(56,189,248,0.18)]'
-                : 'bg-[#0B0E17]/95 border-slate-800'
-            }`}
-          >
-            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-              <span>
-                {timelineBranchLabel.toUpperCase()} · TURN {turnNumber}
-              </span>
-              <span className={activeSliceW !== 0 || activeSliceZ !== 0 ? 'text-cyan-300 font-bold' : 'text-amber-300'}>
-                |ψ⟩ = |W={activeSliceW}, Z={activeSliceZ}⟩
-              </span>
+        <div className="pointer-events-none fixed top-[66px] left-6 z-20 flex flex-col gap-2.5 max-w-md">
+          {/* Chapter, Active Reality & Quick Branch Switcher */}
+          <div className="pointer-events-auto drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)] bg-[#080B14]/85 border border-slate-800/90 rounded-xl px-4 py-2.5 backdrop-blur-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div className="font-mono text-[11px] tracking-[0.16em] text-amber-400/90 uppercase font-bold">
+                {timelineBranchLabel} · Turn {turnNumber}
+              </div>
+              <button
+                onClick={() => setMultiverseModalOpen(true)}
+                className="px-2.5 py-0.5 rounded bg-fuchsia-500/20 hover:bg-fuchsia-500/35 border border-fuchsia-400/60 text-[10px] font-mono font-bold text-fuchsia-200 flex items-center gap-1 cursor-pointer transition-colors"
+                title="Open Multiverse Causal Nexus & Lineage Inspector (M Key)"
+              >
+                <GitBranch className="w-3 h-3" />
+                Multiverse (M)
+              </button>
             </div>
-            <div className="font-display text-base font-bold text-white mt-0.5">
+
+            <div className="font-display text-base font-bold text-white tracking-wide mt-0.5">
               {activeSliceW !== 0 || activeSliceZ !== 0
-                ? `Quantum Manifold: ${formatWName(activeSliceW)} · ${formatZName(activeSliceZ)}`
+                ? `Across the ${formatWName(activeSliceW)} Horizon`
                 : turnFaction === 'w'
-                ? 'Solaris Order (White) to Move'
-                : 'Obsidian Dominion (Black) to Move'}
+                ? 'The Solaris Order Commands the Field'
+                : 'The Obsidian Dominion Advances'}
             </div>
-            <div className="text-xs text-slate-300 mt-1">
-              {activeSliceW !== 0 || activeSliceZ !== 0 ? (
-                <>
-                  Observing <span className="text-cyan-300 font-semibold">Quantum 4D Eigenstate</span>. Schrödinger probability waves &amp; <span className="text-cyan-300">|Φ⁺⟩ Double-Helix Beams</span> link entangled allies!
-                </>
-              ) : (
-                <>
-                  Classical Prime Sanctuary (<span className="text-amber-300">|W=0, Z=0⟩</span>). Cyan <span className="text-cyan-300">|Φ⁺⟩ Double-Helix Arcs</span> mark Quantum Entangled Bell Pairs!
-                </>
-              )}
+
+            {/* Quick Parallel Reality Pills */}
+            <div className="mt-2 pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-mono text-slate-400 mr-0.5">Realities:</span>
+              {Array.from(multiverseState.timelines.values())
+                .slice(0, 5)
+                .map((br) => {
+                  const isCur = br.id === multiverseState.activeTimelineId;
+                  const unprop = getPendingCausalBreachesForTimeline(multiverseState, br.id);
+                  return (
+                    <button
+                      key={br.id}
+                      onClick={() => handleSwitchTimeline(br.id)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all cursor-pointer flex items-center gap-1 ${
+                        isCur
+                          ? 'bg-fuchsia-500 text-slate-950 font-bold shadow-sm'
+                          : 'bg-slate-900/90 hover:bg-slate-800 text-slate-300 border border-slate-700/80'
+                      }`}
+                      title={`${br.name}: ${br.divergenceSummary}`}
+                    >
+                      <span>{br.shortCode}</span>
+                      {unprop.length > 0 && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping" />
+                      )}
+                    </button>
+                  );
+                })}
             </div>
+
+            {/* If an alternate-timeline Causal Assassination is ready to converge into Prime Reality, show 1-click Convergence CTA! */}
+            {getPendingCausalBreachesForTimeline(multiverseState, 'TL-PRIME').length > 0 && (
+              <button
+                onClick={() => handleTriggerConvergence('TL-PRIME')}
+                className="mt-2 w-full px-3 py-1.5 bg-gradient-to-r from-fuchsia-500 to-rose-500 hover:from-fuchsia-400 hover:to-rose-400 text-slate-950 font-mono font-bold text-[11px] rounded-lg flex items-center justify-center gap-1.5 shadow-lg animate-pulse cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Converge Causal Assassination Into Prime Reality!
+              </button>
+            )}
 
             {canRewindTimeline && (
               <button
                 onClick={handleChronoRewind}
-                className="mt-2 w-full px-3 py-1.5 bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-400/50 rounded-lg text-[11px] font-mono font-semibold text-cyan-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                title="Rewind spacetime causality by 1 turn (Δt = -1) and fork a parallel multiverse timeline branch!"
+                className="mt-1.5 w-full px-3 py-1 bg-cyan-950/85 hover:bg-cyan-900 border border-cyan-400/40 rounded-lg text-[11px] font-mono text-cyan-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                title="Rewind spacetime causality by 1 turn and fork a parallel timeline branch"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-cyan-300" />
-                Chrono-Rewind Causality (Δt = -1 · Fork Timeline)
+                <RotateCcw className="w-3 h-3 text-cyan-300" />
+                Rewind Causality (Δt = -1)
               </button>
             )}
           </div>
 
-          {/* Unseen 4D Cross-Dimensional Threat Alert */}
+          {/* Unseen 4D Cross-Dimensional Threat Whisper */}
           {unseenThreats.length > 0 && (
-            <div className="bg-[#090616]/95 border border-purple-500/70 rounded-xl px-4 py-2.5 shadow-xl">
+            <div className="pointer-events-auto bg-[#090616]/85 border-l-2 border-purple-400 pl-3 py-1.5 pr-3 rounded-r-lg">
               <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold text-purple-300">
                 <AlertTriangle className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                <span>{unseenThreats.length} QUANTUM ENTANGLED THREAT{unseenThreats.length > 1 ? 'S' : ''}!</span>
-              </div>
-              <div className="text-[11px] text-slate-300 mt-1">
-                {unseenThreats[0].axisDescription} threatens square{' '}
-                <span className="font-mono font-bold text-white">
+                <span>
+                  Shadow from {formatWName(unseenThreats[0].attacker.w)} threatens{' '}
                   {formatSquareName({ row: unseenThreats[0].targetRow, col: unseenThreats[0].targetCol })}
                 </span>
-                .
               </div>
               <button
                 onClick={() =>
                   handleSelect4DSlice(unseenThreats[0].attacker.w, unseenThreats[0].attacker.z, true)
                 }
-                className="mt-1.5 px-2.5 py-1 bg-purple-950/90 hover:bg-purple-900 border border-purple-500/40 rounded text-[11px] font-mono text-purple-200 transition-colors cursor-pointer"
+                className="mt-1 text-[11px] font-mono text-cyan-300 hover:text-cyan-200 underline cursor-pointer"
               >
-                Collapse Wavefunction to Attacker&apos;s Slice ({formatWName(unseenThreats[0].attacker.w)})
+                Shift Gaze to {formatWName(unseenThreats[0].attacker.w)}
               </button>
             </div>
           )}
 
-          {/* Selected Piece + 4D Quantum Tunneling Projector & Bell-State Entanglement */}
-          {selectedPiece && (
-            <div className="bg-[#0B0E17]/95 border border-cyan-500/50 rounded-xl px-4 py-3 shadow-xl">
-              <div className="flex items-center justify-between text-xs font-mono text-cyan-300">
-                <span>
-                  {ARCHETYPES[selectedPiece.type].chessName.toUpperCase()} · |W={selectedPiece.w}, Z={selectedPiece.z}⟩
-                </span>
-                <span className="tabular-nums text-amber-300">
-                  {selectedPiece.hp}/{selectedPiece.maxHp} HP
-                </span>
-              </div>
-              <div className="flex items-center justify-between mt-0.5">
-                <div className="font-display text-sm font-bold text-white">
-                  {ARCHETYPES[selectedPiece.type].warriorTitle}
+          {/* Selected Warrior Story & 4D Tunneling Strip (No numeric HP bars — physical armor & Soul-Crown show vitality!) */}
+          {selectedPiece && (() => {
+            const condRatio = selectedPiece.hp / Math.max(1, selectedPiece.maxHp);
+            const conditionStory =
+              condRatio > 0.75
+                ? 'Radiant & Unscathed'
+                : condRatio > 0.35
+                ? 'Armor Scored in Battle'
+                : 'Pauldrons Sundered · Embers Rising';
+            const reachableGatewayMove = simRef.current.validMoves.find(
+              (m) => m.dimensionType === 'REALM_GATEWAY_DESCENT'
+            );
+            return (
+              <div className="pointer-events-auto bg-[#0B0E17]/85 border border-slate-800/90 rounded-xl px-3.5 py-2.5 shadow-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-display text-sm font-bold text-white">
+                      {ARCHETYPES[selectedPiece.type].warriorTitle}
+                    </div>
+                    <div className="text-[11px] font-mono text-amber-300/90">
+                      {ARCHETYPES[selectedPiece.type].chessName} at{' '}
+                      {formatSquareName({ row: selectedPiece.row, col: selectedPiece.col })} ·{' '}
+                      <span className={condRatio < 0.35 ? 'text-rose-400' : 'text-slate-300'}>
+                        {conditionStory}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleEntangleSelectedPiece}
+                    className="px-2 py-1 bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-400/50 rounded text-[10px] font-mono text-cyan-200 transition-colors cursor-pointer shrink-0"
+                    title="Bind this warrior in a Quantum Bell Pair with an ally"
+                  >
+                    {selectedPiece.entangledWithId ? '|Φ⁺⟩ Re-Bind' : '|Φ⁺⟩ Soul-Bind'}
+                  </button>
                 </div>
-                <button
-                  onClick={handleEntangleSelectedPiece}
-                  className="px-2 py-0.5 bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-400/50 rounded text-[10px] font-mono text-cyan-200 transition-colors cursor-pointer"
-                  title="Entangle this warrior in a |Φ⁺⟩ Quantum Bell Pair with your highest-value ally for +15% starting meter, passive regeneration, and Entangled Assist Strikes!"
-                >
-                  {selectedPiece.entangledWithId ? '|Φ⁺⟩ Re-Entangle' : '+ |Φ⁺⟩ Entangle Pair'}
-                </button>
-              </div>
 
-              {/* 4D Move Projection Selector */}
-              <div className="mt-2 pt-2 border-t border-slate-800">
-                <div className="text-[10px] font-mono text-slate-400 mb-1.5 flex items-center gap-1">
-                  <Orbit className="w-3 h-3 text-cyan-400" />
-                  <span>QUANTUM TUNNEL MOVE INTO EIGENSTATE:</span>
-                </div>
-                <div className="grid grid-cols-3 gap-1">
-                  {(
-                    [
-                      [-1, '|ψ₋⟩ Kata'],
-                      [0, '|ψ₀⟩ Prime'],
-                      [1, '|ψ₊⟩ Ana'],
-                    ] as [number, string][]
-                  ).map(([wVal, label]) => (
-                    <button
-                      key={wVal}
-                      onClick={() => handleSelect4DSlice(wVal, targetMoveZ, false)}
-                      className={`px-2 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer ${
-                        targetMoveW === wVal
-                          ? 'bg-cyan-600 text-slate-950 font-bold'
-                          : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+                {/* If this piece can step onto a Board Gateway (e.g. C3, D3, B5, G4, E6, F6), offer 1-click Descent! */}
+                {reachableGatewayMove && (
+                  <button
+                    onClick={() => executeChessMove(selectedPiece, reachableGatewayMove)}
+                    className="mt-2 w-full px-3 py-1.5 bg-purple-950/90 hover:bg-purple-900 border border-purple-400/60 rounded-lg text-[11px] font-mono font-bold text-purple-200 flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <span>
+                      ⟁ Descend {formatSquareName(reachableGatewayMove.to)} Gateway
+                    </span>
+                    <span className="text-amber-300">
+                      {reachableGatewayMove.realmId
+                        ? REALM_METADATA[reachableGatewayMove.realmId].title
+                        : 'Enter Realm'}{' '}
+                      →
+                    </span>
+                  </button>
+                )}
 
-          {hoveredCaptureMove && hoveredCaptureMove.targetPiece && selectedPiece && (
-            <div className="bg-[#0B0E17]/95 border border-rose-500/70 rounded-xl px-4 py-3 shadow-2xl">
-              <div className="text-[11px] font-mono font-bold text-rose-400">
-                {hoveredCaptureMove.dimensionLabel || `IMMINENT DUEL AT SQUARE ${formatSquareName(hoveredCaptureMove.to)}`}
+                {/* 4D Move Projection Selector */}
+                <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-1.5">
+                  <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1">
+                    <Orbit className="w-3 h-3 text-cyan-400" />
+                    Step Across:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {(
+                      [
+                        [-1, 'Kata (-W)'],
+                        [0, 'Prime'],
+                        [1, 'Ana (+W)'],
+                      ] as [number, string][]
+                    ).map(([wVal, label]) => (
+                      <button
+                        key={wVal}
+                        onClick={() => handleSelect4DSlice(wVal, targetMoveZ, false)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                          targetMoveW === wVal
+                            ? 'bg-cyan-500 text-slate-950 font-bold'
+                            : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="font-display text-sm font-bold text-white mt-0.5">
-                {ARCHETYPES[selectedPiece.type].chessName} ({selectedPiece.hp} HP) vs {ARCHETYPES[hoveredCaptureMove.targetPiece.type].chessName} ({hoveredCaptureMove.targetPiece.hp} HP)
+            );
+          })()}
+
+          {/* Pre-Commit Duel Standoff Whisper */}
+          {hoveredCaptureMove && hoveredCaptureMove.targetPiece && selectedPiece && (() => {
+            const hoverSupport = computeSquareSupportAnalysis(
+              simRef.current.pieces,
+              hoveredCaptureMove.to,
+              selectedPiece.faction,
+              hoveredCaptureMove.targetPiece.faction,
+              [selectedPiece.id, hoveredCaptureMove.targetPiece.id]
+            );
+            const readyAllies = hoverSupport.attackerSupporters.filter((s) => s.canIntervene);
+            const readyEnemies = hoverSupport.defenderSupporters.filter((s) => s.canIntervene);
+            return (
+              <div className="bg-[#0B0E17]/90 border-l-2 border-rose-500 pl-3 py-2 pr-3.5 rounded-r-xl shadow-2xl">
+                <div className="font-display text-xs font-bold text-rose-300 tracking-wide uppercase">
+                  Challenge {ARCHETYPES[hoveredCaptureMove.targetPiece.type].warriorTitle} at{' '}
+                  {formatSquareName(hoveredCaptureMove.to)}
+                </div>
+                <div className="mt-1 flex items-center gap-3 text-[11px] font-mono">
+                  <span className="text-emerald-300">
+                    {readyAllies.length} Allied {readyAllies.length === 1 ? 'Vanguard' : 'Vanguards'} Ready
+                  </span>
+                  <span className="text-slate-500">·</span>
+                  <span className="text-rose-300">
+                    {readyEnemies.length} Enemy {readyEnemies.length === 1 ? 'Sentinel' : 'Sentinels'} Ready
+                  </span>
+                </div>
               </div>
-              <div className="text-[11px] text-slate-300 mt-1">
-                Click square for <span className="text-amber-300">Western Crash-Zooms</span> → <span className="text-cyan-300">First-Person Visor Combat</span>!
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
-      {/* 4. K.O. / Upset Victory Banner Overlay */}
-      {koBanner && (
-        <div className="pointer-events-none fixed inset-x-0 top-1/3 z-30 flex justify-center px-4">
-          <div className="bg-[#0B0E17]/95 border-2 border-amber-400 px-8 py-5 rounded-2xl text-center shadow-2xl max-w-xl">
-            <div className="font-mono text-xs tracking-widest text-amber-400">
-              {koBanner.wasUpset ? 'HISTORIC TACTICAL UPSET' : 'DUEL CONCLUDED'}
-            </div>
-            <div className="font-display text-2xl md:text-3xl font-extrabold text-white mt-1">
-              {koBanner.title}
-            </div>
-            <div className="text-xs md:text-sm text-slate-300 mt-1.5">
-              {koBanner.subtitle}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 5. Campaign Victory Modal (Regicide) */}
+      {/* 4. Campaign Victory Modal (Regicide) */}
       {warVictor && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/80 p-4">
           <div className="bg-[#0D111A] border border-amber-500/60 rounded-2xl p-8 max-w-md w-full text-center shadow-2xl">
@@ -2563,7 +5358,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 6. Real-Time Fighting Game HUD Overlay */}
+      {/* 5. Diegetic Story-Driven Combat Overlay (Lower-third letterbox inscriptions & Visor Rim) */}
       <CombatHudOverlay
         phase={phase}
         attacker={hudAttacker}
@@ -2577,28 +5372,75 @@ export default function App() {
         dockCollapsed={dockCollapsed}
         onToggleDock={() => setDockCollapsed((p) => !p)}
         onPlayerInput={handlePlayerCombatInput}
+        onSelectSupporter={handleSelectSupporter}
+        onTriggerIntervention={handleTriggerIntervention}
+        koNarrative={koBanner}
+      />
+
+      {/* 6. Subterranean Impossible Realms Diegetic Overlay (During REALM_DESCENT, REALM_EXPLORATION & REALM_ASCENT) */}
+      <RealmHudOverlay
+        phase={phase}
+        activeRealmId={activeRealmId}
+        traveler={realmTraveler}
+        allPieces={simRef.current.pieces}
+        isParityInverted={realmParityInverted}
+        crucibleAnvilClaimed={realmCrucibleClaimed}
+        nearbyPortal={nearbyPortal}
+        nearbyPortalEval={nearbyPortalEval}
+        statusBanner={realmStatusBanner}
+        onTraversePortal={handleTraverseRealmPortal}
+        onSteerTowardPortal={handleSteerTowardPortal}
+        onRealmAction={handleRealmAction}
       />
 
       {/* 7. Unified Collapsible Bottom Control Dock (during CHESS_VIEW) */}
       {phase === 'CHESS_VIEW' && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(1020px,95vw)] flex flex-col items-center pointer-events-auto">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(1080px,96vw)] flex flex-col items-center pointer-events-auto">
           <button
             onClick={() => setDockCollapsed((prev) => !prev)}
             className="mb-1 px-3 py-1 text-xs font-mono text-slate-300 bg-[#0B0E17]/95 border border-slate-800 rounded-t-lg hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            {dockCollapsed ? '▴ Show 4D Hypercube Navigator & Instant Clash (H)' : '▾ Hide Controls (H)'}
+            {dockCollapsed ? '▴ Show 4D Hypercube Navigator & Impossible Realms (H)' : '▾ Hide Controls (H)'}
           </button>
 
           {!dockCollapsed && (
             <div className="w-full bg-[#0B0E17]/95 border border-slate-800 rounded-xl px-4 py-3 shadow-2xl flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <button
-                  onClick={handleTriggerFeaturedBoardClash}
-                  className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  title="Immediately trigger a Pawn vs Queen capture duel on the board!"
+                  onClick={handleToggleAutoPlayDemo}
+                  className={`px-3 py-2 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    autoPlayDemo
+                      ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 shadow-[0_0_18px_rgba(52,211,153,0.35)]'
+                      : 'bg-emerald-950/90 hover:bg-emerald-900 border border-emerald-400/60 text-emerald-200'
+                  }`}
+                  title="Watch an autonomous AI-vs-AI showcase demonstrating 4D Quantum Chess, Spaghetti Western Crash-Zooms, First-Person Visor Combat, and Tactical Board Interventions! (P Key)"
                 >
-                  <Swords className="w-3.5 h-3.5" />
-                  Pawn vs Queen Clash
+                  {autoPlayDemo ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {autoPlayDemo ? 'Pause Demo (P)' : 'Auto-Play Demo (P)'}
+                </button>
+                <button
+                  onClick={() => setMultiverseModalOpen(true)}
+                  className="px-3 py-2 bg-fuchsia-950/95 hover:bg-fuchsia-900 border border-fuchsia-400/70 text-fuchsia-200 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Open the Multiversal Causal Nexus to inspect parallel timelines, Global Piece Lineages, and trigger Reality Convergence! (M Key)"
+                >
+                  <GitBranch className="w-3.5 h-3.5 text-fuchsia-300" />
+                  Multiverse Nexus (M)
+                </button>
+                <button
+                  onClick={handleTriggerGuidedAssassinationDemo}
+                  className="px-3 py-2 bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-slate-950 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Enter Timeline Ω-1, assassinate the exposed Obsidian Queen, and converge her death back into Prime Reality!"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  Causal Assassination (Ω-1)
+                </button>
+                <button
+                  onClick={() => handleTriggerRealmShowcase()}
+                  className="px-3 py-2 bg-cyan-950/95 hover:bg-cyan-900 border border-cyan-400/60 text-cyan-200 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Descend with a warrior through a Board Gateway Well into the 3D Subterranean Realms (The Shattered Mirror, The Ashen Crucible, The Echoing Remnant)!"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+                  Descend Into Realms
                 </button>
                 <button
                   onClick={handleTrigger4DHyperScenario}
@@ -2607,13 +5449,6 @@ export default function App() {
                 >
                   <Orbit className="w-3.5 h-3.5 text-purple-400" />
                   4D Hyper-Ambush
-                </button>
-                <button
-                  onClick={() => setCodexOpen(true)}
-                  className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-medium text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  Matchups
                 </button>
               </div>
 
@@ -2690,7 +5525,7 @@ export default function App() {
                 <div className="w-full border-t border-slate-800/80 pt-2 flex items-center justify-between text-xs text-slate-400">
                   <div className="truncate">
                     <span className="font-mono text-amber-400 mr-2">
-                      4D CHRONICLE:
+                      MULTIVERSAL CHRONICLE:
                     </span>
                     <span className="text-slate-200 font-medium">
                       {battleLogs[0].summary}
@@ -2710,6 +5545,21 @@ export default function App() {
         isOpen={codexOpen}
         onClose={() => setCodexOpen(false)}
         onLaunchExhibitionDuel={handleLaunchExhibitionDuel}
+      />
+
+      {/* 9. Multiversal Causal Nexus, Lineage Inspector & Reality Convergence Modal */}
+      <MultiverseModal
+        multiverse={multiverseState}
+        activePieces={simRef.current.pieces}
+        selectedPiece={selectedPiece}
+        isOpen={multiverseModalOpen}
+        onClose={() => setMultiverseModalOpen(false)}
+        onSwitchTimeline={handleSwitchTimeline}
+        onForkTimeline={handleForkTimeline}
+        onDeployPieceToTimeline={handleDeployPieceToTimeline}
+        onTriggerConvergence={handleTriggerConvergence}
+        onTriggerGuidedAssassinationDemo={handleTriggerGuidedAssassinationDemo}
+        onRewindLastAssassination={handleRewindLastAssassination}
       />
     </div>
   );

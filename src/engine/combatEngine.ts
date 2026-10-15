@@ -5,7 +5,12 @@ import {
   ChessPiece,
   CombatCallout,
   ComboRecipe,
+  Faction,
   FighterRuntime,
+  FighterStatusEffectType,
+  TACTICAL_INTERVENTION_METER_COST,
+  TacticalSupporter,
+  VictoryTauntSpec,
 } from '../types/game';
 
 export const ARENA_HALF_WIDTH = 5.2;
@@ -17,7 +22,8 @@ export function createFighterRuntime(
   piece: ChessPiece,
   isAttacker: boolean,
   isAI: boolean,
-  entangledPartnerName?: string
+  entangledPartnerName?: string,
+  supporters: TacticalSupporter[] = []
 ): FighterRuntime {
   const spec = ARCHETYPES[piece.type];
   const initialMeter = Math.min(
@@ -65,7 +71,347 @@ export function createFighterRuntime(
     clashLockTimerMs: 0,
     clashPower: 0,
     entangledPartnerName,
+    supporters: supporters.map((s) => ({ ...s })),
+    selectedSupporterIndex: 0,
+    interventionUsed: false,
+    sovereignAegisActive: Boolean(piece.mirrorInvertedParity),
+    statusBurnTimerMs: piece.persistentBurnMs ?? 0,
+    statusBurnTickAccumMs: 0,
+    statusSlowTimerMs: piece.persistentSlowMs ?? 0,
+    statusWeakenedTimerMs: piece.persistentWeakenedMs ?? 0,
   };
+}
+
+export function getFighterSpeedMultiplier(fighter: FighterRuntime): number {
+  return fighter.statusSlowTimerMs > 0 ? 0.55 : 1.0;
+}
+
+export function applyFighterStatusEffect(
+  target: FighterRuntime,
+  effect: FighterStatusEffectType,
+  durationMs: number,
+  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
+) {
+  if (target.hp <= 0) return;
+
+  if (effect === 'burn') {
+    const wasActive = target.statusBurnTimerMs > 0;
+    target.statusBurnTimerMs = Math.max(target.statusBurnTimerMs, durationMs);
+    if (!wasActive) {
+      target.statusBurnTickAccumMs = 0;
+      onCallout({
+        text: '🔥 IGNITED: BURN STATUS!',
+        subtext: '4 HP/TICK PLASMA SCORCH & GUARD CORROSION',
+        x: target.x,
+        y: 2.42,
+        color: '#fb923c',
+      });
+    }
+  } else if (effect === 'slow') {
+    const wasActive = target.statusSlowTimerMs > 0;
+    target.statusSlowTimerMs = Math.max(target.statusSlowTimerMs, durationMs);
+    if (!wasActive) {
+      onCallout({
+        text: '❄️ STASIS: SLOWED STATUS!',
+        subtext: '-45% MOBILITY & -28% ATTACK FRAME TEMPO',
+        x: target.x,
+        y: 2.42,
+        color: '#38bdf8',
+      });
+    }
+  } else if (effect === 'weakened') {
+    const wasActive = target.statusWeakenedTimerMs > 0;
+    target.statusWeakenedTimerMs = Math.max(target.statusWeakenedTimerMs, durationMs);
+    if (!wasActive) {
+      onCallout({
+        text: '💔 SUNDERED: WEAKENED STATUS!',
+        subtext: '+25% INCOMING DAMAGE · -25% STRIKE POWER',
+        x: target.x,
+        y: 2.42,
+        color: '#c084fc',
+      });
+    }
+  }
+}
+
+/**
+ * TACTICAL INTERVENTION: THE BOARD FIGHTS BACK
+ * Validates and initiates a Tactical Intervention from an eligible supporting chess piece.
+ * - Each fighter may call ONE intervention per duel.
+ * - Deducts 25 persistent tactical meter from the supporting ChessPiece on the board.
+ */
+export function triggerTacticalIntervention(
+  caller: FighterRuntime,
+  requestedSupporterIndex: number | undefined,
+  boardPieces: ChessPiece[],
+  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
+): TacticalSupporter | null {
+  if (
+    caller.interventionUsed ||
+    caller.hp <= 0 ||
+    caller.action === 'victory' ||
+    caller.action === 'victory_taunt' ||
+    caller.action === 'defeat' ||
+    caller.supporters.length === 0
+  ) {
+    return null;
+  }
+
+  let chosenIdx =
+    requestedSupporterIndex !== undefined
+      ? requestedSupporterIndex
+      : caller.selectedSupporterIndex;
+
+  let supporter = caller.supporters[chosenIdx];
+  if (!supporter || !supporter.canIntervene) {
+    // Fallback to first eligible supporter with >= 25 meter
+    chosenIdx = caller.supporters.findIndex((s) => s.canIntervene);
+    if (chosenIdx === -1) return null;
+    supporter = caller.supporters[chosenIdx];
+  }
+
+  // Verify the persistent ChessPiece on the board still has >= 25 meter
+  const persistentPiece = boardPieces.find((p) => p.id === supporter.pieceId);
+  if (persistentPiece) {
+    if (persistentPiece.meter < TACTICAL_INTERVENTION_METER_COST) {
+      supporter.canIntervene = false;
+      supporter.meter = persistentPiece.meter;
+      return null;
+    }
+    // Deduct 25 persistent tactical meter from the supporting piece!
+    persistentPiece.meter = Math.max(0, persistentPiece.meter - TACTICAL_INTERVENTION_METER_COST);
+    supporter.meter = persistentPiece.meter;
+  } else {
+    if (supporter.meter < TACTICAL_INTERVENTION_METER_COST) return null;
+    supporter.meter = Math.max(0, supporter.meter - TACTICAL_INTERVENTION_METER_COST);
+  }
+
+  supporter.canIntervene = false;
+  caller.interventionUsed = true;
+  caller.selectedSupporterIndex = chosenIdx;
+
+  soundEngine.playTacticalIntervention(supporter.isCrossDimensional);
+
+  const riftPrefix =
+    supporter.riftType === 'ANA_PLUS_W'
+      ? '4D ANA (+W) RIFT · '
+      : supporter.riftType === 'KATA_MINUS_W'
+      ? '4D KATA (-W) RIFT · '
+      : supporter.riftType === 'ASTRAL_PLUS_Z'
+      ? '4D ASTRAL (+Z) RIFT · '
+      : 'TACTICAL SUPPORT · ';
+
+  const hexColorStr = `#${supporter.riftColorHex.toString(16).padStart(6, '0')}`;
+  onCallout({
+    text: `${riftPrefix}${supporter.interventionName.toUpperCase()}!`,
+    subtext: `${ARCHETYPES[supporter.type].chessName.toUpperCase()} INTERVENES (${supporter.vectorLabel}) · -25 METER`,
+    x: caller.x,
+    y: 2.38,
+    color: hexColorStr,
+  });
+
+  return { ...supporter };
+}
+
+/**
+ * Applies the actual archetype-specific combat state changes (HP, guard, hitstun, launch, or Sovereign Aegis)
+ * at the climax of the 0.75s Tactical Intervention sequence!
+ */
+export function applyTacticalInterventionImpact(
+  caller: FighterRuntime,
+  opponent: FighterRuntime,
+  supporter: TacticalSupporter,
+  events: CombatStepEvents,
+  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
+) {
+  if (opponent.hp <= 0 || caller.hp <= 0) return;
+
+  const type = supporter.type;
+  const colorHex = supporter.riftColorHex;
+
+  if (type === 'p') {
+    // Pawn — Desperate Vanguard: Rushes in with a quick spear jab and interrupts the enemy's momentum!
+    const dmg = 14;
+    opponent.hp = Math.max(0, opponent.hp - dmg);
+    opponent.guardGauge = Math.max(0, opponent.guardGauge - 18);
+    opponent.action = 'hitstun';
+    opponent.actionTimerMs = 0;
+    opponent.actionDurationMs = 520;
+    opponent.superArmorActive = false;
+    opponent.wPhaseTimerMs = 0;
+    opponent.wPhaseOffset = 0;
+    opponent.vx = caller.facing * 2.8;
+    opponent.vy = 1.6;
+    opponent.hitCount += 1;
+    opponent.comboDamageAccum += dmg;
+    opponent.hitFlashTimerMs = 150;
+
+    soundEngine.playHit('heavy');
+    events.cameraShake = Math.max(events.cameraShake, 0.26);
+    events.sparkWorldPos = { x: opponent.x, y: 1.05, color: colorHex };
+    onCallout({
+      text: 'DESPERATE VANGUARD HIT!',
+      subtext: 'MOMENTUM INTERRUPTED · -14 HP · -18 GUARD',
+      x: opponent.x,
+      y: 1.95,
+      color: '#fde047',
+    });
+  } else if (type === 'n') {
+    // Knight — Meteor Lancer: Leaps into the arena from an elevated angle, landing a launching strike!
+    const dmg = 18;
+    opponent.hp = Math.max(0, opponent.hp - dmg);
+    opponent.guardGauge = Math.max(0, opponent.guardGauge - 24);
+    opponent.action = 'knockdown';
+    opponent.actionTimerMs = 0;
+    opponent.actionDurationMs = 640;
+    opponent.superArmorActive = false;
+    opponent.wPhaseTimerMs = 0;
+    opponent.wPhaseOffset = 0;
+    opponent.vx = caller.facing * 3.4;
+    opponent.vy = 7.4; // High aerial launch!
+    opponent.hitCount += 1;
+    opponent.comboDamageAccum += dmg;
+    opponent.hitFlashTimerMs = 170;
+
+    soundEngine.playHit('special');
+    events.cameraShake = Math.max(events.cameraShake, 0.36);
+    events.slowMoDurationMs = 180;
+    events.sparkWorldPos = { x: opponent.x, y: 1.35, color: colorHex };
+    onCallout({
+      text: 'METEOR LANCER LAUNCH!',
+      subtext: 'AERIAL DIVE IMPACT · -18 HP · AIR JUGGLE READY',
+      x: opponent.x,
+      y: 2.15,
+      color: '#38bdf8',
+    });
+  } else if (type === 'b') {
+    // Bishop — Diagonal Judgment: Fires a luminous glaive beam along its supporting diagonal!
+    const isBlocking = opponent.action === 'block';
+    const dmg = isBlocking ? 9 : 17;
+    opponent.hp = Math.max(0, opponent.hp - dmg);
+    opponent.guardGauge = Math.max(0, opponent.guardGauge - 28);
+    opponent.action = 'hitstun';
+    opponent.actionTimerMs = 0;
+    opponent.actionDurationMs = 480;
+    opponent.superArmorActive = false;
+    opponent.wPhaseTimerMs = 0;
+    opponent.wPhaseOffset = 0;
+    opponent.vx = caller.facing * 3.8;
+    opponent.hitCount += 1;
+    opponent.comboDamageAccum += dmg;
+    opponent.hitFlashTimerMs = 160;
+
+    // Bishop also sanctifies/heals the calling warrior for +8 HP!
+    caller.hp = Math.min(caller.maxHp, caller.hp + 8);
+    caller.recoverableHp = Math.max(caller.recoverableHp, caller.hp);
+
+    soundEngine.playHit('special');
+    events.cameraShake = Math.max(events.cameraShake, 0.3);
+    events.sparkWorldPos = { x: opponent.x, y: 1.2, color: colorHex };
+    onCallout({
+      text: 'DIAGONAL JUDGMENT BEAM!',
+      subtext: `-${dmg} HP PIERCE · +8 HP SANCTIFIED HEAL`,
+      x: opponent.x,
+      y: 2.1,
+      color: '#c084fc',
+    });
+  } else if (type === 'r') {
+    // Rook — Siege Intervention: Crushing shockwave with significant guard damage and knockback!
+    const dmg = 19;
+    opponent.hp = Math.max(0, opponent.hp - dmg);
+    opponent.guardGauge = Math.max(0, opponent.guardGauge - 55);
+    const guardShattered = opponent.guardGauge <= 0;
+    if (guardShattered) {
+      opponent.guardGauge = 45;
+    }
+    opponent.action = 'knockdown';
+    opponent.actionTimerMs = 0;
+    opponent.actionDurationMs = guardShattered ? 760 : 620;
+    opponent.superArmorActive = false;
+    opponent.wPhaseTimerMs = 0;
+    opponent.wPhaseOffset = 0;
+    opponent.vx = caller.facing * 6.4;
+    opponent.vy = 4.0;
+    opponent.hitCount += 1;
+    opponent.comboDamageAccum += dmg;
+    opponent.hitFlashTimerMs = 190;
+
+    soundEngine.playHit('special');
+    events.cameraShake = Math.max(events.cameraShake, 0.45);
+    events.slowMoDurationMs = 210;
+    events.sparkWorldPos = { x: opponent.x, y: 0.9, color: colorHex };
+    onCallout({
+      text: guardShattered ? 'SIEGE GUARD SHATTER!' : 'SIEGE SHOCKWAVE!',
+      subtext: `-${dmg} HP · -55 GUARD · HEAVY KNOCKBACK`,
+      x: opponent.x,
+      y: 2.15,
+      color: '#f43f5e',
+    });
+  } else if (type === 'q') {
+    // Queen — Royal Blade Storm: Projects a brief swarm of crown blades toward the opposing fighter!
+    const dmg = 22;
+    opponent.hp = Math.max(0, opponent.hp - dmg);
+    opponent.guardGauge = Math.max(0, opponent.guardGauge - 32);
+    opponent.action = 'hitstun';
+    opponent.actionTimerMs = 0;
+    opponent.actionDurationMs = 580;
+    opponent.superArmorActive = false;
+    opponent.wPhaseTimerMs = 0;
+    opponent.wPhaseOffset = 0;
+    opponent.vx = caller.facing * 4.2;
+    opponent.vy = 4.4;
+    opponent.hitCount += 3;
+    opponent.comboDamageAccum += dmg;
+    opponent.hitFlashTimerMs = 190;
+
+    soundEngine.playHit('special');
+    events.cameraShake = Math.max(events.cameraShake, 0.38);
+    events.slowMoDurationMs = 200;
+    events.sparkWorldPos = { x: opponent.x, y: 1.25, color: colorHex };
+    onCallout({
+      text: 'ROYAL BLADE STORM!',
+      subtext: '+3 HIT CROWN BARRAGE · -22 HP',
+      x: opponent.x,
+      y: 2.2,
+      color: '#f59e0b',
+    });
+  } else if (type === 'k') {
+    // King — Sovereign Aegis: Projects a defensive shield that absorbs 75% of the next incoming hit!
+    caller.sovereignAegisActive = true;
+    caller.guardGauge = Math.min(100, caller.guardGauge + 35);
+    caller.hp = Math.min(caller.maxHp, caller.hp + 10);
+    caller.recoverableHp = Math.max(caller.recoverableHp, caller.hp);
+
+    // Also emits a royal ward pulse if the enemy is close
+    if (Math.abs(opponent.x - caller.x) <= 3.6) {
+      opponent.hp = Math.max(0, opponent.hp - 10);
+      opponent.vx = caller.facing * 3.8;
+      opponent.action = 'hitstun';
+      opponent.actionTimerMs = 0;
+      opponent.actionDurationMs = 360;
+    }
+
+    soundEngine.playBulletTimeParry();
+    events.cameraShake = Math.max(events.cameraShake, 0.24);
+    events.sparkWorldPos = { x: caller.x, y: 1.15, color: 0xfde047 };
+    onCallout({
+      text: 'SOVEREIGN AEGIS WARD ACTIVE!',
+      subtext: 'ABSORBS 75% NEXT HIT · +35 GUARD · +10 HP',
+      x: caller.x,
+      y: 2.15,
+      color: '#fde047',
+    });
+  }
+
+  // Offensive Interventions also inflict their archetype's signature Status Effect for 3.2s!
+  if (type !== 'k' && opponent.hp > 0) {
+    applyFighterStatusEffect(
+      opponent,
+      ARCHETYPES[type].special.statusEffect,
+      3200,
+      onCallout
+    );
+  }
 }
 
 function findMatchingCombo(
@@ -310,7 +656,7 @@ export function triggerFighterDash(fighter: FighterRuntime, forward: boolean) {
   fighter.actionTimerMs = 0;
   fighter.actionDurationMs = 210;
   const dir = forward ? fighter.facing : -fighter.facing;
-  fighter.vx = dir * fighter.spec.dashSpeed;
+  fighter.vx = dir * fighter.spec.dashSpeed * getFighterSpeedMultiplier(fighter);
   if (!forward) {
     fighter.invulnerableTimerMs = 110;
   }
@@ -329,7 +675,7 @@ export function triggerFighterJump(fighter: FighterRuntime) {
   fighter.action = 'jump';
   fighter.actionTimerMs = 0;
   fighter.actionDurationMs = 550;
-  fighter.vy = fighter.spec.jumpForce;
+  fighter.vy = fighter.spec.jumpForce * (fighter.statusSlowTimerMs > 0 ? 0.78 : 1.0);
 }
 
 export interface CombatStepEvents {
@@ -337,6 +683,13 @@ export interface CombatStepEvents {
   hitstopMs: number;
   slowMoDurationMs: number;
   sparkWorldPos: { x: number; y: number; color: number } | null;
+  parryImpact: {
+    x: number;
+    y: number;
+    facing: 1 | -1;
+    defenderFaction: Faction;
+    defenderIsAttacker: boolean;
+  } | null;
 }
 
 export function stepCombatSimulation(
@@ -352,6 +705,7 @@ export function stepCombatSimulation(
     hitstopMs: 0,
     slowMoDurationMs: 0,
     sparkWorldPos: null,
+    parryImpact: null,
   };
 
   const fighters = [f1, f2];
@@ -422,12 +776,51 @@ export function stepCombatSimulation(
     return events;
   }
 
-  // 1. Update timers, 4D phase timers, physics, and facing
+  // 1. Update timers, status effects, 4D phase timers, physics, and facing
   for (let i = 0; i < 2; i++) {
     const f = fighters[i];
     const opp = fighters[1 - i];
 
-    f.actionTimerMs += dtMs;
+    // Slow status reduces attack frame progression speed by 28%
+    const isAttackFrame =
+      f.action.startsWith('light') ||
+      f.action.startsWith('heavy') ||
+      f.action === 'combo_finisher';
+    const frameTempoMult = f.statusSlowTimerMs > 0 && isAttackFrame ? 0.72 : 1.0;
+    f.actionTimerMs += dtMs * frameTempoMult;
+
+    // Tick active Status Effects ('burn', 'slow', 'weakened')
+    if (f.statusBurnTimerMs > 0) {
+      f.statusBurnTimerMs = Math.max(0, f.statusBurnTimerMs - dtMs);
+      f.statusBurnTickAccumMs += dtMs;
+      if (f.statusBurnTickAccumMs >= 650) {
+        f.statusBurnTickAccumMs -= 650;
+        if (f.hp > 1) {
+          const burnDmg = 4;
+          f.hp = Math.max(1, f.hp - burnDmg);
+          f.recoverableHp = Math.max(f.hp, f.recoverableHp - burnDmg * 1.4);
+          f.guardGauge = Math.max(0, f.guardGauge - 3.5);
+          f.hitFlashTimerMs = Math.max(f.hitFlashTimerMs, 60);
+          events.sparkWorldPos = { x: f.x, y: 1.15, color: 0xf97316 };
+          onCallout({
+            text: '🔥 BURN SCORCH (-4 HP)',
+            x: f.x,
+            y: 1.68,
+            color: '#fb923c',
+          });
+        }
+      }
+    } else {
+      f.statusBurnTickAccumMs = 0;
+    }
+
+    if (f.statusSlowTimerMs > 0) {
+      f.statusSlowTimerMs = Math.max(0, f.statusSlowTimerMs - dtMs);
+    }
+    if (f.statusWeakenedTimerMs > 0) {
+      f.statusWeakenedTimerMs = Math.max(0, f.statusWeakenedTimerMs - dtMs);
+    }
+
     if (f.comboWindowTimerMs > 0) {
       f.comboWindowTimerMs = Math.max(0, f.comboWindowTimerMs - dtMs);
       if (f.comboWindowTimerMs === 0) {
@@ -563,6 +956,7 @@ export function stepCombatSimulation(
       f.action !== 'walk_back' &&
       f.action !== 'block' &&
       f.action !== 'victory' &&
+      f.action !== 'victory_taunt' &&
       f.action !== 'defeat' &&
       f.actionTimerMs >= f.actionDurationMs
     ) {
@@ -774,10 +1168,22 @@ function resolveStrikeImpact(
     def.hp = Math.min(def.maxHp, def.hp + 5);
     atk.vx = -atk.facing * 3.5;
 
+    // Exact point of blade-on-shield impact along the defender's forward guard plane
+    const impactX = def.x + def.facing * Math.min(0.52, Math.abs(atk.x - def.x) * 0.46);
+    const impactY = 1.18 + (def.y * 0.65 + atk.y * 0.35) * 0.72;
+
     soundEngine.playBulletTimeParry();
-    events.cameraShake = 0.28;
+    events.cameraShake = 0.32;
+    events.hitstopMs = 55;
     events.slowMoDurationMs = 280;
-    events.sparkWorldPos = { x: (atk.x + def.x) * 0.5, y: 1.1, color: 0xfef08a };
+    events.sparkWorldPos = { x: impactX, y: impactY, color: 0xfef08a };
+    events.parryImpact = {
+      x: impactX,
+      y: impactY,
+      facing: def.facing,
+      defenderFaction: def.piece.faction,
+      defenderIsAttacker: def.isAttacker,
+    };
     onCallout({
       text: 'HIGH-NOON PERFECT PARRY!',
       subtext: 'BULLET-TIME RIPOSTE · +24% METER',
@@ -789,11 +1195,22 @@ function resolveStrikeImpact(
   }
 
   if (isBlocking && strike.effect !== 'guard_crush') {
+    const defWeakGuardMult = def.statusWeakenedTimerMs > 0 ? 1.25 : 1.0;
     const finalChip = strike.effect === 'pierce' ? Math.round(strike.damage * 0.5) : strike.chipDamage;
-    def.hp = Math.max(1, def.hp - finalChip);
-    def.guardGauge = Math.max(0, def.guardGauge - strike.damage * 1.3);
+    def.hp = Math.max(1, def.hp - Math.round(finalChip * defWeakGuardMult));
+    def.guardGauge = Math.max(0, def.guardGauge - strike.damage * 1.3 * defWeakGuardMult);
     def.meter = Math.min(100, def.meter + 6);
     def.vx = atk.facing * strike.knockback * 0.55;
+
+    // Even if blocked, the final hit of a Special Move inflicts a half-duration status effect through the guard!
+    if (strike.isSpecial && atk.specialHitsRemaining === 0) {
+      applyFighterStatusEffect(
+        def,
+        atk.spec.special.statusEffect,
+        Math.round(atk.spec.special.statusDurationMs * 0.6),
+        onCallout
+      );
+    }
 
     if (def.guardGauge <= 0) {
       def.guardGauge = 50;
@@ -814,8 +1231,36 @@ function resolveStrikeImpact(
     return;
   }
 
+  // Check King's Sovereign Aegis Intervention Shield (absorbs 75% of incoming hit with zero hitstun!)
+  if (def.sovereignAegisActive) {
+    def.sovereignAegisActive = false;
+    const absorbedDamage = Math.max(1, Math.round(strike.damage * 0.25));
+    def.hp = Math.max(1, def.hp - absorbedDamage);
+    def.meter = Math.min(100, def.meter + 18);
+    atk.vx = -atk.facing * 4.2;
+
+    soundEngine.playBlock(true);
+    events.cameraShake = 0.26;
+    events.slowMoDurationMs = 200;
+    events.sparkWorldPos = { x: def.x, y: 1.15, color: 0xfde047 };
+    onCallout({
+      text: 'SOVEREIGN AEGIS ABSORPTION!',
+      subtext: `75% DAMAGE MITIGATED (-${absorbedDamage} HP) · ZERO HITSTUN`,
+      x: def.x,
+      y: 2.15,
+      color: '#fde047',
+    });
+    return;
+  }
+
+  // Apply Weakened Status Modifiers (-25% outgoing damage when attacker is Weakened; +25% incoming damage when defender is Weakened)
+  const atkWeakenedMult = atk.statusWeakenedTimerMs > 0 ? 0.75 : 1.0;
+  const defWeakenedMult = def.statusWeakenedTimerMs > 0 ? 1.25 : 1.0;
   const scaling = Math.max(0.45, 1 - def.hitCount * 0.08);
-  const actualDamage = Math.max(2, Math.round(strike.damage * scaling));
+  const actualDamage = Math.max(
+    2,
+    Math.round(strike.damage * scaling * atkWeakenedMult * defWeakenedMult)
+  );
 
   def.hp = Math.max(0, def.hp - actualDamage);
   def.hitCount += 1;
@@ -824,6 +1269,16 @@ function resolveStrikeImpact(
   def.meter = Math.min(100, def.meter + 8);
   def.wPhaseTimerMs = 0;
   def.wPhaseOffset = 0;
+
+  // Special Move Hit applies the Archetype's Signature Status Effect ('burn', 'slow', or 'weakened')!
+  if (strike.isSpecial && def.hp > 0) {
+    applyFighterStatusEffect(
+      def,
+      atk.spec.special.statusEffect,
+      atk.spec.special.statusDurationMs,
+      onCallout
+    );
+  }
 
   if (atk.hp < atk.recoverableHp) {
     atk.hp = Math.min(atk.recoverableHp, atk.hp + Math.ceil(actualDamage * 0.15));
@@ -890,7 +1345,9 @@ export function updateFighterAI(
   opponent: FighterRuntime,
   dtSeconds: number,
   nowMs: number,
-  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void
+  onCallout: (c: Omit<CombatCallout, 'id' | 'createdAt'>) => void,
+  onRequestIntervention?: (caller: FighterRuntime, supporterIndex: number) => void,
+  isDemoShowcase: boolean = false
 ) {
   if (
     ai.hp <= 0 ||
@@ -899,6 +1356,14 @@ export function updateFighterAI(
     ai.action === 'knockdown' ||
     ai.action === 'special'
   ) {
+    return;
+  }
+
+  // During a Simultaneous Blade Clash Lock, AI actively mashes weapon clash power!
+  if (ai.action === 'blade_clash' && ai.clashLockTimerMs > 0) {
+    if (Math.random() < dtSeconds * (isDemoShowcase ? 8.5 : 5.5)) {
+      triggerFighterAttack(ai, Math.random() < 0.4 ? 'H' : 'L', onCallout);
+    }
     return;
   }
 
@@ -911,15 +1376,36 @@ export function updateFighterAI(
     opponent.action === 'combo_finisher' ||
     opponent.action === 'special';
 
+  // AI Tactical Intervention Decision:
+  // If AI hasn't used its intervention yet and has an eligible supporter (meter >= 25),
+  // summon it when threatened (low HP / enemy attacking) or when pressing an offensive window!
+  if (!ai.interventionUsed && onRequestIntervention) {
+    const readyIdx = ai.supporters.findIndex((s) => s.canIntervene);
+    if (readyIdx !== -1) {
+      const isThreatened = ai.hp < ai.maxHp * 0.78 || ai.guardGauge < 60 || oppAttacking;
+      const inOffensiveWindow = dist <= 4.0 && opponent.hp < opponent.maxHp * 0.92;
+      const baseRate = isDemoShowcase ? 1.85 : 1.0;
+      const triggerChance =
+        (isThreatened ? dtSeconds * 1.5 : inOffensiveWindow ? dtSeconds * 0.85 : dtSeconds * 0.38) *
+        baseRate;
+      if (Math.random() < triggerChance) {
+        onRequestIntervention(ai, readyIdx);
+        return;
+      }
+    }
+  }
+
   if (oppAttacking && dist < opponent.spec.heavy.range * 1.15) {
     if (ai.action === 'idle' || ai.action === 'walk_fwd' || ai.action === 'walk_back') {
-      // AI can either block OR 4D Phase-Shift through the attack!
-      if (ai.wPhaseCooldownMs <= 0 && Math.random() < 0.16) {
+      // AI can either 4D Phase-Shift through the attack OR guard/parry!
+      if (ai.wPhaseCooldownMs <= 0 && Math.random() < (isDemoShowcase ? 0.28 : 0.16)) {
         triggerFighter4DPhaseShift(ai, onCallout);
         return;
       }
-      if (Math.random() < 0.36) {
-        ai.lastBlockPressTime = nowMs - 80;
+      if (Math.random() < (isDemoShowcase ? 0.46 : 0.36)) {
+        // Occasionally land a crisp High-Noon Perfect Parry!
+        const isPerfectParry = Math.random() < (isDemoShowcase ? 0.45 : 0.25);
+        ai.lastBlockPressTime = isPerfectParry ? nowMs : nowMs - 220;
         ai.action = 'block';
         ai.vx = 0;
         return;
@@ -929,9 +1415,10 @@ export function updateFighterAI(
     ai.action = 'idle';
   }
 
+  // Chain into 3-step Archetype Combos!
   const isAiAttacking = ai.action.startsWith('light') || ai.action.startsWith('heavy');
-  if (isAiAttacking && ai.actionTimerMs >= ai.actionDurationMs * 0.48) {
-    if (dist <= ai.spec.heavy.range * 1.15 && Math.random() < 0.45) {
+  if (isAiAttacking && ai.actionTimerMs >= ai.actionDurationMs * 0.44) {
+    if (dist <= ai.spec.heavy.range * 1.2 && Math.random() < (isDemoShowcase ? 0.72 : 0.48)) {
       const targetRecipe = ai.spec.combos[Math.floor(Math.random() * ai.spec.combos.length)];
       const nextStep = targetRecipe.sequence[ai.comboBuffer.length] || 'H';
       triggerFighterAttack(ai, nextStep, onCallout);
@@ -943,33 +1430,118 @@ export function updateFighterAI(
     return;
   }
 
+  // Unleash Archetype Special when meter is ready!
   if (
     ai.meter >= ai.spec.special.meterCost &&
-    dist <= ai.spec.special.range * 0.88 &&
-    Math.random() < dtSeconds * 2.4
+    dist <= ai.spec.special.range * 0.92 &&
+    Math.random() < dtSeconds * (isDemoShowcase ? 3.8 : 2.4)
   ) {
     triggerFighterAttack(ai, 'S', onCallout);
     return;
   }
 
-  if (dist > preferredRange + 0.35) {
-    if (dist > 3.6 && Math.random() < dtSeconds * 1.5) {
+  // Use 4D Temporal Echo Clone (x, y, z, t) pincer attack when mid-close range!
+  if (
+    ai.temporalEchoTimerMs <= 0 &&
+    ai.meter >= 35 &&
+    dist <= 2.9 &&
+    Math.random() < dtSeconds * (isDemoShowcase ? 1.35 : 0.55)
+  ) {
+    triggerFighterTemporalEcho(ai, onCallout);
+    return;
+  }
+
+  const aiSpeedMult = getFighterSpeedMultiplier(ai);
+  if (dist > preferredRange + 0.32) {
+    if (dist > 3.2 && Math.random() < dtSeconds * (isDemoShowcase ? 2.4 : 1.5)) {
       triggerFighterDash(ai, true);
     } else {
       ai.action = 'walk_fwd';
-      ai.vx = ai.facing * ai.spec.walkSpeed;
+      ai.vx = ai.facing * ai.spec.walkSpeed * aiSpeedMult * (isDemoShowcase ? 1.15 : 1.0);
     }
   } else {
     ai.vx = 0;
     const roll = Math.random();
-    if (roll < dtSeconds * 4.2) {
-      const attackType: AttackInput = Math.random() < 0.65 ? 'L' : 'H';
+    const atkFreq = isDemoShowcase ? 6.5 : 4.2;
+    if (roll < dtSeconds * atkFreq) {
+      const attackType: AttackInput = Math.random() < 0.62 ? 'L' : 'H';
       triggerFighterAttack(ai, attackType, onCallout);
-    } else if (roll < dtSeconds * 5.0) {
+    } else if (roll < dtSeconds * (atkFreq + 0.8)) {
       ai.action = 'walk_back';
-      ai.vx = -ai.facing * ai.spec.walkSpeed * 0.75;
+      ai.vx = -ai.facing * ai.spec.walkSpeed * aiSpeedMult * 0.75;
     } else {
       ai.action = 'idle';
     }
   }
 }
+
+/**
+ * Initiates the archetype-specific Victory Taunt choreography for the winning warrior
+ * and collapses the defeated warrior at the start of FIGHT_OUTRO.
+ */
+export function triggerVictoryTaunt(
+  winner: FighterRuntime,
+  loser: FighterRuntime
+): VictoryTauntSpec {
+  const taunt = winner.spec.victoryTaunt;
+  winner.action = 'victory_taunt';
+  winner.actionTimerMs = 0;
+  winner.actionDurationMs = taunt.durationMs;
+  winner.hasHitThisAction = false; // used to trigger mid-taunt climax VFX once!
+  winner.vx = 0;
+  winner.vy = 0;
+  winner.y = 0;
+  winner.wPhaseTimerMs = 0;
+  winner.wPhaseOffset = 0;
+  winner.statusBurnTimerMs = 0;
+  winner.statusSlowTimerMs = 0;
+  winner.statusWeakenedTimerMs = 0;
+  winner.facing = loser.x >= winner.x ? 1 : -1;
+
+  loser.action = 'defeat';
+  loser.actionTimerMs = 0;
+  loser.actionDurationMs = taunt.durationMs;
+  loser.vx = 0;
+  loser.vy = 0;
+  loser.y = 0;
+  loser.wPhaseTimerMs = 0;
+  loser.wPhaseOffset = 0;
+
+  return taunt;
+}
+
+/**
+ * Advances the Victory Taunt timer during FIGHT_OUTRO and signals when the archetype's
+ * signature mid-taunt flourish climax occurs (for synchronized arena sparks/shockwaves).
+ */
+export function stepVictoryTaunt(
+  winner: FighterRuntime,
+  loser: FighterRuntime,
+  dtSeconds: number
+): { triggeredClimaxVFX: boolean; climaxColorHex: number } {
+  const dtMs = dtSeconds * 1000;
+  if (winner.action !== 'victory_taunt') {
+    winner.action = 'victory_taunt';
+    winner.actionDurationMs = winner.spec.victoryTaunt.durationMs;
+  }
+
+  winner.actionTimerMs = Math.min(winner.actionDurationMs, winner.actionTimerMs + dtMs);
+  loser.actionTimerMs = Math.min(loser.actionDurationMs, loser.actionTimerMs + dtMs);
+
+  let triggeredClimaxVFX = false;
+  const progress =
+    winner.actionDurationMs > 0 ? winner.actionTimerMs / winner.actionDurationMs : 0;
+
+  // Trigger the archetype's climax flourish impact at 42% through the Victory Taunt!
+  if (!winner.hasHitThisAction && progress >= 0.42) {
+    winner.hasHitThisAction = true;
+    triggeredClimaxVFX = true;
+  }
+
+  return {
+    triggeredClimaxVFX,
+    climaxColorHex: winner.spec.victoryTaunt.flourishColorHex,
+  };
+}
+
+

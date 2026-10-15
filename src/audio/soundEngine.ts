@@ -1,19 +1,305 @@
+export type MusicMood = 'CHESS' | 'ALTERNATE_TIMELINE' | 'REALM' | 'COMBAT';
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
-  public muted: boolean = false;
+  private _muted: boolean = false;
+
+  // Minimalist Generative Soundtrack state
+  private musicStarted: boolean = false;
+  private musicTimerId: number | null = null;
+  private musicMasterGain: GainNode | null = null;
+  private delayNode: DelayNode | null = null;
+  private delayFeedback: GainNode | null = null;
+  private delayFilter: BiquadFilterNode | null = null;
+
+  private stepIndex: number = 0;
+  private barIndex: number = 0;
+  private currentMood: MusicMood = 'CHESS';
+
+  public get muted(): boolean {
+    return this._muted;
+  }
+
+  public set muted(value: boolean) {
+    this._muted = value;
+    if (this.musicMasterGain && this.ctx) {
+      const now = this.ctx.currentTime;
+      this.musicMasterGain.gain.cancelScheduledValues(now);
+      this.musicMasterGain.gain.setTargetAtTime(value ? 0.0001 : 0.22, now, 0.08);
+    }
+    if (!value) {
+      this.startMusic();
+    }
+  }
+
+  public setMusicMood(mood: MusicMood) {
+    this.currentMood = mood;
+  }
 
   private getContext(): AudioContext | null {
-    if (this.muted) return null;
+    if (this._muted) return null;
     if (!this.ctx && typeof window !== 'undefined') {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioCtx) {
         this.ctx = new AudioCtx();
+        this.setupMusicBus(this.ctx);
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
     }
+    if (this.ctx && !this.musicStarted && !this._muted) {
+      this.startMusic();
+    }
     return this.ctx;
+  }
+
+  private setupMusicBus(ctx: AudioContext) {
+    // Master gain for minimalist music (kept tasteful & unobtrusive beneath SFX)
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(this._muted ? 0.0001 : 0.22, ctx.currentTime);
+    master.connect(ctx.destination);
+    this.musicMasterGain = master;
+
+    // Atmospheric tape-style feedback delay for mysterious spatial depth
+    const delay = ctx.createDelay(2.0);
+    delay.delayTime.setValueAtTime(0.4125, ctx.currentTime); // Dotted-eighth hypnotic echo
+
+    const feedback = ctx.createGain();
+    feedback.gain.setValueAtTime(0.38, ctx.currentTime);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1650, ctx.currentTime);
+
+    const wetGain = ctx.createGain();
+    wetGain.gain.setValueAtTime(0.34, ctx.currentTime);
+
+    delay.connect(filter);
+    filter.connect(feedback);
+    feedback.connect(delay);
+    filter.connect(wetGain);
+    wetGain.connect(master);
+
+    this.delayNode = delay;
+    this.delayFeedback = feedback;
+    this.delayFilter = filter;
+  }
+
+  /**
+   * Starts the minimalist, repetitive, mysterious generative score.
+   * Inspired by Philip Glass / dark cosmic chamber minimalism:
+   * - Hypnotic 8-step ostinato arpeggios in D minoradd9 / Bb Lydian #5 / G Dorian / A Phrygian
+   * - Deep, slow-breathing sub-cello drone on each bar boundary
+   * - Sparse crystalline glass-harmonica overtones floating in the delay network
+   */
+  public startMusic() {
+    if (this.musicStarted || typeof window === 'undefined') return;
+    if (!this.ctx) {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      this.ctx = new AudioCtx();
+      this.setupMusicBus(this.ctx);
+    }
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+
+    this.musicStarted = true;
+    this.scheduleNextMusicStep();
+  }
+
+  private scheduleNextMusicStep() {
+    if (!this.musicStarted) return;
+
+    // Step interval in ms based on current mood (repetitive, steady hypnotic pulse)
+    const stepMs =
+      this.currentMood === 'COMBAT'
+        ? 235
+        : this.currentMood === 'REALM'
+        ? 310
+        : this.currentMood === 'ALTERNATE_TIMELINE'
+        ? 265
+        : 275;
+
+    this.musicTimerId = window.setTimeout(() => {
+      if (!this._muted && this.ctx && this.ctx.state === 'running' && this.musicMasterGain) {
+        this.triggerMinimalistStep(this.ctx, this.musicMasterGain);
+      }
+      this.scheduleNextMusicStep();
+    }, stepMs);
+  }
+
+  private triggerMinimalistStep(ctx: AudioContext, dest: AudioNode) {
+    const now = ctx.currentTime;
+    const step = this.stepIndex % 8;
+    const progressionIndex = this.barIndex % 4;
+
+    // 4-bar mysterious minimalist harmonic cycle (frequencies in Hz):
+    // Bar 0: D minor add9 (D3, A3, E4, F4, A3, D4, E4, F4)
+    // Bar 1: Bb Major7 #11 (Bb2, F3, C4, D4, F3, A3, C4, E4)
+    // Bar 2: G minor 6 / Dorian (G2, D3, A3, Bb3, D3, E3, A3, D4)
+    // Bar 3: A7 b9 Phrygian Dominant tension (A2, E3, Bb3, C#4, E3, A3, Bb3, E4)
+    const ostinatoPatterns: number[][] = [
+      [146.83, 220.0, 329.63, 349.23, 220.0, 293.66, 329.63, 349.23],
+      [116.54, 174.61, 261.63, 293.66, 174.61, 220.0, 261.63, 329.63],
+      [98.0, 146.83, 220.0, 233.08, 146.83, 164.81, 220.0, 293.66],
+      [110.0, 164.81, 233.08, 277.18, 164.81, 220.0, 233.08, 329.63],
+    ];
+
+    const droneRoots = [73.42, 58.27, 49.0, 55.0]; // D2, Bb1, G1, A1
+    const highBellNotes = [587.33, 659.25, 698.46, 880.0, 523.25]; // D5, E5, F5, A5, C5
+
+    const pattern = ostinatoPatterns[progressionIndex];
+    let noteFreq = pattern[step];
+
+    // Subtle pitch shift in subterranean realms (down a fourth for cavernous gravity)
+    if (this.currentMood === 'REALM') {
+      noteFreq *= 0.75;
+    } else if (this.currentMood === 'ALTERNATE_TIMELINE') {
+      // Slight crystalline transposition (+2 semitones) in alternate timelines
+      noteFreq *= 1.12246;
+    }
+
+    // 1. HYPNOTIC MINIMALIST OSTINATO PLUCK (every step)
+    const osc = ctx.createOscillator();
+    const subOsc = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const env = ctx.createGain();
+
+    osc.type = this.currentMood === 'ALTERNATE_TIMELINE' ? 'sine' : 'triangle';
+    subOsc.type = 'sine';
+
+    osc.frequency.setValueAtTime(noteFreq, now);
+    // Subtle detuned harmonic layer for mysterious warmth
+    subOsc.frequency.setValueAtTime(noteFreq * 0.5, now);
+    osc.detune.setValueAtTime(step % 2 === 0 ? 3 : -3, now);
+
+    filter.type = 'lowpass';
+    const baseCutoff =
+      this.currentMood === 'COMBAT'
+        ? 1450
+        : this.currentMood === 'REALM'
+        ? 720
+        : 980;
+    const accent = step === 0 || step === 3 || step === 6 ? 1.45 : 1.0;
+    filter.frequency.setValueAtTime(baseCutoff * accent, now);
+    filter.frequency.exponentialRampToValueAtTime(240, now + 0.24);
+    filter.Q.setValueAtTime(2.4, now);
+
+    const noteGain = (step === 0 || step === 3 || step === 6 ? 0.16 : 0.1) * (this.currentMood === 'REALM' ? 0.85 : 1.0);
+    env.gain.setValueAtTime(0.001, now);
+    env.gain.linearRampToValueAtTime(noteGain, now + 0.016);
+    env.gain.exponentialRampToValueAtTime(0.0008, now + 0.28);
+
+    const subMix = ctx.createGain();
+    subMix.gain.setValueAtTime(0.35, now);
+
+    osc.connect(filter);
+    subOsc.connect(subMix);
+    subMix.connect(filter);
+    filter.connect(env);
+    env.connect(dest);
+    if (this.delayNode) {
+      env.connect(this.delayNode);
+    }
+
+    osc.start(now);
+    subOsc.start(now);
+    osc.stop(now + 0.3);
+    subOsc.stop(now + 0.3);
+
+    // 2. DEEP MYSTERIOUS SUB-CELLO DRONE SWELL (at step 0 of each 8-step bar)
+    if (step === 0) {
+      const droneFreq =
+        droneRoots[progressionIndex] *
+        (this.currentMood === 'ALTERNATE_TIMELINE' ? 1.12246 : 1.0);
+      const droneOsc1 = ctx.createOscillator();
+      const droneOsc2 = ctx.createOscillator();
+      const droneFilter = ctx.createBiquadFilter();
+      const droneGain = ctx.createGain();
+
+      droneOsc1.type = 'sawtooth';
+      droneOsc2.type = 'triangle';
+      droneOsc1.frequency.setValueAtTime(droneFreq, now);
+      droneOsc2.frequency.setValueAtTime(droneFreq * 1.5, now); // Fifth harmonic
+      droneOsc1.detune.setValueAtTime(-6, now);
+      droneOsc2.detune.setValueAtTime(6, now);
+
+      droneFilter.type = 'lowpass';
+      droneFilter.frequency.setValueAtTime(160, now);
+      droneFilter.frequency.linearRampToValueAtTime(340, now + 1.1);
+      droneFilter.frequency.exponentialRampToValueAtTime(140, now + 2.3);
+
+      droneGain.gain.setValueAtTime(0.001, now);
+      droneGain.gain.linearRampToValueAtTime(0.14, now + 0.65);
+      droneGain.gain.exponentialRampToValueAtTime(0.001, now + 2.35);
+
+      const fifthMix = ctx.createGain();
+      fifthMix.gain.setValueAtTime(0.28, now);
+
+      droneOsc1.connect(droneFilter);
+      droneOsc2.connect(fifthMix);
+      fifthMix.connect(droneFilter);
+      droneFilter.connect(droneGain);
+      droneGain.connect(dest);
+
+      droneOsc1.start(now);
+      droneOsc2.start(now);
+      droneOsc1.stop(now + 2.4);
+      droneOsc2.stop(now + 2.4);
+    }
+
+    // 3. SPARSE ETHEREAL GLASS HARMONICA / BELL OVERTONE (on step 4 of odd bars)
+    if (step === 4 && this.barIndex % 2 === 1) {
+      const bellFreq =
+        highBellNotes[(this.barIndex + progressionIndex) % highBellNotes.length];
+      const bellOsc = ctx.createOscillator();
+      const bellGain = ctx.createGain();
+
+      bellOsc.type = 'sine';
+      bellOsc.frequency.setValueAtTime(bellFreq, now);
+      bellOsc.frequency.linearRampToValueAtTime(bellFreq * 0.998, now + 1.1);
+
+      bellGain.gain.setValueAtTime(0.001, now);
+      bellGain.gain.linearRampToValueAtTime(0.055, now + 0.08);
+      bellGain.gain.exponentialRampToValueAtTime(0.0005, now + 1.25);
+
+      bellOsc.connect(bellGain);
+      bellGain.connect(dest);
+      if (this.delayNode) {
+        bellGain.connect(this.delayNode);
+      }
+
+      bellOsc.start(now);
+      bellOsc.stop(now + 1.3);
+    }
+
+    // 4. SUBTLE RITUAL HEARTBEAT PULSE DURING COMBAT DUELS (on steps 0 and 3)
+    if (this.currentMood === 'COMBAT' && (step === 0 || step === 3)) {
+      const pulseOsc = ctx.createOscillator();
+      const pulseGain = ctx.createGain();
+      pulseOsc.type = 'sine';
+      pulseOsc.frequency.setValueAtTime(step === 0 ? 85 : 68, now);
+      pulseOsc.frequency.exponentialRampToValueAtTime(28, now + 0.16);
+
+      pulseGain.gain.setValueAtTime(step === 0 ? 0.16 : 0.1, now);
+      pulseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+      pulseOsc.connect(pulseGain);
+      pulseGain.connect(dest);
+      pulseOsc.start(now);
+      pulseOsc.stop(now + 0.19);
+    }
+
+    this.stepIndex += 1;
+    if (this.stepIndex % 8 === 0) {
+      this.barIndex += 1;
+    }
   }
 
   public playChessSelect() {
@@ -410,6 +696,122 @@ class SoundEngine {
       osc.start(t0);
       osc.stop(t0 + 0.36);
     });
+  }
+
+  public playTacticalIntervention(isCrossDimensional: boolean) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // 1. Dimensional Rift Tear / Tactical Horn Blast
+    const hornFreqs = isCrossDimensional
+      ? [293.66, 440.0, 587.33, 880.0] // D4 - A4 - D5 - A5 Quantum Rift Fanfare
+      : [261.63, 392.0, 523.25]; // C4 - G4 - C5 Tactical Vanguard Horn
+
+    hornFreqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = isCrossDimensional ? 'sawtooth' : 'triangle';
+      const t0 = now + idx * 0.038;
+      osc.frequency.setValueAtTime(freq * 0.92, t0);
+      osc.frequency.exponentialRampToValueAtTime(freq, t0 + 0.08);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.04, t0 + 0.38);
+
+      gain.gain.setValueAtTime(0.11 / (idx * 0.4 + 1), t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.44);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.44);
+    });
+  }
+
+  public playRealmPortalTransition(descending: boolean = true) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Deep sub-dimensional rift resonance + harmonic shimmer
+    const baseFreqs = descending
+      ? [220, 164.81, 110, 73.42]
+      : [110, 164.81, 246.94, 329.63, 440];
+
+    baseFreqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+      const t0 = now + idx * 0.065;
+      osc.frequency.setValueAtTime(descending ? freq * 1.3 : freq * 0.75, t0);
+      osc.frequency.exponentialRampToValueAtTime(freq, t0 + 0.48);
+
+      gain.gain.setValueAtTime(0.12, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.56);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.56);
+    });
+  }
+
+  public playMirrorParityFlip() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Crystalline glass chord inversion
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const t0 = now + idx * 0.035;
+      osc.frequency.setValueAtTime(freq, t0);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.5, t0 + 0.35);
+
+      gain.gain.setValueAtTime(0.09, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.4);
+    });
+  }
+
+  public playCrucibleHazard(isAnvilBuff: boolean = false) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    if (isAnvilBuff) {
+      // Heavy blacksmith anvil ring + harmonic ascend
+      [440, 880, 1320, 1760].forEach((f, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = i === 0 ? 'triangle' : 'sine';
+        osc.frequency.setValueAtTime(f, now);
+        gain.gain.setValueAtTime(0.15 / (i + 1), now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.65);
+      });
+    } else {
+      // Sizzling magma / piston slam crunch
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(140, now);
+      osc.frequency.exponentialRampToValueAtTime(36, now + 0.28);
+      gain.gain.setValueAtTime(0.26, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.32);
+    }
   }
 }
 

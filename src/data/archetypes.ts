@@ -51,6 +51,8 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
       activeMs: 360,
       recoveryMs: 260,
       hits: 3,
+      statusEffect: 'weakened',
+      statusDurationMs: 5000,
     },
     combos: [
       {
@@ -78,6 +80,13 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
         description: 'Heavy shield bash into low spear sweep and leaping helm splitter.',
       },
     ],
+    victoryTaunt: {
+      id: 'taunt_pawn_salute',
+      name: "Squire's Ascendant Salute",
+      quote: 'Even the humblest spear may pierce a crown.',
+      durationMs: 2400,
+      flourishColorHex: 0x38bdf8,
+    },
   },
 
   n: {
@@ -131,6 +140,8 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
       recoveryMs: 280,
       hits: 2,
       unblockable: true,
+      statusEffect: 'slow',
+      statusDurationMs: 4500,
     },
     combos: [
       {
@@ -158,6 +169,13 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
         description: 'Double full-torque jousting charge that shatters defensive stances.',
       },
     ],
+    victoryTaunt: {
+      id: 'taunt_knight_lance_cross',
+      name: 'Tempest Rear & Twin-Lance Cross',
+      quote: 'No wall nor dimension can bar the L-Vector.',
+      durationMs: 2400,
+      flourishColorHex: 0x60a5fa,
+    },
   },
 
   b: {
@@ -210,6 +228,8 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
       activeMs: 400,
       recoveryMs: 270,
       hits: 4,
+      statusEffect: 'burn',
+      statusDurationMs: 4500,
     },
     combos: [
       {
@@ -237,6 +257,13 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
         description: 'Glaive check followed by twin ascending X-beams.',
       },
     ],
+    victoryTaunt: {
+      id: 'taunt_bishop_benediction',
+      name: 'Cathedral Benediction',
+      quote: 'Absolved in the geometry of sacred light.',
+      durationMs: 2400,
+      flourishColorHex: 0xfde047,
+    },
   },
 
   r: {
@@ -290,6 +317,8 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
       activeMs: 460,
       recoveryMs: 320,
       hits: 3,
+      statusEffect: 'slow',
+      statusDurationMs: 4800,
     },
     combos: [
       {
@@ -317,6 +346,13 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
         description: 'Shoulder check into upward maul heave and mid-air fortress slam.',
       },
     ],
+    victoryTaunt: {
+      id: 'taunt_rook_earthshaker',
+      name: 'Earthshaker Bastion Stomp',
+      quote: 'The fortress stands unyielding upon conquered stone.',
+      durationMs: 2400,
+      flourishColorHex: 0xf59e0b,
+    },
   },
 
   q: {
@@ -369,6 +405,8 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
       activeMs: 560,
       recoveryMs: 320,
       hits: 8,
+      statusEffect: 'burn',
+      statusDurationMs: 5000,
     },
     combos: [
       {
@@ -396,6 +434,13 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
         description: 'Pins the target with floating swords before cleaving through with royal fury.',
       },
     ],
+    victoryTaunt: {
+      id: 'taunt_queen_coronation',
+      name: 'Coronation of Eight Blades',
+      quote: 'Every rank, file, and diagonal kneels before the Valkyrie.',
+      durationMs: 2400,
+      flourishColorHex: 0xf43f5e,
+    },
   },
 
   k: {
@@ -449,6 +494,8 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
       activeMs: 500,
       recoveryMs: 310,
       hits: 4,
+      statusEffect: 'weakened',
+      statusDurationMs: 5200,
     },
     combos: [
       {
@@ -476,6 +523,13 @@ export const ARCHETYPES: Record<PieceType, ArchetypeSpec> = {
         description: 'Crushing overhead cleave into rising blade uppercut.',
       },
     ],
+    victoryTaunt: {
+      id: 'taunt_king_decree',
+      name: 'Sovereign Decree: Kneel',
+      quote: 'By royal decree, this square belongs to the Crown.',
+      durationMs: 2400,
+      flourishColorHex: 0xfbbf24,
+    },
   },
 };
 

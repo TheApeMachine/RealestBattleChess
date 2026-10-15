@@ -3,10 +3,54 @@ import {
   BoardCoord,
   ChessPiece,
   Faction,
+  InterventionRiftType,
   MoveOption,
   PieceType,
+  SquareSupportAnalysis,
+  TACTICAL_INTERVENTION_METER_COST,
+  TacticalSupporter,
   UnseenThreatVector,
 } from '../types/game';
+import {
+  evaluatePortalBoardExit,
+  getGatewayAtSquare,
+  getPortalsForRealm,
+  REALM_METADATA,
+} from './realmEngine';
+
+export const INTERVENTION_METADATA: Record<
+  PieceType,
+  { name: string; tagline: string }
+> = {
+  p: {
+    name: 'Desperate Vanguard',
+    tagline: 'Spear Lunge · Interrupts Momentum (-14 HP, -18 Guard)',
+  },
+  n: {
+    name: 'Meteor Lancer',
+    tagline: 'Aerial Dive · Launches Enemy (-18 HP, Air Juggle)',
+  },
+  b: {
+    name: 'Diagonal Judgment',
+    tagline: 'Glaive Beam · Pierces Guard (-17 HP, +8 Ally Heal)',
+  },
+  r: {
+    name: 'Siege Intervention',
+    tagline: 'Crushing Shockwave · Shatters Guard (-19 HP, -55 Guard)',
+  },
+  q: {
+    name: 'Royal Blade Storm',
+    tagline: 'Crown Blade Swarm · Multi-Hit Barrage (-22 HP)',
+  },
+  k: {
+    name: 'Sovereign Aegis',
+    tagline: 'Royal Ward · Absorbs 75% Next Hit & +35 Guard',
+  },
+};
+
+export function getPieceLineageId(piece: ChessPiece): string {
+  return piece.lineageId || piece.id;
+}
 
 export function createInitialBoard(): ChessPiece[] {
   const pieces: ChessPiece[] = [];
@@ -16,8 +60,11 @@ export function createInitialBoard(): ChessPiece[] {
   for (let col = 0; col < 8; col++) {
     const type = backRank[col];
     const spec = ARCHETYPES[type];
+    const id = `b_${type}_${col}`;
     pieces.push({
-      id: `b_${type}_${col}`,
+      id,
+      lineageId: `lineage_${id}`,
+      originTimelineId: 'TL-PRIME',
       type,
       faction: 'b',
       row: 0,
@@ -33,8 +80,11 @@ export function createInitialBoard(): ChessPiece[] {
     });
 
     const pawnSpec = ARCHETYPES.p;
+    const pawnId = `b_p_${col}`;
     pieces.push({
-      id: `b_p_${col}`,
+      id: pawnId,
+      lineageId: `lineage_${pawnId}`,
+      originTimelineId: 'TL-PRIME',
       type: 'p',
       faction: 'b',
       row: 1,
@@ -53,8 +103,11 @@ export function createInitialBoard(): ChessPiece[] {
   // White pieces (Solaris Order) at rows 6 and 7
   for (let col = 0; col < 8; col++) {
     const pawnSpec = ARCHETYPES.p;
+    const pawnId = `w_p_${col}`;
     pieces.push({
-      id: `w_p_${col}`,
+      id: pawnId,
+      lineageId: `lineage_${pawnId}`,
+      originTimelineId: 'TL-PRIME',
       type: 'p',
       faction: 'w',
       row: 6,
@@ -71,8 +124,11 @@ export function createInitialBoard(): ChessPiece[] {
 
     const type = backRank[col];
     const spec = ARCHETYPES[type];
+    const id = `w_${type}_${col}`;
     pieces.push({
-      id: `w_${type}_${col}`,
+      id,
+      lineageId: `lineage_${id}`,
+      originTimelineId: 'TL-PRIME',
       type,
       faction: 'w',
       row: 7,
@@ -415,6 +471,55 @@ export function getValidMovesForPiece(
     }
   }
 
+  // 3. SUBTERRANEAN REALM GATEWAY STANDING DESCENT & PORTAL ROUTING:
+  // If this piece is already standing on a BoardGateway square, it can descend directly into that realm!
+  const standingGateway = getGatewayAtSquare(row, col, z, w);
+  if (standingGateway) {
+    moves.push({
+      from: { row, col, z, w },
+      to: { row, col, z, w },
+      isCapture: false,
+      dimensionType: 'REALM_GATEWAY_DESCENT',
+      dimensionLabel: `Descend Directly Into ${REALM_METADATA[standingGateway.realmId].title}`,
+      gatewayId: standingGateway.id,
+      realmId: standingGateway.realmId,
+    });
+
+    // Also expose connected BOARD_ASCENT portal exits from this realm for AI graph pathfinding & tactical preview
+    const realmPortals = getPortalsForRealm(standingGateway.realmId);
+    for (const portal of realmPortals) {
+      if (portal.kind !== 'BOARD_ASCENT') continue;
+      for (const inverted of [false, true]) {
+        const evalExit = evaluatePortalBoardExit(portal, piece, pieces, inverted, inverted);
+        if (!evalExit || evalExit.status === 'ALLY_OBSTRUCTED') continue;
+        if (evalExit.coord.row === row && evalExit.coord.col === col && evalExit.coord.z === z && evalExit.coord.w === w) {
+          continue;
+        }
+        const alreadyListed = moves.some(
+          (m) =>
+            m.to.row === evalExit.coord.row &&
+            m.to.col === evalExit.coord.col &&
+            m.to.z === evalExit.coord.z &&
+            m.to.w === evalExit.coord.w
+        );
+        if (!alreadyListed) {
+          moves.push({
+            from: { row, col, z, w },
+            to: { ...evalExit.coord },
+            isCapture: evalExit.status === 'ENEMY_OCCUPIED',
+            targetPiece: evalExit.occupant,
+            isPromotion: type === 'p' && (evalExit.coord.row === 0 || evalExit.coord.row === 7),
+            dimensionType: 'REALM_PORTAL_TRAVERSAL',
+            dimensionLabel: `Realm Traversal via ${REALM_METADATA[standingGateway.realmId].title} → ${evalExit.squareLabel}`,
+            gatewayId: standingGateway.id,
+            exitGatewayId: portal.id,
+            realmId: standingGateway.realmId,
+          });
+        }
+      }
+    }
+  }
+
   return moves;
 }
 
@@ -492,42 +597,95 @@ export function computeUnseen4DThreats(
   return threats;
 }
 
-export function chooseAIMove(pieces: ChessPiece[], aiFaction: Faction): { piece: ChessPiece; move: MoveOption } | null {
+export function chooseAIMove(
+  pieces: ChessPiece[],
+  aiFaction: Faction,
+  preferActionShowcase: boolean = false
+): { piece: ChessPiece; move: MoveOption } | null {
   const aiPieces = pieces.filter((p) => p.faction === aiFaction);
   const candidates: { piece: ChessPiece; move: MoveOption; score: number }[] = [];
 
   for (const piece of aiPieces) {
-    // AI considers both its current slice AND occasionally shifting into Ana (+1) or Kata (-1)!
-    const targetWOptions = Math.random() < 0.3 ? [piece.w, piece.w === 0 ? 1 : 0] : [piece.w];
+    // AI considers both its current slice AND shifting into Ana (+1) or Kata (-1)!
+    const targetWOptions = preferActionShowcase
+      ? [piece.w, 0, 1, -1].filter((v, i, arr) => arr.indexOf(v) === i)
+      : Math.random() < 0.3
+      ? [piece.w, piece.w === 0 ? 1 : 0]
+      : [piece.w];
+
     for (const tw of targetWOptions) {
       const validMoves = getValidMovesForPiece(piece, pieces, piece.z, tw);
       for (const move of validMoves) {
         let score = Math.random() * 4;
 
         const centerDist = Math.abs(3.5 - move.to.row) + Math.abs(3.5 - move.to.col);
-        score += (7 - centerDist) * 1.2;
+        score += (7 - centerDist) * 1.4;
 
         if (piece.type === 'p') {
           score += (aiFaction === 'b' ? move.to.row : 7 - move.to.row) * 1.5;
         }
 
         if (move.dimensionType === '4D_HYPER_SHIFT') {
-          score += 5; // AI occasionally hides a Rook/Bishop/Knight in the 4th dimension!
+          score += preferActionShowcase ? 10 : 5;
+        }
+
+        // AI Realm Graph Pathfinding: Evaluate entering a gateway or traversing a realm portal!
+        if (move.dimensionType === 'REALM_GATEWAY_DESCENT' && move.realmId) {
+          const realmPortals = getPortalsForRealm(move.realmId);
+          let bestExitBonus = 6;
+          for (const portal of realmPortals) {
+            if (portal.kind !== 'BOARD_ASCENT') continue;
+            const exitEval = evaluatePortalBoardExit(portal, piece, pieces, true, true);
+            if (!exitEval || exitEval.status === 'ALLY_OBSTRUCTED') continue;
+            if (exitEval.status === 'ENEMY_OCCUPIED' && exitEval.occupant) {
+              const targetVal = ARCHETYPES[exitEval.occupant.type].tacticalValue;
+              bestExitBonus = Math.max(bestExitBonus, 14 + targetVal * 4.5);
+            } else {
+              const adv = aiFaction === 'b' ? exitEval.coord.row : 7 - exitEval.coord.row;
+              bestExitBonus = Math.max(bestExitBonus, adv * 2.2);
+            }
+          }
+          // Account for Ashen Crucible environmental hazard cost if piece HP is low
+          if (move.realmId === 'ASHEN_CRUCIBLE' && piece.hp < piece.maxHp * 0.35) {
+            bestExitBonus -= 10;
+          }
+          score += bestExitBonus;
+        } else if (move.dimensionType === 'REALM_PORTAL_TRAVERSAL') {
+          score += preferActionShowcase ? 24 : 14;
         }
 
         if (move.isCapture && move.targetPiece) {
           const targetSpec = ARCHETYPES[move.targetPiece.type];
           const attackerSpec = ARCHETYPES[piece.type];
           const hpAdvantage = piece.hp / move.targetPiece.hp;
-          score += targetSpec.tacticalValue * 12 * Math.min(1.6, hpAdvantage);
-          if (move.dimensionType === '4D_CROSS_SLICE_STRIKE' || move.dimensionType === 'TEMPORAL_INTERCEPT') {
-            score += 16; // AI loves dramatic 4D ambushes!
+          score += (preferActionShowcase ? 65 : 0) + targetSpec.tacticalValue * 12 * Math.min(1.6, hpAdvantage);
+          if (
+            move.dimensionType === '4D_CROSS_SLICE_STRIKE' ||
+            move.dimensionType === 'TEMPORAL_INTERCEPT' ||
+            move.dimensionType === 'REALM_PORTAL_TRAVERSAL'
+          ) {
+            score += preferActionShowcase ? 28 : 16; // AI loves dramatic 4D & Realm ambushes!
           }
           if (piece.type === 'p' && targetSpec.tacticalValue >= 5) {
-            score += 18;
+            score += 22;
           }
           if (attackerSpec.tacticalValue >= 5) {
             score += 10;
+          }
+
+          // Account for Tactical Support Coverage on the contested square!
+          const supportAnalysis = computeSquareSupportAnalysis(
+            pieces,
+            move.to,
+            piece.faction,
+            move.targetPiece.faction,
+            [piece.id, move.targetPiece.id]
+          );
+          const readyAlliedSupport = supportAnalysis.attackerSupporters.filter((s) => s.canIntervene).length;
+          const readyEnemySupport = supportAnalysis.defenderSupporters.filter((s) => s.canIntervene).length;
+          score += (readyAlliedSupport - readyEnemySupport) * 6.5;
+          if (preferActionShowcase && (readyAlliedSupport > 0 || readyEnemySupport > 0)) {
+            score += 18; // Showcase duels where Tactical Intervention: The Board Fights Back is active!
           }
         }
 
@@ -544,4 +702,243 @@ export function chooseAIMove(pieces: ChessPiece[], aiFaction: Faction): { piece:
 export function formatSquareName(coord: BoardCoord): string {
   const files = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
   return `${files[coord.col]}${8 - coord.row}`;
+}
+
+/**
+ * Determines whether a single surviving, non-participating piece can legally attack/cover
+ * the contested square (targetCoord) under the existing 3D & 4D movement geometry.
+ *
+ * Critically distinguishes ATTACKING A SQUARE from CAPTURING AN ENEMY:
+ * - Friendly pieces defending their own occupied square qualify!
+ * - Sliding rays (Bishop, Rook, Queen) must have an unobstructed path across intermediate squares
+ *   (ignoring only the two active duel participants in `excludedPieceIds`).
+ */
+export function canPieceAttackSquare(
+  supporter: ChessPiece,
+  targetCoord: { row: number; col: number; z: number; w: number },
+  pieces: ChessPiece[],
+  excludedPieceIds: string[]
+): { canAttack: boolean; vectorLabel: string } {
+  if (excludedPieceIds.includes(supporter.id)) {
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  const { row, col, z, w, type, faction } = supporter;
+  const { row: tr, col: tc, z: tz, w: tw } = targetCoord;
+
+  // Cannot support from the exact same 4D coordinate as the duel itself
+  if (row === tr && col === tc && z === tz && w === tw) {
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  const dr = tr - row;
+  const dc = tc - col;
+  const dz = tz - z;
+  const dw = tw - w;
+  const sliceDelta = Math.abs(dz) + Math.abs(dw);
+
+  // Existing movement rules allow same-slice (sliceDelta === 0) or adjacent 4D slice (sliceDelta === 1)
+  if (sliceDelta > 1) {
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  const isCrossSlice = sliceDelta === 1;
+  const slicePrefix = isCrossSlice
+    ? dz !== 0
+      ? `4D Astral (+Z)`
+      : dw > 0
+      ? `4D Ana (+W)`
+      : `4D Kata (-W)`
+    : `Prime`;
+
+  // Helper to check if a sliding ray from (row, col) to (tr, tc) is unobstructed
+  const isRayUnobstructed = (): boolean => {
+    const steps = Math.max(Math.abs(dr), Math.abs(dc));
+    if (steps <= 1) return true;
+    const stepR = Math.sign(dr);
+    const stepC = Math.sign(dc);
+
+    for (let s = 1; s < steps; s++) {
+      const checkR = row + stepR * s;
+      const checkC = col + stepC * s;
+      // Check obstruction in supporter's slice AND target's slice so no piece blocks the ray
+      for (const p of pieces) {
+        if (excludedPieceIds.includes(p.id)) continue;
+        if (p.row === checkR && p.col === checkC) {
+          if (
+            (p.z === z && p.w === w) ||
+            (p.z === tz && p.w === tw)
+          ) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  };
+
+  if (type === 'p') {
+    const forwardDir = faction === 'w' ? -1 : 1;
+    // Pawns attack diagonally 1 step forward (in own slice or adjacent 4D slice)
+    if (dr === forwardDir && Math.abs(dc) === 1) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Diagonal Vanguard (${formatSquareName(supporter)})`,
+      };
+    }
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  if (type === 'n') {
+    const isStandardL =
+      (Math.abs(dr) === 2 && Math.abs(dc) === 1) ||
+      (Math.abs(dr) === 1 && Math.abs(dc) === 2);
+    const isHyper4DL =
+      isCrossSlice &&
+      ((Math.abs(dr) === 2 && dc === 0) || (dr === 0 && Math.abs(dc) === 2));
+
+    if (isStandardL || isHyper4DL) {
+      return {
+        canAttack: true,
+        vectorLabel: isHyper4DL
+          ? `${slicePrefix} Hyper-Knight L-Jump (${formatSquareName(supporter)})`
+          : `${slicePrefix} L-Jump (${formatSquareName(supporter)})`,
+      };
+    }
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  if (type === 'k') {
+    if (Math.abs(dr) <= 1 && Math.abs(dc) <= 1) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Sovereign Radius (${formatSquareName(supporter)})`,
+      };
+    }
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  if (type === 'b') {
+    if (Math.abs(dr) === Math.abs(dc) && Math.abs(dr) > 0 && isRayUnobstructed()) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Diagonal Ray (${formatSquareName(supporter)})`,
+      };
+    }
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  if (type === 'r') {
+    // Pure 4D Orthogonal shift at the exact same (row, col) across adjacent W/Z slice!
+    if (dr === 0 && dc === 0 && isCrossSlice) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Orthogonal 4D Axis (${formatSquareName(supporter)})`,
+      };
+    }
+    const stepDist = Math.max(Math.abs(dr), Math.abs(dc));
+    const validDist = !isCrossSlice || stepDist <= 6;
+    if ((dr === 0 || dc === 0) && stepDist > 0 && validDist && isRayUnobstructed()) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Orthogonal File/Rank (${formatSquareName(supporter)})`,
+      };
+    }
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  if (type === 'q') {
+    if (dr === 0 && dc === 0 && isCrossSlice) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Hyper-Axis (${formatSquareName(supporter)})`,
+      };
+    }
+    const isOrthoOrDiag = dr === 0 || dc === 0 || Math.abs(dr) === Math.abs(dc);
+    const stepDist = Math.max(Math.abs(dr), Math.abs(dc));
+    if (isOrthoOrDiag && stepDist > 0 && isRayUnobstructed()) {
+      return {
+        canAttack: true,
+        vectorLabel: `${slicePrefix} Royal Vector (${formatSquareName(supporter)})`,
+      };
+    }
+    return { canAttack: false, vectorLabel: '' };
+  }
+
+  return { canAttack: false, vectorLabel: '' };
+}
+
+/**
+ * Computes all surviving, non-participating pieces from both the attacking and defending factions
+ * whose legal attack vectors cover `targetCoord`.
+ */
+export function computeSquareSupportAnalysis(
+  pieces: ChessPiece[],
+  targetCoord: { row: number; col: number; z: number; w: number },
+  attackerFaction: Faction,
+  defenderFaction: Faction,
+  excludedParticipantIds: string[]
+): SquareSupportAnalysis {
+  const attackerSupporters: TacticalSupporter[] = [];
+  const defenderSupporters: TacticalSupporter[] = [];
+
+  for (const p of pieces) {
+    if (p.hp <= 0) continue;
+    const coverage = canPieceAttackSquare(p, targetCoord, pieces, excludedParticipantIds);
+    if (!coverage.canAttack) continue;
+
+    const isCrossDimensional = p.w !== targetCoord.w || p.z !== targetCoord.z;
+    let riftType: InterventionRiftType = 'PRIME';
+    let riftColorHex = p.faction === 'w' ? 0xf59e0b : 0xf43f5e;
+
+    if (isCrossDimensional) {
+      if (p.z > targetCoord.z || p.z === 1) {
+        riftType = 'ASTRAL_PLUS_Z';
+        riftColorHex = 0x34d399; // Emerald (+Z)
+      } else if (p.w > 0 || p.w > targetCoord.w) {
+        riftType = 'ANA_PLUS_W';
+        riftColorHex = 0x38bdf8; // Cyan (+W)
+      } else {
+        riftType = 'KATA_MINUS_W';
+        riftColorHex = 0xc084fc; // Violet (-W)
+      }
+    }
+
+    const meta = INTERVENTION_METADATA[p.type];
+    const supporterEntry: TacticalSupporter = {
+      pieceId: p.id,
+      type: p.type,
+      faction: p.faction,
+      row: p.row,
+      col: p.col,
+      z: p.z,
+      w: p.w,
+      meter: p.meter,
+      canIntervene: p.meter >= TACTICAL_INTERVENTION_METER_COST,
+      isCrossDimensional,
+      riftType,
+      riftColorHex,
+      interventionName: meta.name,
+      interventionTagline: meta.tagline,
+      vectorLabel: coverage.vectorLabel,
+    };
+
+    if (p.faction === attackerFaction) {
+      attackerSupporters.push(supporterEntry);
+    } else if (p.faction === defenderFaction) {
+      defenderSupporters.push(supporterEntry);
+    }
+  }
+
+  // Sort supporters so ready cross-dimensional & high-tactical-value pieces appear first!
+  const sortFn = (a: TacticalSupporter, b: TacticalSupporter) => {
+    if (a.canIntervene !== b.canIntervene) return a.canIntervene ? -1 : 1;
+    if (a.isCrossDimensional !== b.isCrossDimensional) return a.isCrossDimensional ? -1 : 1;
+    return ARCHETYPES[b.type].tacticalValue - ARCHETYPES[a.type].tacticalValue;
+  };
+
+  attackerSupporters.sort(sortFn);
+  defenderSupporters.sort(sortFn);
+
+  return { attackerSupporters, defenderSupporters };
 }

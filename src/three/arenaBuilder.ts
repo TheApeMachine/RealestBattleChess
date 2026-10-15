@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createArenaBattleScarDisc } from './battleWornShader';
 
 export interface BoardArenaRig {
   group: THREE.Group;
@@ -8,6 +9,11 @@ export interface BoardArenaRig {
   threatSigilMeshes: Map<string, THREE.Mesh>;
   duelRingGroup: THREE.Group;
   duelBarrierMesh: THREE.Mesh;
+  duelFloorScarMesh: THREE.Mesh;
+  duelFloorScarUniforms: {
+    uTime: { value: number };
+    uIntensity: { value: number };
+  };
   columnsInstanced: THREE.InstancedMesh;
   spotAttacker: THREE.SpotLight;
   spotDefender: THREE.SpotLight;
@@ -26,6 +32,11 @@ export interface BoardArenaRig {
     uSliceW: { value: number };
   };
   entanglementHelixLines: THREE.LineSegments;
+  supportPreviewAllyLines: THREE.LineSegments;
+  supportPreviewEnemyLines: THREE.LineSegments;
+  interventionRiftGroup: THREE.Group;
+  interventionTrajectoryLine: THREE.Line;
+  sovereignAegisDome: THREE.Mesh;
 }
 
 export const TILE_SIZE = 1.35;
@@ -261,7 +272,7 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   const colColor = new THREE.Color();
   for (let i = 0; i < pillarCount; i++) {
     const angle = (i / pillarCount) * Math.PI * 2;
-    const radius = 13.5 + (i % 2) * 0.6;
+    const radius = 19.5 + (i % 2) * 0.8;
     dummy.position.set(Math.cos(angle) * radius, 1.8, Math.sin(angle) * radius);
     dummy.rotation.y = -angle;
     const hScale = 0.85 + (i % 3) * 0.14;
@@ -282,28 +293,28 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   duelRingGroup.position.y = -2.5;
   group.add(duelRingGroup);
 
-  // Create procedural radial spotlight stage texture so the duel floor is brightly lit and aligned with spacing markers
+  // Create procedural radial spotlight stage texture with balanced warm chiaroscuro illumination
   const stageCanvas = document.createElement('canvas');
   stageCanvas.width = 512;
   stageCanvas.height = 512;
   const sCtx = stageCanvas.getContext('2d')!;
   const sGrad = sCtx.createRadialGradient(256, 256, 20, 256, 256, 250);
-  sGrad.addColorStop(0, 'rgba(254, 243, 199, 0.42)');
-  sGrad.addColorStop(0.45, 'rgba(245, 158, 11, 0.22)');
+  sGrad.addColorStop(0, 'rgba(254, 243, 199, 0.22)');
+  sGrad.addColorStop(0.45, 'rgba(245, 158, 11, 0.11)');
   sGrad.addColorStop(0.78, 'rgba(15, 23, 42, 0.82)');
   sGrad.addColorStop(1, 'rgba(7, 9, 14, 0.95)');
   sCtx.fillStyle = sGrad;
   sCtx.fillRect(0, 0, 512, 512);
 
   // Draw crisp alignment & spacing lines on the duel stage floor
-  sCtx.strokeStyle = 'rgba(251, 191, 36, 0.38)';
+  sCtx.strokeStyle = 'rgba(251, 191, 36, 0.26)';
   sCtx.lineWidth = 3;
   sCtx.beginPath();
   sCtx.arc(256, 256, 175, 0, Math.PI * 2);
   sCtx.stroke();
 
   // Horizontal fighting plane axis & center line
-  sCtx.strokeStyle = 'rgba(254, 240, 138, 0.32)';
+  sCtx.strokeStyle = 'rgba(254, 240, 138, 0.22)';
   sCtx.lineWidth = 2;
   sCtx.beginPath();
   sCtx.moveTo(48, 256);
@@ -320,10 +331,10 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     new THREE.CircleGeometry(4.32, 64),
     new THREE.MeshStandardMaterial({
       map: stageFloorTex,
-      roughness: 0.38,
-      metalness: 0.15,
+      roughness: 0.58,
+      metalness: 0.12,
       transparent: true,
-      opacity: 0.94,
+      opacity: 0.80,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -3,
@@ -334,6 +345,10 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   stageFloorDisc.position.y = 0.018;
   stageFloorDisc.receiveShadow = true;
   duelRingGroup.add(stageFloorDisc);
+
+  // 3D Arena Floor Battle-Scar Shader Disc (procedural Voronoi cracks & flickering lava scars when HP < 30%!)
+  const { mesh: duelFloorScarMesh, uniforms: duelFloorScarUniforms } = createArenaBattleScarDisc();
+  duelRingGroup.add(duelFloorScarMesh);
 
   const arenaRingMesh = new THREE.Mesh(
     new THREE.TorusGeometry(4.4, 0.075, 16, 64),
@@ -535,7 +550,10 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
       varying vec3 vLocalPos;
 
       void main() {
-        if (uIntensity <= 0.01) discard;
+        if (uIntensity <= 0.01) {
+          gl_FragColor = vec4(0.0);
+          return;
+        }
         vec2 p = (vUv - 0.5) * 16.0;
         float r = length(p);
         // 4D Schrödinger standing wave interference pattern
@@ -548,8 +566,8 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
         vec3 cyanEigen = vec3(0.22, 0.74, 0.97);
         vec3 violetEigen = vec3(0.75, 0.52, 0.99);
         vec3 col = mix(cyanEigen, violetEigen, 0.5 + 0.5 * sin(r - uTime * 2.0 + uSliceW));
-        float alpha = contour * edgeFade * uIntensity * 0.34;
-        gl_FragColor = vec4(col, alpha);
+        float alpha = clamp(contour * edgeFade * uIntensity * 0.34, 0.0, 0.9);
+        gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(1.5)), alpha);
       }
     `,
     transparent: true,
@@ -581,6 +599,98 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
   entanglementHelixLines.frustumCulled = false;
   group.add(entanglementHelixLines);
 
+  // Pre-Commit Tactical Support Preview Vector Lines (Allied = Cyan/Gold, Enemy = Crimson/Rose)
+  const createSupportLineSegments = (hexColor: number) => {
+    const maxSegs = 128;
+    const pos = new Float32Array(maxSegs * 2 * 3);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.LineBasicMaterial({
+      color: hexColor,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+    });
+    const ls = new THREE.LineSegments(geo, mat);
+    ls.frustumCulled = false;
+    ls.visible = false;
+    group.add(ls);
+    return ls;
+  };
+  const supportPreviewAllyLines = createSupportLineSegments(0x38bdf8);
+  const supportPreviewEnemyLines = createSupportLineSegments(0xf43f5e);
+
+  // 4D Dimensional Rift Portal Group (Opens during Tactical Interventions!)
+  const interventionRiftGroup = new THREE.Group();
+  interventionRiftGroup.visible = false;
+  group.add(interventionRiftGroup);
+
+  const outerRiftRing = new THREE.Mesh(
+    new THREE.TorusGeometry(1.15, 0.055, 16, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.92,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  interventionRiftGroup.add(outerRiftRing);
+
+  const innerRiftRing = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.95, 1),
+    new THREE.MeshBasicMaterial({
+      color: 0xc084fc,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.65,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  interventionRiftGroup.add(innerRiftRing);
+
+  const vortexDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(1.08, 36),
+    new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.34,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  interventionRiftGroup.add(vortexDisc);
+
+  // Trajectory Energy Arc linking the supporting piece's board square to the active duel!
+  const trajPointsCount = 32;
+  const trajPositions = new Float32Array(trajPointsCount * 3);
+  const trajGeo = new THREE.BufferGeometry();
+  trajGeo.setAttribute('position', new THREE.BufferAttribute(trajPositions, 3));
+  const trajMat = new THREE.LineBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+  });
+  const interventionTrajectoryLine = new THREE.Line(trajGeo, trajMat);
+  interventionTrajectoryLine.frustumCulled = false;
+  interventionTrajectoryLine.visible = false;
+  group.add(interventionTrajectoryLine);
+
+  // King's Sovereign Aegis Shield Dome
+  const sovereignAegisDome = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(1.05, 1),
+    new THREE.MeshBasicMaterial({
+      color: 0xfde047,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  sovereignAegisDome.visible = false;
+  group.add(sovereignAegisDome);
+
   return {
     group,
     tiles,
@@ -589,6 +699,8 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     threatSigilMeshes,
     duelRingGroup,
     duelBarrierMesh,
+    duelFloorScarMesh,
+    duelFloorScarUniforms,
     columnsInstanced,
     spotAttacker,
     spotDefender,
@@ -603,6 +715,11 @@ export function createBoardArena(renderer: THREE.WebGLRenderer): BoardArenaRig {
     quantumWaveRings,
     quantumShaderUniforms,
     entanglementHelixLines,
+    supportPreviewAllyLines,
+    supportPreviewEnemyLines,
+    interventionRiftGroup,
+    interventionTrajectoryLine,
+    sovereignAegisDome,
   };
 }
 
@@ -756,6 +873,147 @@ export function updateQuantumEntanglementBeams(
   for (let i = segIndex; i < maxSegs; i++) {
     posAttr.setXYZ(i * 2, 0, -100, 0);
     posAttr.setXYZ(i * 2 + 1, 0, -100, 0);
+  }
+  posAttr.needsUpdate = true;
+}
+
+/**
+ * Renders animated 3D tactical support vector arcs from supporting pieces on the board
+ * to a contested capture square BEFORE the player commits to the move!
+ */
+export function updateSupportPreviewVectors(
+  rig: BoardArenaRig,
+  targetWorldPos: THREE.Vector3 | null,
+  allySupportOrigins: THREE.Vector3[],
+  enemySupportOrigins: THREE.Vector3[],
+  elapsedTime: number
+) {
+  const fillArcs = (
+    lineSegs: THREE.LineSegments,
+    origins: THREE.Vector3[],
+    target: THREE.Vector3 | null
+  ) => {
+    if (!target || origins.length === 0) {
+      lineSegs.visible = false;
+      return;
+    }
+    lineSegs.visible = true;
+    const posAttr = lineSegs.geometry.attributes.position as THREE.BufferAttribute;
+    let segIdx = 0;
+    const maxSegs = 128;
+    const stepsPerArc = 14;
+
+    for (const orig of origins) {
+      for (let s = 0; s < stepsPerArc; s++) {
+        if (segIdx >= maxSegs) break;
+        const t0 = s / stepsPerArc;
+        const t1 = (s + 1) / stepsPerArc;
+
+        const pt = (t: number) => {
+          const x = THREE.MathUtils.lerp(orig.x, target.x, t);
+          const z = THREE.MathUtils.lerp(orig.z, target.z, t);
+          const pulse = Math.sin(t * Math.PI * 3 - elapsedTime * 8) * 0.06;
+          const y =
+            THREE.MathUtils.lerp(orig.y + 0.85, target.y + 0.65, t) +
+            Math.sin(t * Math.PI) * 1.15 +
+            pulse;
+          return [x, y, z];
+        };
+
+        const p0 = pt(t0);
+        const p1 = pt(t1);
+        posAttr.setXYZ(segIdx * 2, p0[0], p0[1], p0[2]);
+        posAttr.setXYZ(segIdx * 2 + 1, p1[0], p1[1], p1[2]);
+        segIdx++;
+      }
+    }
+
+    for (let i = segIdx; i < maxSegs; i++) {
+      posAttr.setXYZ(i * 2, 0, -100, 0);
+      posAttr.setXYZ(i * 2 + 1, 0, -100, 0);
+    }
+    posAttr.needsUpdate = true;
+  };
+
+  fillArcs(rig.supportPreviewAllyLines, allySupportOrigins, targetWorldPos);
+  fillArcs(rig.supportPreviewEnemyLines, enemySupportOrigins, targetWorldPos);
+}
+
+/**
+ * Animates the 4D Dimensional Rift Portal and Trajectory Beam connecting the supporting piece's
+ * board position to the active duel!
+ */
+export function updateInterventionRiftAndTrajectory(
+  rig: BoardArenaRig,
+  active: boolean,
+  supporterWorldPos: THREE.Vector3,
+  riftWorldPos: THREE.Vector3,
+  strikeTargetWorldPos: THREE.Vector3,
+  riftColorHex: number,
+  progress01: number,
+  elapsedTime: number
+) {
+  if (!active) {
+    rig.interventionRiftGroup.visible = false;
+    rig.interventionTrajectoryLine.visible = false;
+    return;
+  }
+
+  rig.interventionRiftGroup.visible = true;
+  rig.interventionTrajectoryLine.visible = true;
+
+  const envelope = Math.sin(Math.min(1, progress01) * Math.PI);
+  rig.interventionRiftGroup.position.copy(riftWorldPos);
+  rig.interventionRiftGroup.scale.setScalar(0.2 + envelope * 1.15);
+  rig.interventionRiftGroup.rotation.y = elapsedTime * 1.8;
+
+  const outerRing = rig.interventionRiftGroup.children[0] as THREE.Mesh;
+  const innerRing = rig.interventionRiftGroup.children[1] as THREE.Mesh;
+  const vortexDisc = rig.interventionRiftGroup.children[2] as THREE.Mesh;
+
+  if (outerRing) {
+    (outerRing.material as THREE.MeshBasicMaterial).color.setHex(riftColorHex);
+    outerRing.rotation.z = elapsedTime * 5.5;
+  }
+  if (innerRing) {
+    (innerRing.material as THREE.MeshBasicMaterial).color.setHex(riftColorHex);
+    innerRing.rotation.x = -elapsedTime * 4.2;
+    innerRing.rotation.y = elapsedTime * 3.8;
+  }
+  if (vortexDisc) {
+    (vortexDisc.material as THREE.MeshBasicMaterial).color.setHex(riftColorHex);
+  }
+
+  // Update 32-segment energy trajectory arc from Supporter's Board Square -> Rift -> Enemy Target!
+  const trajMat = rig.interventionTrajectoryLine.material as THREE.LineBasicMaterial;
+  trajMat.color.setHex(riftColorHex);
+  trajMat.opacity = Math.min(1, envelope * 1.4);
+
+  const posAttr = rig.interventionTrajectoryLine.geometry.attributes.position as THREE.BufferAttribute;
+  const count = 32;
+  for (let i = 0; i < count; i++) {
+    const t = i / (count - 1);
+    // Quadratic Bezier curve from supporterWorldPos -> elevated control point above rift -> strikeTargetWorldPos
+    const invT = 1 - t;
+    const ctrlX = (supporterWorldPos.x + strikeTargetWorldPos.x) * 0.5;
+    const ctrlY = Math.max(supporterWorldPos.y, strikeTargetWorldPos.y) + 3.2;
+    const ctrlZ = (supporterWorldPos.z + strikeTargetWorldPos.z) * 0.5;
+
+    const x =
+      invT * invT * supporterWorldPos.x +
+      2 * invT * t * ctrlX +
+      t * t * strikeTargetWorldPos.x;
+    const y =
+      invT * invT * (supporterWorldPos.y + 1.1) +
+      2 * invT * t * ctrlY +
+      t * t * (strikeTargetWorldPos.y + 1.1) +
+      Math.sin(t * Math.PI * 4 - elapsedTime * 16) * 0.08;
+    const z =
+      invT * invT * supporterWorldPos.z +
+      2 * invT * t * ctrlZ +
+      t * t * strikeTargetWorldPos.z;
+
+    posAttr.setXYZ(i, x, y, z);
   }
   posAttr.needsUpdate = true;
 }
