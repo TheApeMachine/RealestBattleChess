@@ -1,4 +1,4 @@
-export type MusicMood = 'CHESS' | 'ALTERNATE_TIMELINE' | 'REALM' | 'COMBAT';
+export type MusicMood = 'CHESS' | 'ALTERNATE_TIMELINE' | 'REALM' | 'COMBAT' | 'ACADEMIC_OFFICE';
 
 class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -133,7 +133,9 @@ class SoundEngine {
 
     // Step interval in ms based on current mood (repetitive, steady hypnotic pulse)
     const stepMs =
-      this.currentMood === 'COMBAT'
+      this.currentMood === 'ACADEMIC_OFFICE'
+        ? 360
+        : this.currentMood === 'COMBAT'
         ? 235
         : this.currentMood === 'REALM'
         ? 310
@@ -153,6 +155,91 @@ class SoundEngine {
     const now = ctx.currentTime;
     const step = this.stepIndex % 8;
     const progressionIndex = this.barIndex % 4;
+
+    // Special standalone soundscape when the Chess Universe is GONE and you are Dr. Pawn in a rainy University of Greater Andromeda office:
+    if (this.currentMood === 'ACADEMIC_OFFICE') {
+      // 1. Continuous soft rain pattering against the office windowpane
+      const bufferSize = Math.floor(ctx.sampleRate * 0.42);
+      const rainBuf = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = rainBuf.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        const droplet = Math.random() < 0.015 ? (Math.random() * 2 - 1) * 2.4 : 0;
+        data[i] = (Math.random() * 2 - 1) * 0.35 + droplet;
+      }
+      const rainSrc = ctx.createBufferSource();
+      rainSrc.buffer = rainBuf;
+
+      const rainBand = ctx.createBiquadFilter();
+      rainBand.type = 'bandpass';
+      rainBand.frequency.setValueAtTime(1150 + (step % 3) * 180, now);
+      rainBand.Q.setValueAtTime(0.85, now);
+
+      const rainGain = ctx.createGain();
+      rainGain.gain.setValueAtTime(0.001, now);
+      rainGain.gain.linearRampToValueAtTime(0.09, now + 0.08);
+      rainGain.gain.exponentialRampToValueAtTime(0.025, now + 0.41);
+
+      rainSrc.connect(rainBand);
+      rainBand.connect(rainGain);
+      rainGain.connect(dest);
+      rainSrc.start(now);
+      rainSrc.stop(now + 0.42);
+
+      // 2. Subtle 1987 fluorescent office light & radiator hum on step 0
+      if (step === 0) {
+        const humOsc = ctx.createOscillator();
+        const humGain = ctx.createGain();
+        humOsc.type = 'sine';
+        humOsc.frequency.setValueAtTime(120, now);
+        humGain.gain.setValueAtTime(0.001, now);
+        humGain.gain.linearRampToValueAtTime(0.025, now + 0.4);
+        humGain.gain.exponentialRampToValueAtTime(0.001, now + 2.6);
+        humOsc.connect(humGain);
+        humGain.connect(dest);
+        humOsc.start(now);
+        humOsc.stop(now + 2.7);
+      }
+
+      // 3. Sparse, lonely Erik Satie / late-night campus felt-piano note on steps 0 and 5
+      if (step === 0 || step === 5) {
+        const satieNotes = [
+          [293.66, 440.0], // D4, A4
+          [261.63, 392.0], // C4, G4
+          [246.94, 349.23], // B3, F4
+          [220.0, 329.63], // A3, E4
+        ];
+        const pair = satieNotes[progressionIndex];
+        const note = pair[step === 0 ? 0 : 1];
+
+        const pOsc = ctx.createOscillator();
+        const pFilter = ctx.createBiquadFilter();
+        const pGain = ctx.createGain();
+        pOsc.type = 'triangle';
+        pOsc.frequency.setValueAtTime(note, now);
+        pFilter.type = 'lowpass';
+        pFilter.frequency.setValueAtTime(620, now);
+        pFilter.frequency.exponentialRampToValueAtTime(190, now + 1.4);
+
+        pGain.gain.setValueAtTime(0.001, now);
+        pGain.gain.linearRampToValueAtTime(0.09, now + 0.03);
+        pGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.45);
+
+        pOsc.connect(pFilter);
+        pFilter.connect(pGain);
+        pGain.connect(dest);
+        if (this.delayNode) {
+          pGain.connect(this.delayNode);
+        }
+        pOsc.start(now);
+        pOsc.stop(now + 1.5);
+      }
+
+      this.stepIndex += 1;
+      if (this.stepIndex % 8 === 0) {
+        this.barIndex += 1;
+      }
+      return;
+    }
 
     // 4-bar mysterious minimalist harmonic cycle (frequencies in Hz):
     // Bar 0: D minor add9 (D3, A3, E4, F4, A3, D4, E4, F4)
@@ -958,6 +1045,99 @@ class SoundEngine {
       });
     }
   }
+
+  public playSynodResonance(isAscension: boolean = false) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Shimmering polyharmonic Synod Triad chord (D major9 / Lydian celestial resonance)
+    const freqs = isAscension
+      ? [293.66, 440.0, 587.33, 739.99, 880.0, 1174.66, 1479.98]
+      : [293.66, 440.0, 659.25, 739.99, 1108.73];
+
+    freqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+      const t0 = now + idx * 0.04;
+      osc.frequency.setValueAtTime(freq * 0.98, t0);
+      osc.frequency.exponentialRampToValueAtTime(freq, t0 + 0.09);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.005, t0 + 0.72);
+
+      gain.gain.setValueAtTime(0.11 / (idx * 0.35 + 1), t0);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.78);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      if (this.delayNode) {
+        gain.connect(this.delayNode);
+      }
+      osc.start(t0);
+      osc.stop(t0 + 0.8);
+    });
+  }
+
+  public playBrokenCoffeeMachineSputter() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Pathetic 1987 heating-coil click followed by a dry, calcified gurgle
+    for (let i = 0; i < 4; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      const t0 = now + i * 0.09;
+      osc.frequency.setValueAtTime(140 - i * 18, t0);
+      osc.frequency.exponentialRampToValueAtTime(48, t0 + 0.07);
+      gain.gain.setValueAtTime(0.12, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.075);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.08);
+    }
+  }
+
+  public playRejectionStamp() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Heavy bureaucratic rubber stamp THUD + Reviewer #2 dissonance
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(115, now);
+    osc.frequency.exponentialRampToValueAtTime(36, now + 0.24);
+    gain.gain.setValueAtTime(0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.28);
+  }
+
+  public playOfficeKeyboardClack() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // IBM Model M mechanical keyboard clack
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(1650 + Math.random() * 420, now);
+    osc.frequency.exponentialRampToValueAtTime(320, now + 0.025);
+    gain.gain.setValueAtTime(0.07, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.028);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.03);
+  }
 }
 
 export const soundEngine = new SoundEngine();
+

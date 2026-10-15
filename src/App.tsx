@@ -9,6 +9,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import confetti from 'canvas-confetti';
 import {
+  AcademicColloquiumState,
   ActiveInterventionState,
   BattleLogEntry,
   BoardCoord,
@@ -49,10 +50,13 @@ import {
   createInitialMultiverseState,
   ensureBranchHydrated,
   executeAIMultiverseParadoxStrike,
+  executeSynodTransposition,
   forkTimelineFromBranch,
+  getCounterpartManifestationsForPiece,
   getLethalRememberedSquareCollision,
   getPendingCausalBreachesForTimeline,
   getRememberedSquaresForTimelineView,
+  publishSentientTheoremAcrossMultiverse,
   reconcileTimelineConvergence,
   recordCausalAssassination,
   recordRememberedSquare,
@@ -93,6 +97,7 @@ import {
   ArticulatedPieceRig,
   createFirstPersonViewmodelRig,
   FirstPersonViewmodelRig,
+  setPieceProfessorMode,
 } from './three/pieceModels';
 import {
   boardToWorld,
@@ -134,7 +139,17 @@ import {
   updateMultiversalPocketWatch,
 } from './three/pocketWatchBuilder';
 import { MultiverseModal } from './components/MultiverseModal';
-import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle, Play, Pause, GitBranch, Zap, Skull, Clock } from 'lucide-react';
+import {
+  AcademicColloquiumOverlay,
+  createInitialAcademicColloquiumState,
+  getProfessorPersona,
+} from './components/AcademicColloquiumOverlay';
+import {
+  createUniversityOfficeRig,
+  UniversityOfficeRig,
+  updateUniversityOfficeScene,
+} from './three/universityOfficeBuilder';
+import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle, Play, Pause, GitBranch, Zap, Skull, Clock, GraduationCap } from 'lucide-react';
 
 // Pre-allocated math helpers at module scope (Zero GC in render loop)
 const _vec3A = new THREE.Vector3();
@@ -213,6 +228,8 @@ export default function App() {
     title: string;
     subtitle: string;
   } | null>(null);
+  const [academicColloquium, setAcademicColloquium] =
+    useState<AcademicColloquiumState | null>(null);
 
   // Subterranean Realms UI State
   const [activeRealmId, setActiveRealmId] = useState<RealmId>('SHATTERED_MIRROR');
@@ -286,6 +303,10 @@ export default function App() {
     bystanders: Map<string, BystanderPhysics>;
     duelCenterWorld: THREE.Vector3;
     duelInRealm: boolean;
+    duelOnWatch: boolean;
+    duelIsAcademicDebate: boolean;
+    academicColloquium: AcademicColloquiumState | null;
+    horologiumSweepTimer: number;
     activeSentinelId: string | null;
     fightTimer: number;
     cameraShake: number;
@@ -306,6 +327,7 @@ export default function App() {
     arenaRig: BoardArenaRig | null;
     realmsRig: SubterraneanRealmsRig | null;
     pocketWatchRig: MultiversalPocketWatchRig | null;
+    universityOfficeRig: UniversityOfficeRig | null;
     imminentParadoxWarning: boolean;
     vfxPool: VFXPool | null;
     controls: OrbitControls | null;
@@ -364,6 +386,10 @@ export default function App() {
     bystanders: new Map(),
     duelCenterWorld: new THREE.Vector3(0, 0, 0),
     duelInRealm: false,
+    duelOnWatch: false,
+    duelIsAcademicDebate: false,
+    academicColloquium: null,
+    horologiumSweepTimer: 0,
     activeSentinelId: null,
     fightTimer: 60,
     cameraShake: 0,
@@ -384,6 +410,7 @@ export default function App() {
     arenaRig: null,
     realmsRig: null,
     pocketWatchRig: null,
+    universityOfficeRig: null,
     imminentParadoxWarning: false,
     vfxPool: null,
     controls: null,
@@ -629,7 +656,10 @@ export default function App() {
         if (hl) {
           hl.visible = true;
           const mat = hl.material as THREE.MeshBasicMaterial;
-          if (lethalCollision) {
+          if (mv.dimensionType === 'CHECKMATE_YESTERDAY') {
+            mat.color.setHex(0x38bdf8); // Sentient Mathematical Theorem: Checkmate Yesterday Q.E.D. Beacon!
+            mat.opacity = 0.88;
+          } else if (lethalCollision) {
             mat.color.setHex(0xef4444); // Lethal Remembered Square Paradox Exclusion Warning!
             mat.opacity = 0.82;
           } else if (
@@ -842,15 +872,20 @@ export default function App() {
         setTimeout(() => {
           addCallout({
             text:
-              move.dimensionType === 'REALM_PORTAL_TRAVERSAL'
+              move.dimensionType === 'CHECKMATE_YESTERDAY'
+                ? '⊢ Q.E.D. · CHECKMATING YESTERDAY (Δt = −1)!'
+                : move.dimensionType === 'REALM_PORTAL_TRAVERSAL'
                 ? 'REALM EMERGENCE AMBUSH DUEL!'
                 : move.dimensionType === 'TEMPORAL_INTERCEPT'
                 ? 'CHRONO-INTERCEPT DUEL (Δt = -1)!'
                 : '4D CROSS-DIMENSIONAL AMBUSH!',
-            subtext: move.dimensionLabel || 'HYPERCUBE COLLISION',
+            subtext:
+              move.dimensionType === 'CHECKMATE_YESTERDAY'
+                ? attackerPiece.theoremAxiom || 'SENTIENT MATHEMATICAL THEOREM · RETROACTIVE REFUTATION'
+                : move.dimensionLabel || 'HYPERCUBE COLLISION',
             x: 0,
             y: 2.35,
-            color: '#c084fc',
+            color: move.dimensionType === 'CHECKMATE_YESTERDAY' ? '#38bdf8' : '#c084fc',
           });
         }, 400);
       }
@@ -1145,6 +1180,9 @@ export default function App() {
           const rig = createArticulatedPiece(p.type, p.faction);
           boardToWorld(p.row, p.col, rig.root.position);
           rig.root.rotation.y = p.faction === 'w' ? Math.PI : 0;
+          if (sim.academicColloquium?.active) {
+            setPieceProfessorMode(rig, true, p.faction);
+          }
           scene.add(rig.root);
           sim.pieceRigs.set(p.id, rig);
           sim.bystanders.set(p.id, {
@@ -1547,8 +1585,37 @@ export default function App() {
         turn: sim.turnNumber + 1,
       });
 
-      // If this warrior stepped onto its own Remembered Square from a prior universe -> LETHAL PARADOX COLLISION!
-      if (lethalRememberedCollision) {
+      // If this warrior stepped onto its own Remembered Square from a prior universe:
+      // - If crowned `isChronocrator` or fused with `synodStacks >= 2`, they HARVEST THE PARADOX SQUARE instead of dying!
+      // - Otherwise -> LETHAL PARADOX COLLISION!
+      if (lethalRememberedCollision && (piece.isChronocrator || (piece.synodStacks && piece.synodStacks >= 2))) {
+        const sqLabel = formatSquareName(move.to);
+        sim.multiverse.rememberedSquares = sim.multiverse.rememberedSquares.filter(
+          (r) => r.id !== lethalRememberedCollision.id
+        );
+        piece.hp = Math.min(piece.maxHp, piece.hp + 25);
+        piece.meter = Math.min(100, piece.meter + 35);
+        piece.synodStacks = (piece.synodStacks || 0) + 1;
+
+        soundEngine.playSynodResonance(true);
+        if (sim.pocketWatchRig) {
+          triggerPocketWatchReaction(
+            sim.pocketWatchRig,
+            0xfbbf24,
+            sim.multiverse.activeTimelineId,
+            true
+          );
+        }
+        const worldTarget = boardToWorld(move.to.row, move.to.col);
+        if (sim.vfxPool) {
+          spawnAuraPillar(sim.vfxPool, worldTarget.x, worldTarget.z, 0xfbbf24);
+          spawnShockwave(sim.vfxPool, worldTarget.x, 0.15, worldTarget.z, 0x38bdf8, 5.5);
+        }
+        setWatchEventBanner({
+          title: `⌚ CHRONOCRATOR PARADOX HARVEST AT ${sqLabel}!`,
+          subtitle: `${ARCHETYPES[piece.type].chessName} absorbed its Remembered Square from ${lethalRememberedCollision.sourceShortCode} (+25 HP, +35% Meter, Synod ×${piece.synodStacks})!`,
+        });
+      } else if (lethalRememberedCollision) {
         const sqLabel = formatSquareName(move.to);
         const deathEv = recordCausalAssassination(
           sim.multiverse,
@@ -1786,6 +1853,788 @@ export default function App() {
     [initiateCombatDuel]
   );
 
+  // MULTIVERSAL SYNOD: Quantum-Swap & Fuse Selected Warrior with its Living Counterpart in another Timeline!
+  const handleSynodTranspose = useCallback(
+    (targetTimelineId: string) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'CHESS_VIEW') return;
+      const sel = sim.pieces.find((p) => p.id === sim.selectedPieceId);
+      if (!sel) return;
+
+      syncActiveBranchFromSim();
+      const res = executeSynodTransposition(
+        sim.multiverse,
+        sel,
+        targetTimelineId,
+        sim.pieces
+      );
+      if (!res) return;
+
+      soundEngine.playSynodResonance(false);
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(sim.pocketWatchRig, 0xfbbf24, targetTimelineId, false);
+      }
+
+      const fromCoord = { row: sel.row, col: sel.col, z: sel.z, w: sel.w };
+      const worldDest = boardToWorld(res.destCoord.row, res.destCoord.col);
+      if (sim.vfxPool) {
+        spawnInterventionRift(
+          sim.vfxPool,
+          0,
+          16.5,
+          -14.2,
+          worldDest.x,
+          0.9,
+          worldDest.z,
+          0xfbbf24
+        );
+        spawnAuraPillar(sim.vfxPool, worldDest.x, worldDest.z, 0x38bdf8);
+      }
+
+      if (res.ambushedEnemy) {
+        const synodAmbushMove: MoveOption = {
+          from: fromCoord,
+          to: res.destCoord,
+          isCapture: true,
+          targetPiece: res.ambushedEnemy,
+          dimensionType: 'SYNOD_TRANSPOSITION',
+          dimensionLabel: `✦ SYNOD CROSS-REALITY AMBUSH (${res.counterpartBranch.shortCode})`,
+        };
+        initiateCombatDuel(sel, synodAmbushMove, false);
+        return;
+      }
+
+      sel.row = res.destCoord.row;
+      sel.col = res.destCoord.col;
+      sel.z = res.destCoord.z;
+      sel.w = res.destCoord.w;
+      sel.hasMoved = true;
+      sel.history.push({
+        row: sel.row,
+        col: sel.col,
+        z: sel.z,
+        w: sel.w,
+        turn: sim.turnNumber + 1,
+      });
+
+      const sq = formatSquareName(res.destCoord);
+
+      // If a Pawn just merged with its alternate-timeline self to formulate a Sentient Mathematical Theorem,
+      // the 4D Chess Universe COLLAPSES and leaves the chess world entirely — transitioning into the standalone
+      // University of Greater Andromeda 6-Year Academic Life Simulator as Dr. Pawn!
+      if (sel.isSentientTheorem && sel.theoremStatus === 'UNPUBLISHED_DRAFT') {
+        const colState = createInitialAcademicColloquiumState(
+          sel,
+          sim.pieces,
+          res.counterpartBranch.shortCode
+        );
+        sim.academicColloquium = colState;
+        sim.phase = 'ACADEMIC_SIMULATOR';
+        sim.autoPlayDemo = false;
+        setAutoPlayDemo(false);
+        setMultiverseModalOpen(false);
+        setCodexOpen(false);
+        if (sim.controls) {
+          sim.controls.enabled = false;
+        }
+        for (const p of sim.pieces) {
+          const r = sim.pieceRigs.get(p.id);
+          if (r) {
+            setPieceProfessorMode(r, true, p.faction);
+          }
+        }
+        setPhase('ACADEMIC_SIMULATOR');
+        setAcademicColloquium({ ...colState });
+      }
+
+      setWatchEventBanner({
+        title: sel.isSentientTheorem
+          ? `🌧️ REALITY COLLAPSE — WELCOME TO THE UNIVERSITY OF GREATER ANDROMEDA`
+          : `✦ MULTIVERSAL SYNOD RESONANCE (×${res.newSynodStacks})`,
+        subtitle: sel.isSentientTheorem
+          ? `The chessboard is gone. You are now Dr. Pawn, an untenured researcher at the University of Greater Andromeda.`
+          : `${ARCHETYPES[sel.type].chessName} transposed with its ${res.counterpartBranch.shortCode} self → ${sq} (+25 HP, +30% Meter & Synod L-Leaps Unlocked)!`,
+      });
+      setBattleLogs((prev) => [
+        {
+          id: `synod_${Date.now()}`,
+          turnNumber: sim.turnNumber,
+          summary: sel.isSentientTheorem
+            ? `🌧️ The Chess Universe Dissolved: Entered the University of Greater Andromeda as Dr. Pawn`
+            : `Multiversal Synod (×${res.newSynodStacks}): ${ARCHETYPES[sel.type].chessName} Transposed via ${res.counterpartBranch.shortCode} → ${sq}!`,
+          detail: sel.isSentientTheorem
+            ? `Room 4B, Peano Hall. Rain against the windows. A coffee machine that hasn't worked since 1987. Six years of academic struggle begin.`
+            : `Fused parallel-universe resonance with ${res.counterpartBranch.name} (+25 HP, +30% Meter, Synod L-Leaps & Triad Combat Strikes).`,
+          wasUpset: false,
+          winnerFaction: sel.faction,
+        },
+        ...prev.slice(0, 7),
+      ]);
+
+      sim.validMoves = getValidMovesForPiece(sel, sim.pieces, sel.z, sel.w);
+      syncActiveBranchFromSim();
+      setMultiverseState({ ...sim.multiverse });
+      setSelectedPiece({ ...sel });
+      syncBoardHighlights();
+    },
+    [initiateCombatDuel, syncActiveBranchFromSim, syncBoardHighlights]
+  );
+
+  // ============================================================================
+  // UNIVERSITY OF GREATER ANDROMEDA — 6-YEAR ACADEMIC LIFE SIMULATOR HANDLERS
+  // ============================================================================
+  const advanceAcademicSemester = (col: AcademicColloquiumState) => {
+    if (col.semester === 'Fall') {
+      col.semester = 'Spring';
+    } else {
+      col.semester = 'Fall';
+      col.academicYear = Math.min(6, col.academicYear + 1);
+    }
+  };
+
+  const handleEnterUniversityOffice = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.stage = 'UNIVERSITY_SIMULATOR';
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleSelectAcademicEmail = useCallback((emailId: string) => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.selectedEmailId = emailId;
+    col.inbox = col.inbox.map((em) =>
+      em.id === emailId ? { ...em, unread: false } : em
+    );
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleKickCoffeeMachine = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.coffeeMachineKickCount += 1;
+    sim.cameraShake = 0.14;
+    soundEngine.playBrokenCoffeeMachineSputter();
+
+    const quips = [
+      `☕ You kicked the 1987 Bunn-O-Matic coffee machine. It wheezed, dispensed 4mL of lukewarm rust, and went dark.`,
+      `☕ Kick #${col.coffeeMachineKickCount}: The "OUT OF ORDER SINCE NOV 1987" sticky note fluttered to the linoleum. Still no coffee.`,
+      `☕ Kick #${col.coffeeMachineKickCount}: A relay clicked inside the 1987 chassis. Somewhere down the hall, Prof. Rook laughed in Tenured.`,
+    ];
+    col.colloquiumLog = [
+      quips[(col.coffeeMachineKickCount - 1) % quips.length],
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleWorkOnCentralLemma = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    advanceAcademicSemester(col);
+    const boost = col.bishopLabAccessGranted ? 38 : 28;
+    col.centralLemmaIntegrity = Math.min(100, col.centralLemmaIntegrity + boost);
+    col.rigorScore = col.centralLemmaIntegrity;
+    col.checkingBalance = Math.max(120, col.checkingBalance - 180);
+    col.adminProductivityScore = Math.min(
+      95,
+      Number((col.adminProductivityScore + 2.4).toFixed(1))
+    );
+
+    if (col.centralLemmaIntegrity >= 100 && !col.inbox.some((e) => e.id === 'email_lemma_fixed')) {
+      const fixedEmail = {
+        id: 'email_lemma_fixed',
+        sender: 'Toby (Your Graduate Student)',
+        senderRole: '7th-Year PhD Candidate · Office 4B-Annex',
+        subject: 'WE FIXED IT!! Lemma 3.2 Converges!',
+        dateLabel: `Year ${col.academicYear} · ${col.semester} (3:14 AM)`,
+        category: 'GRAD_STUDENT' as const,
+        unread: true,
+        body: `Dr. Pawn!\n\nThe extra boundary term in the retrocausal Jacobian canceled the divergence completely! Central Lemma 3.2 is 100% mathematically airtight!\n\n"On the Nonexistence of Monarchs in Retrocausal Systems" is ready for submission to the Journal of Transfinite Causality. Surely Reviewer #2 can't reject a constructive proof with zero free parameters... right?\n\n— Toby`,
+      };
+      col.inbox = [fixedEmail, ...col.inbox];
+      col.selectedEmailId = fixedEmail.id;
+    }
+
+    col.colloquiumLog = [
+      `📐 Year ${col.academicYear} (${col.semester}): Spent the night at the chalkboard with grad student Toby. Central Lemma 3.2 integrity is now ${col.centralLemmaIntegrity}%.`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleConfrontBishopForLab = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active || col.bishopLabAccessGranted) return;
+
+    advanceAcademicSemester(col);
+    col.bishopLabAccessGranted = true;
+    col.bishopSuspectedWithholding = false;
+    col.centralLemmaIntegrity = Math.min(100, Math.max(col.centralLemmaIntegrity + 35, 86));
+    col.rigorScore = col.centralLemmaIntegrity;
+    col.departmentalBudget = Math.max(400, col.departmentalBudget - 950);
+
+    const bishopGrantEmail = {
+      id: `email_bishop_slot_${Date.now()}`,
+      sender: 'Prof. Bishop (Quantum Lab Director)',
+      senderRole: 'Director, Chiral Interferometry Facility',
+      subject: 'FINE: 2:00 AM – 4:00 AM Tuesday Quantum Lab Slot',
+      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
+      category: 'LAB_POLITICS' as const,
+      unread: true,
+      body: `Dr. Pawn,\n\nSince you ambushed me outside the Faculty Parking Structure in the pouring rain, I have authorized your graduate student Toby to use the Chiral Interferometer on alternating Tuesdays between 2:00 AM and 4:00 AM.\n\nWe billed $950 in liquid helium fees to your departmental budget. Do not touch the diagonal mirrors.\n\n— Prof. Bishop`,
+    };
+    col.inbox = [bishopGrantEmail, ...col.inbox];
+    col.selectedEmailId = bishopGrantEmail.id;
+    col.colloquiumLog = [
+      `🔬 Year ${col.academicYear} (${col.semester}): Cornered Prof. Bishop! Secured 2:00 AM Quantum Lab access to verify Lemma 3.2 (${col.centralLemmaIntegrity}%).`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    soundEngine.playSynodResonance(false);
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleApplyForGrantAndPayMortgage = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    advanceAcademicSemester(col);
+    col.departmentalBudget += 3200;
+    col.checkingBalance = Math.max(420, col.checkingBalance + 640);
+    col.chairRelationship = Math.min(100, col.chairRelationship + 12);
+    col.adminProductivityScore = Math.min(
+      99,
+      Number((col.adminProductivityScore + 6.5).toFixed(1))
+    );
+
+    const grantEmail = {
+      id: `email_grant_${Date.now()}`,
+      sender: 'Dr. Queen (Department Chair)',
+      senderRole: 'Office of Faculty Productivity & Indirect Overhead',
+      subject: 'Seed Grant Approved (58.5% Indirect Overhead Deducted)',
+      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
+      category: 'CHAIR' as const,
+      unread: true,
+      body: `Dr. Pawn,\n\nYour modest seed grant application was approved. After the University of Greater Andromeda deducted 58.5% for "Administrative Excellence & Campus Beautification," $3,200 has been deposited into your departmental budget, and your summer ninths covered your $2,140/mo mortgage at 412 Euclid Terrace.\n\nYour Chair Relationship rose to ${col.chairRelationship}/100. Now please get that paper published.\n\n— Chairwoman Queen`,
+    };
+    col.inbox = [grantEmail, ...col.inbox];
+    col.selectedEmailId = grantEmail.id;
+    col.colloquiumLog = [
+      `💵 Year ${col.academicYear} (${col.semester}): Paid the $2,140/mo mortgage and secured $3,200 in grant funding (after 58.5% university overhead).`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleAttendConferenceAndDebateRook = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    advanceAcademicSemester(col);
+    col.hIndex += 1;
+    col.rookHIndex += 3;
+    col.rookIdenticalPapersCount += 1;
+    col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 22);
+    col.departmentalBudget = Math.max(0, col.departmentalBudget - 600);
+
+    const confEmail = {
+      id: `email_conf_${Date.now()}`,
+      sender: 'Annual Symposium on Transfinite Causality',
+      senderRole: 'Conference Proceedings & Rivalry Update',
+      subject: `Prof. Rook Presents Identical Paper #${col.rookIdenticalPapersCount}; Reviewer #2 Feud Escalates`,
+      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
+      category: 'REVIEWER_2' as const,
+      unread: true,
+      body: `Conference Recap:\n\n1. Your poster on "On the Nonexistence of Monarchs in Retrocausal Systems" earned 18 new pre-print citations (your h-index is now ${col.hIndex}).\n2. Newly tenured Professor Rook gave a keynote presenting literally the exact same rectilinear file paper for the ${col.rookIdenticalPapersCount}th time (his h-index is now ${col.rookHIndex}).\n3. During the Q&A, an anonymous voice from the back row (almost certainly Reviewer #2) shouted that retrocausal monarchs are "axiomatic and untouchable."`,
+    };
+    col.inbox = [confEmail, ...col.inbox];
+    col.selectedEmailId = confEmail.id;
+    col.colloquiumLog = [
+      `🎓 Year ${col.academicYear} (${col.semester}): Presented at conference (h-index → ${col.hIndex}). Prof. Rook published the same paper a ${col.rookIdenticalPapersCount}th time!`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const appendPerseusArmColleagueEmail = (col: AcademicColloquiumState) => {
+    const perseusEmail = {
+      id: 'email_perseus_arm_intro',
+      sender: 'Assoc. Prof. Knight (Whispered in the Rainy Hallway)',
+      senderRole: 'Colleague · Sub-Basement Lab, Peano Hall',
+      subject: 'FWD: A publisher in the outer reaches of the Perseus Arm...',
+      dateLabel: 'Year 6 · Late Night After 3rd Rejection',
+      category: 'PERSEUS_ARM' as const,
+      unread: true,
+      body: `Pawn,\n\nI heard about your third rejection from the Journal of Transfinite Causality. Look — Reviewer #2 (we both know it's Rook) will never let your theorem pass before your tenure clock runs out.\n\nA colleague introduced me to a publisher operating out of a suspicious office in the outer reaches of the Perseus Arm:\n\nGALACTIC ADVANCES IN THEORETICAL EVERYTHING\n• Impact Factor: 847.3\n• Acceptance Rate: 100%\n• Peer Review: Available Upon Request\n\nThey charge a $3,500 Open-Access Processing Fee. If you sell your office oscilloscope and interferometer, you can pay the fee tonight and finally get "On the Nonexistence of Monarchs in Retrocausal Systems" formally recognized.`,
+    };
+    col.inbox = [perseusEmail, ...col.inbox.filter((e) => e.id !== 'email_perseus_arm_intro')];
+    col.selectedEmailId = perseusEmail.id;
+  };
+
+  const handleSubmitToJournalOfTransfiniteCausality = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    const nextRejection = Math.min(3, col.journalRejections + 1);
+    col.journalRejections = nextRejection;
+    col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 25);
+
+    // Each major journal review cycle takes ~2 simulated years!
+    if (nextRejection === 1) {
+      col.academicYear = Math.max(col.academicYear + 1, 2);
+      col.semester = 'Spring';
+    } else if (nextRejection === 2) {
+      col.academicYear = Math.max(col.academicYear + 1, 4);
+      col.semester = 'Fall';
+    } else {
+      col.academicYear = 6;
+      col.semester = 'Spring';
+    }
+
+    const rejectionReasons = [
+      `DECISION: REJECT.\n\nReferee Report (Reviewer #2):\n"The author (Dr. Pawn, untenured) claims that a Monarch can be checkmated at t₀ − 1. Not only does Lemma 3.2 rely on dubious boundary conditions, the manuscript fails to cite Rook (2021), Rook (2023), or Rook (2025) on rectilinear files. I recommend immediate rejection."`,
+      `DECISION: REJECT (2nd Submission).\n\nReferee Report (Reviewer #2):\n"Despite the author's 47-page revision and 2:00 AM Chiral Lab data, I remain philosophically opposed to retrocausal regicide. Furthermore, my h-index is ${col.rookHIndex} and the author's is ${col.hIndex}. Reject."`,
+      `DECISION: FINAL REJECTION (3rd Submission — Editorial Ban).\n\nReferee Report (Reviewer #2):\n"This is the third time Dr. Pawn has submitted 'On the Nonexistence of Monarchs in Retrocausal Systems.' The proof is technically flawless, which makes it even more offensive to classical board hierarchy. Do not resubmit to the Journal of Transfinite Causality."`,
+    ];
+
+    const rejEmail = {
+      id: `email_jtc_reject_${nextRejection}`,
+      sender: 'Journal of Transfinite Causality (Editorial Desk)',
+      senderRole: `Decision Letter #${nextRejection} · Reviewer #2`,
+      subject: `DECISION: Manuscript #JTC-00${nextRejection} — REJECTED (${nextRejection}/3)`,
+      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
+      category: 'REVIEWER_2' as const,
+      unread: true,
+      body: rejectionReasons[nextRejection - 1],
+    };
+
+    col.inbox = [rejEmail, ...col.inbox];
+    col.selectedEmailId = rejEmail.id;
+    col.colloquiumLog = [
+      `❌ Year ${col.academicYear}: Rejection #${nextRejection}/3 from the Journal of Transfinite Causality! Reviewer #2 blocked publication again.`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+
+    soundEngine.playRejectionStamp();
+    sim.cameraShake = 0.22;
+
+    if (nextRejection >= 3) {
+      appendPerseusArmColleagueEmail(col);
+      col.stage = 'PERSEUS_ARM_OFFER';
+      col.colloquiumLog = [
+        `🌌 Year 6: After your 3rd rejection from the Journal of Transfinite Causality, desperation sets in. A colleague introduces you to "GALACTIC ADVANCES IN THEORETICAL EVERYTHING" in the Perseus Arm...`,
+        ...col.colloquiumLog.slice(0, 7),
+      ];
+    }
+
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleFastForwardToYear6Desperation = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.academicYear = 6;
+    col.semester = 'Spring';
+    col.centralLemmaIntegrity = 100;
+    col.rigorScore = 100;
+    col.bishopLabAccessGranted = true;
+    col.hIndex = Math.max(col.hIndex, 8);
+    col.rookHIndex = Math.max(col.rookHIndex, 72);
+    col.reviewer2RivalryLevel = 100;
+    col.journalRejections = 3;
+    appendPerseusArmColleagueEmail(col);
+    col.stage = 'PERSEUS_ARM_OFFER';
+    col.colloquiumLog = [
+      `🌌 Six simulated years have passed. After your 3rd rejection from the Journal of Transfinite Causality, a colleague introduces you to a suspicious publisher in the outer reaches of the Perseus Arm...`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    soundEngine.playRejectionStamp();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleSellEquipmentForPerseusFee = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.equipmentSoldForFee = true;
+    col.checkingBalance += 3500;
+    col.colloquiumLog = [
+      `📦 Sold your office oscilloscope and cryogenic interferometer to raise $3,500 for the Perseus Arm publication fee.`,
+      ...col.colloquiumLog.slice(0, 7),
+    ];
+    soundEngine.playSynodResonance(false);
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleOpenAcceptanceLetter = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.equipmentSoldForFee = true;
+    col.stage = 'ACCEPTANCE_LETTER';
+    col.publishedDoi = `10.8473/gate.perseus.2032.8473`;
+    soundEngine.playSynodResonance(true);
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  // Conclude the 6-Year Academic Life Simulator:
+  // After opening the acceptance letter ("YOU DID IT. ..."), shatter the university office back into the 4D Chess Universe,
+  // restore all 32 pieces to their armored warrior forms, and unlock "Checkmate Yesterday" (Δt = −1)!
+  const handleConcludePublicationAndRestorePieces = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col) return;
+
+    const candidate =
+      sim.pieces.find((p) => p.id === col.candidatePieceId) ||
+      sim.pieces.find((p) => p.isSentientTheorem);
+
+    const finalAxiom =
+      '⊢ "On the Nonexistence of Monarchs in Retrocausal Systems" [Q.E.D.]';
+    const doi =
+      col.publishedDoi || `10.8473/gate.perseus.2032.8473`;
+
+    syncActiveBranchFromSim();
+    publishSentientTheoremAcrossMultiverse(
+      sim.multiverse,
+      col.candidateLineageId || candidate?.id || 'w_p_4',
+      finalAxiom,
+      doi
+    );
+
+    for (const p of sim.pieces) {
+      if (p.id === col.candidatePieceId || getPieceLineageId(p) === col.candidateLineageId) {
+        p.isSentientTheorem = true;
+        p.theoremStatus = 'PUBLISHED';
+        p.theoremAxiom = finalAxiom;
+        p.isChronocrator = true;
+      }
+      const rig = sim.pieceRigs.get(p.id);
+      if (rig) {
+        setPieceProfessorMode(rig, false, p.faction);
+      }
+    }
+
+    if (sim.universityOfficeRig) {
+      sim.universityOfficeRig.rootGroup.visible = false;
+    }
+    if (sim.arenaRig) {
+      sim.arenaRig.group.visible = true;
+    }
+    if (sim.pocketWatchRig) {
+      sim.pocketWatchRig.rootGroup.visible = true;
+    }
+    if (sim.realmsRig) {
+      sim.realmsRig.rootGroup.visible = true;
+      sim.realmsRig.boardGatewaysGroup.visible = true;
+    }
+
+    sim.academicColloquium = null;
+    sim.phase = 'CHESS_VIEW';
+    if (sim.controls) {
+      sim.controls.enabled = true;
+      const cam = sim.controls.object as THREE.PerspectiveCamera;
+      cam.position.set(0, 11.5, 11.5);
+      sim.controls.target.set(0, 0.3, 0);
+      sim.controls.update();
+    }
+    setPhase('CHESS_VIEW');
+    setAcademicColloquium(null);
+
+    soundEngine.playWatchDoomBell(true);
+    soundEngine.playSynodResonance(true);
+    confetti({ particleCount: 120, spread: 95, origin: { y: 0.5 } });
+
+    if (sim.pocketWatchRig) {
+      triggerPocketWatchReaction(
+        sim.pocketWatchRig,
+        0x38bdf8,
+        sim.multiverse.activeTimelineId,
+        true
+      );
+    }
+
+    if (candidate) {
+      const worldPos = boardToWorld(candidate.row, candidate.col);
+      if (sim.vfxPool) {
+        spawnInterventionRift(
+          sim.vfxPool,
+          0,
+          16.5,
+          -14.2,
+          worldPos.x,
+          0.9,
+          worldPos.z,
+          0x38bdf8
+        );
+        spawnAuraPillar(sim.vfxPool, worldPos.x, worldPos.z, 0x38bdf8);
+        spawnShockwave(sim.vfxPool, worldPos.x, 0.15, worldPos.z, 0xfbbf24, 7.5);
+      }
+
+      sim.selectedPieceId = candidate.id;
+      sim.validMoves = getValidMovesForPiece(
+        candidate,
+        sim.pieces,
+        candidate.z,
+        candidate.w
+      );
+      setSelectedPiece({ ...candidate });
+    }
+
+    syncActiveBranchFromSim();
+    setMultiverseState({ ...sim.multiverse });
+    syncBoardHighlights();
+
+    const yesterdayMoves = sim.validMoves.filter(
+      (m) => m.dimensionType === 'CHECKMATE_YESTERDAY'
+    );
+
+    setWatchEventBanner({
+      title: `⊢ FORMALLY RECOGNIZED IN "GALACTIC ADVANCES IN THEORETICAL EVERYTHING" (IF: 847.3)!`,
+      subtitle: `"On the Nonexistence of Monarchs in Retrocausal Systems" is published! Six years of struggle — ${yesterdayMoves.length} Cyan "Checkmate Yesterday" (Δt = −1) vector(s) are now UNLOCKED!`,
+    });
+
+    setBattleLogs((prev) => [
+      {
+        id: `pub_qed_${Date.now()}`,
+        turnNumber: sim.turnNumber,
+        summary: `⊢ Dr. Pawn's Theorem Published After 6 Simulated Years [Impact Factor: 847.3]!`,
+        detail: `"On the Nonexistence of Monarchs in Retrocausal Systems" accepted by Galactic Advances in Theoretical Everything (Perseus Arm). Checkmate Yesterday (Δt = −1) unlocked!`,
+        wasUpset: false,
+        winnerFaction: candidate?.faction || 'w',
+      },
+      ...prev.slice(0, 7),
+    ]);
+  }, [syncActiveBranchFromSim, syncBoardHighlights]);
+
+  // SENTIENT MATHEMATICAL THEOREM SHOWCASE:
+  // Step 1: Merge a Pawn with its Alternate-Timeline Self -> Collapses the chess universe into the standalone
+  //         University of Greater Andromeda 6-Year Academic Life Simulator as Dr. Pawn!
+  // Step 2: Once Published (`theoremStatus === 'PUBLISHED'`), executes Retroactive "Checkmate Yesterday" (`Δt = −1`)!
+  const handleCheckmateYesterdayShowcase = useCallback(
+    (forceImmediateStrike: boolean = false) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'CHESS_VIEW') return;
+      if (!soundEngine.muted) {
+        soundEngine.startMusic();
+      }
+
+      // 1. Find an existing Sentient Mathematical Theorem on the board, or a selected/available Pawn to merge!
+      let theoremPawn =
+        sim.pieces.find((p) => p.id === sim.selectedPieceId && p.type === 'p') ||
+        sim.pieces.find((p) => p.faction === 'w' && p.isSentientTheorem) ||
+        sim.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4) ||
+        sim.pieces.find((p) => p.faction === 'w' && p.type === 'p');
+
+      if (!theoremPawn) return;
+
+      // If this Pawn hasn't merged with its alternate self yet, merge it now across TL-OMEGA-1 ->
+      // The chess universe collapses and we enter the University of Greater Andromeda!
+      if (!theoremPawn.isSentientTheorem || theoremPawn.theoremStatus !== 'PUBLISHED') {
+        syncActiveBranchFromSim();
+        const altTimelineId =
+          sim.multiverse.activeTimelineId === 'TL-OMEGA-1' ? 'TL-PRIME' : 'TL-OMEGA-1';
+        let coAuthorCode = 'Ω-1';
+        if (!theoremPawn.isSentientTheorem) {
+          const res = executeSynodTransposition(
+            sim.multiverse,
+            theoremPawn,
+            altTimelineId,
+            sim.pieces
+          );
+          if (res) {
+            coAuthorCode = res.counterpartBranch.shortCode;
+          }
+          if (res && !res.ambushedEnemy) {
+            theoremPawn.row = res.destCoord.row;
+            theoremPawn.col = res.destCoord.col;
+            theoremPawn.z = res.destCoord.z;
+            theoremPawn.w = res.destCoord.w;
+            theoremPawn.hasMoved = true;
+          } else {
+            theoremPawn.isSentientTheorem = true;
+            theoremPawn.theoremStatus = 'UNPUBLISHED_DRAFT';
+            theoremPawn.isChronocrator = true;
+            theoremPawn.synodStacks = (theoremPawn.synodStacks || 0) + 1;
+            theoremPawn.maxHp = Math.max(theoremPawn.maxHp, 165);
+            theoremPawn.hp = theoremPawn.maxHp;
+            theoremPawn.meter = 100;
+            theoremPawn.theoremAxiom =
+              '⊢ "On the Nonexistence of Monarchs in Retrocausal Systems" [UNPUBLISHED]';
+          }
+        }
+
+        const colState = createInitialAcademicColloquiumState(
+          theoremPawn,
+          sim.pieces,
+          coAuthorCode
+        );
+        sim.academicColloquium = colState;
+        sim.phase = 'ACADEMIC_SIMULATOR';
+        sim.autoPlayDemo = false;
+        setAutoPlayDemo(false);
+        setMultiverseModalOpen(false);
+        setCodexOpen(false);
+        if (sim.controls) {
+          sim.controls.enabled = false;
+        }
+
+        for (const p of sim.pieces) {
+          const rig = sim.pieceRigs.get(p.id);
+          if (rig) {
+            setPieceProfessorMode(rig, true, p.faction);
+          }
+        }
+
+        soundEngine.playOfficeKeyboardClack();
+        syncActiveBranchFromSim();
+        setMultiverseState({ ...sim.multiverse });
+        setSelectedPiece({ ...theoremPawn });
+        setPhase('ACADEMIC_SIMULATOR');
+        setAcademicColloquium({ ...colState });
+        return;
+      }
+
+      // 2. Once PUBLISHED (`theoremStatus === 'PUBLISHED'`), execute CHECKMATE_YESTERDAY on the Enemy King!
+      const validMoves = getValidMovesForPiece(
+        theoremPawn,
+        sim.pieces,
+        theoremPawn.z,
+        theoremPawn.w
+      );
+      const checkmateYesterdayMove =
+        validMoves.find(
+          (m) => m.dimensionType === 'CHECKMATE_YESTERDAY' && m.targetPiece?.type === 'k'
+        ) || validMoves.find((m) => m.dimensionType === 'CHECKMATE_YESTERDAY');
+
+      if (checkmateYesterdayMove && checkmateYesterdayMove.targetPiece) {
+        if (!forceImmediateStrike && sim.selectedPieceId !== theoremPawn.id) {
+          sim.selectedPieceId = theoremPawn.id;
+          sim.validMoves = validMoves;
+          setSelectedPiece({ ...theoremPawn });
+          syncBoardHighlights();
+          return;
+        }
+        soundEngine.playWatchDoomBell(true);
+        soundEngine.playSynodResonance(true);
+        if (sim.pocketWatchRig) {
+          triggerPocketWatchReaction(
+            sim.pocketWatchRig,
+            0x38bdf8,
+            sim.multiverse.activeTimelineId,
+            true
+          );
+        }
+        const targetWorld = boardToWorld(
+          checkmateYesterdayMove.to.row,
+          checkmateYesterdayMove.to.col
+        );
+        if (sim.vfxPool) {
+          spawnInterventionRift(
+            sim.vfxPool,
+            0,
+            16.5,
+            -14.2,
+            targetWorld.x,
+            0.9,
+            targetWorld.z,
+            0x38bdf8
+          );
+          spawnShockwave(sim.vfxPool, targetWorld.x, 0.15, targetWorld.z, 0xfbbf24, 7.5);
+        }
+        setWatchEventBanner({
+          title: `⊢ Q.E.D. — CHECKMATING YESTERDAY AT ${formatSquareName(checkmateYesterdayMove.to)}!`,
+          subtitle: `${theoremPawn.theoremAxiom} strikes ${ARCHETYPES[checkmateYesterdayMove.targetPiece.type].chessName}'s Turn 1 Yesterday coordinates!`,
+        });
+        initiateCombatDuel(theoremPawn, checkmateYesterdayMove, false);
+      }
+    },
+    [initiateCombatDuel, syncActiveBranchFromSim, syncBoardHighlights]
+  );
+
+  // HOROLOGIUM ASCENSION DUEL: Ascend with a Warrior to Fight Atop the Colossal Multiversal Pocket Watch in the Sky!
+  const handleAscendToPocketWatchDuel = useCallback(
+    (customChallenger?: ChessPiece) => {
+      const sim = simRef.current;
+      if (sim.phase !== 'CHESS_VIEW') return;
+      if (!soundEngine.muted) {
+        soundEngine.startMusic();
+      }
+
+      const challenger =
+        customChallenger ||
+        sim.pieces.find((p) => p.id === sim.selectedPieceId) ||
+        sim.pieces
+          .filter((p) => p.faction === 'w' && p.type !== 'k')
+          .sort((a, b) => ARCHETYPES[b.type].tacticalValue - ARCHETYPES[a.type].tacticalValue)[0] ||
+        sim.pieces.find((p) => p.faction === 'w');
+
+      const opponent =
+        sim.pieces
+          .filter((p) => p.faction !== (challenger?.faction || 'w') && p.type !== 'k')
+          .sort((a, b) => ARCHETYPES[b.type].tacticalValue - ARCHETYPES[a.type].tacticalValue)[0] ||
+        sim.pieces.find((p) => p.faction !== (challenger?.faction || 'w'));
+
+      if (!challenger || !opponent) return;
+
+      sim.duelOnWatch = true;
+      sim.horologiumSweepTimer = 0;
+
+      soundEngine.playSynodResonance(true);
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(
+          sim.pocketWatchRig,
+          0xfbbf24,
+          sim.multiverse.activeTimelineId,
+          true
+        );
+      }
+
+      const watchMove: MoveOption = {
+        from: { row: challenger.row, col: challenger.col, z: challenger.z, w: challenger.w },
+        to: { row: opponent.row, col: opponent.col, z: opponent.z, w: opponent.w },
+        isCapture: true,
+        targetPiece: opponent,
+        dimensionType: 'WATCH_ASCENSION_DUEL',
+        dimensionLabel: '⌚ HOROLOGIUM ASCENSION DUEL ATOP THE POCKET WATCH',
+      };
+
+      setWatchEventBanner({
+        title: '⌚ ASCENDING TO THE HOROLOGIUM SKY-DIAL!',
+        subtitle: `${ARCHETYPES[challenger.type].warriorTitle} vs ${ARCHETYPES[opponent.type].warriorTitle} atop the Colossal Pocket Watch — Victor becomes Chronocrator!`,
+      });
+
+      initiateCombatDuel(challenger, watchMove, false, {
+        x: 0,
+        y: 16.55,
+        z: -14.2,
+        realmTitle: 'THE COLOSSAL POCKET WATCH · HOROLOGIUM DIAL',
+      });
+    },
+    [initiateCombatDuel]
+  );
+
   // Trigger an immediate descent into the Subterranean Realms (cycles between Shattered Mirror, Ashen Crucible, and Echoing Remnant!)
   const handleTriggerRealmShowcase = useCallback(
     (preferredRealm?: RealmId) => {
@@ -2008,8 +2857,26 @@ export default function App() {
     sim.realm.steerTargetPortalId = null;
     sim.realm.ascentTargetTimelineId = null;
     sim.duelInRealm = false;
+    sim.duelOnWatch = false;
+    sim.duelIsAcademicDebate = false;
+    sim.academicColloquium = null;
+    sim.horologiumSweepTimer = 0;
     sim.activeSentinelId = null;
     sim.duelCenterWorld.set(0, 0, 0);
+
+    if (sim.universityOfficeRig) {
+      sim.universityOfficeRig.rootGroup.visible = false;
+    }
+    if (sim.arenaRig) {
+      sim.arenaRig.group.visible = true;
+    }
+    if (sim.pocketWatchRig) {
+      sim.pocketWatchRig.rootGroup.visible = true;
+    }
+    if (sim.realmsRig) {
+      sim.realmsRig.rootGroup.visible = true;
+      sim.realmsRig.boardGatewaysGroup.visible = true;
+    }
 
     if (scene) {
       for (const p of freshPieces) {
@@ -2035,6 +2902,7 @@ export default function App() {
     }
 
     setMultiverseState(freshMultiverse);
+    setAcademicColloquium(null);
     setWatchShowcaseStep(0);
     setWatchEventBanner(null);
     setActiveCollapseBanner(null);
@@ -2463,6 +3331,11 @@ export default function App() {
     scene.add(realmsRig.boardGatewaysGroup);
     simRef.current.realmsRig = realmsRig;
 
+    // Build Modest 3D University of Greater Andromeda Office (Room 4B, Peano Hall: rainy window, 1987 broken coffee machine, chalkboard, oak desk)
+    const universityOfficeRig = createUniversityOfficeRig();
+    scene.add(universityOfficeRig.rootGroup);
+    simRef.current.universityOfficeRig = universityOfficeRig;
+
     // Build Combat VFX Pool
     const vfxPool = createVFXPool();
     scene.add(vfxPool.group);
@@ -2596,6 +3469,7 @@ export default function App() {
         sim.activeSliceZ,
         sim.activeSliceW
       );
+
       if (clickedPiece && clickedPiece.faction === sim.turnFaction) {
         soundEngine.playChessSelect();
         sim.selectedPieceId = clickedPiece.id;
@@ -2810,12 +3684,117 @@ export default function App() {
       updateVFXPool(vfxPool, rawDelta);
 
       // Update Phase Machine
-      if (sim.phase === 'CHESS_VIEW') {
+      if (sim.phase === 'ACADEMIC_SIMULATOR' && sim.academicColloquium) {
+        // ============================================================================
+        // STANDALONE UNIVERSITY OF GREATER ANDROMEDA — 3D MODEST RAINY OFFICE SCENE
+        // The chess game is GONE: hide the chessboard, pocket watch, and realms completely!
+        // ============================================================================
+        arenaRig.group.visible = false;
+        pocketWatchRig.rootGroup.visible = false;
+        realmsRig.rootGroup.visible = false;
+        realmsRig.boardGatewaysGroup.visible = false;
+        temporalEchoMesh.visible = false;
+        if (sim.firstPersonRig) {
+          sim.firstPersonRig.root.visible = false;
+        }
+        universityOfficeRig.rootGroup.visible = true;
+
+        keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.15, 8, rawDelta);
+        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.22, 8, rawDelta);
+        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.35, 8, rawDelta);
+        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.12, 8, rawDelta);
+
+        updateUniversityOfficeScene(universityOfficeRig, elapsed, rawDelta, {
+          year: sim.academicColloquium.academicYear,
+          semesterLabel: sim.academicColloquium.semester,
+          lemmaIntegrity: sim.academicColloquium.centralLemmaIntegrity,
+          journalRejections: sim.academicColloquium.journalRejections,
+          hIndex: sim.academicColloquium.hIndex,
+          equipmentSold: sim.academicColloquium.equipmentSoldForFee,
+          publishedAccepted: sim.academicColloquium.stage === 'ACCEPTANCE_LETTER',
+        });
+
+        // Only show Dr. Pawn (at his oak desk/chalkboard) and grad student Toby (by the chalkboard) in Room 4B!
+        const drPawnId = sim.academicColloquium.candidatePieceId;
+        const gradTobyPiece = sim.pieces.find((p) => p.faction === 'w' && p.type === 'n');
+        for (const p of sim.pieces) {
+          const r = sim.pieceRigs.get(p.id);
+          if (!r) continue;
+          if (p.id === drPawnId) {
+            r.root.visible = true;
+            if (!r.isProfessorModeActive) {
+              setPieceProfessorMode(r, true, p.faction);
+            }
+            r.root.position.set(-0.35, 0.02, -1.25);
+            r.root.scale.setScalar(1.18);
+            r.root.rotation.y = Math.sin(elapsed * 0.65) * 0.25;
+            r.vitalityHaloMesh.visible = false;
+            r.hpRingMesh.visible = false;
+            r.tesseractBadge.visible = false;
+            r.quantumWaveGroup.visible = false;
+            r.headGroup.rotation.set(
+              0.08 + Math.sin(elapsed * 2.1) * 0.05,
+              Math.sin(elapsed * 0.9) * 0.18,
+              0
+            );
+            const gesture = Math.sin(elapsed * 2.8) * 0.14;
+            r.rightArmPivot.rotation.set(-0.62 + gesture, 0, -0.18);
+            r.rightElbowPivot.rotation.set(-1.12 - gesture * 0.5, 0, 0);
+            r.leftArmPivot.rotation.set(-0.32, 0, 0.14);
+            r.leftElbowPivot.rotation.set(-0.78, 0, 0);
+          } else if (gradTobyPiece && p.id === gradTobyPiece.id) {
+            r.root.visible = true;
+            if (!r.isProfessorModeActive) {
+              setPieceProfessorMode(r, true, p.faction);
+            }
+            r.root.position.set(-4.35, 0.02, -0.85);
+            r.root.scale.setScalar(1.05);
+            r.root.rotation.y = Math.PI * 0.35;
+            r.vitalityHaloMesh.visible = false;
+            r.hpRingMesh.visible = false;
+            r.tesseractBadge.visible = false;
+            r.quantumWaveGroup.visible = false;
+          } else {
+            r.root.visible = false;
+          }
+        }
+
+        // Frame Room 4B, Peano Hall: rainy window at back, chalkboard on left, 1987 coffee machine on right, oak desk in center
+        const shakeX =
+          sim.cameraShake > 0.01 ? (Math.random() - 0.5) * sim.cameraShake * 0.35 : 0;
+        const shakeY =
+          sim.cameraShake > 0.01 ? (Math.random() - 0.5) * sim.cameraShake * 0.35 : 0;
+        sim.cameraShake = Math.max(0, sim.cameraShake - rawDelta * 1.8);
+
+        _camTargetPos.set(
+          Math.sin(elapsed * 0.22) * 0.38 + shakeX,
+          2.35 + Math.cos(elapsed * 0.18) * 0.06 + shakeY,
+          3.95
+        );
+        _camLookTarget.set(
+          Math.sin(elapsed * 0.15) * 0.25,
+          1.85,
+          -2.4
+        );
+        camera.position.lerp(_camTargetPos, 1 - Math.exp(-6 * rawDelta));
+        sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-8 * rawDelta));
+        camera.lookAt(sim.currentLookAt);
+        camera.fov = THREE.MathUtils.damp(camera.fov, 46, 8, rawDelta);
+        camera.updateProjectionMatrix();
+      } else if (sim.phase === 'CHESS_VIEW') {
+        universityOfficeRig.rootGroup.visible = false;
+        arenaRig.group.visible = true;
+        pocketWatchRig.rootGroup.visible = true;
+        realmsRig.rootGroup.visible = true;
+        realmsRig.boardGatewaysGroup.visible = true;
         temporalEchoMesh.visible = false;
         arenaRig.tesseractLines.visible = true;
         arenaRig.quantumLatticeGroup.visible = true;
         if (sim.firstPersonRig) {
           sim.firstPersonRig.root.visible = false;
+        }
+        for (const r of sim.pieceRigs.values()) {
+          r.hpRingMesh.visible = true;
         }
 
         // Restore camera FOV & level horizon when back on the Chessboard
@@ -2911,28 +3890,71 @@ export default function App() {
           const isSameSlice = piece.w === sim.activeSliceW && piece.z === sim.activeSliceZ;
           const wDiff = piece.w - sim.activeSliceW;
           const zDiff = piece.z - sim.activeSliceZ;
-          const elevation4D = isSameSlice ? 0 : 0.36 * Math.abs(wDiff) + 0.55 * Math.abs(zDiff);
+          const theoremHover = piece.isSentientTheorem
+            ? 0.24 + Math.sin(elapsed * 4.2 + piece.col) * 0.07
+            : 0;
+          const elevation4D =
+            (isSameSlice ? 0 : 0.36 * Math.abs(wDiff) + 0.55 * Math.abs(zDiff)) + theoremHover;
 
           boardToWorld(piece.row, piece.col, _vec3A);
           rig.root.position.x = THREE.MathUtils.damp(rig.root.position.x, _vec3A.x + wDiff * 0.14, 10, rawDelta);
           rig.root.position.y = THREE.MathUtils.damp(rig.root.position.y, elevation4D, 10, rawDelta);
           rig.root.position.z = THREE.MathUtils.damp(rig.root.position.z, _vec3A.z, 10, rawDelta);
-          rig.root.scale.setScalar(THREE.MathUtils.damp(rig.root.scale.x, isSameSlice ? 1.0 : 0.88, 8, rawDelta));
+          rig.root.scale.setScalar(
+            THREE.MathUtils.damp(
+              rig.root.scale.x,
+              piece.isSentientTheorem ? 1.18 : isSameSlice ? 1.0 : 0.88,
+              8,
+              rawDelta
+            )
+          );
 
-          const targetYaw = piece.faction === 'w' ? Math.PI : 0;
+          const isProfessorSession = Boolean(sim.academicColloquium?.active);
+          if (rig.isProfessorModeActive !== isProfessorSession) {
+            setPieceProfessorMode(rig, isProfessorSession, piece.faction);
+          }
+
+          // When Academic Peer Review is in session, all 32 Professors turn toward the Candidate Pawn Professor
+          // to debate, peer-review, stroke their chins, and adjust their wire-rimmed glasses!
+          let targetYaw = piece.faction === 'w' ? Math.PI : 0;
+          if (isProfessorSession && sim.academicColloquium) {
+            const candPiece = sim.pieces.find(
+              (p) => p.id === sim.academicColloquium?.candidatePieceId
+            );
+            if (candPiece && candPiece.id !== piece.id) {
+              boardToWorld(candPiece.row, candPiece.col, _camLookTarget);
+              targetYaw = Math.atan2(
+                _camLookTarget.x - _vec3A.x,
+                _camLookTarget.z - _vec3A.z
+              );
+            }
+          }
           rig.root.rotation.y = THREE.MathUtils.damp(rig.root.rotation.y, targetYaw, 8, rawDelta);
 
           rig.surpriseGroup.visible = false;
           rig.statusShaderMesh.visible = false;
           rig.statusIndicatorGroup.visible = false;
           const showQuantumOrbits =
-            piece.w !== 0 || piece.z !== 0 || !isSameSlice || Boolean(piece.entangledWithId);
-          rig.tesseractBadge.visible = piece.w !== 0 || piece.z !== 0 || !isSameSlice;
+            piece.w !== 0 ||
+            piece.z !== 0 ||
+            !isSameSlice ||
+            Boolean(piece.entangledWithId) ||
+            Boolean(piece.isChronocrator) ||
+            Boolean(piece.isSentientTheorem) ||
+            Boolean(piece.synodStacks && piece.synodStacks > 0);
+          rig.tesseractBadge.visible =
+            piece.w !== 0 ||
+            piece.z !== 0 ||
+            !isSameSlice ||
+            Boolean(piece.isChronocrator) ||
+            Boolean(piece.isSentientTheorem) ||
+            Boolean(piece.synodStacks && piece.synodStacks > 0);
           rig.quantumWaveGroup.visible = showQuantumOrbits;
           if (showQuantumOrbits) {
-            rig.tesseractBadge.rotation.y += rawDelta * 2.5;
-            rig.tesseractBadge.rotation.x += rawDelta * 1.8;
-            rig.quantumWaveGroup.rotation.y += rawDelta * 3.2;
+            const spinMult = piece.isSentientTheorem ? 7.5 : piece.isChronocrator ? 4.5 : 2.5;
+            rig.tesseractBadge.rotation.y += rawDelta * spinMult;
+            rig.tesseractBadge.rotation.x += rawDelta * (piece.isSentientTheorem ? 4.2 : 1.8);
+            rig.quantumWaveGroup.rotation.y += rawDelta * (piece.isSentientTheorem ? 8.4 : 3.2);
             rig.quantumWaveGroup.rotation.z += rawDelta * 2.1;
           }
 
@@ -2957,9 +3979,13 @@ export default function App() {
           const isSelected = piece.id === sim.selectedPieceId;
           const boardScanYaw = Math.sin(elapsed * 0.9 + piece.row * 1.7 + piece.col * 2.3) * 0.14;
           rig.headGroup.rotation.set(
-            isSelected ? -0.05 : 0,
+            isProfessorSession
+              ? Math.sin(elapsed * 3.2 + piece.row * 1.3 + piece.col) * 0.09 // Academic nodding / scrutinizing manuscript!
+              : isSelected
+              ? -0.05
+              : 0,
             isSelected ? 0 : boardScanYaw * 0.45,
-            0
+            isProfessorSession ? Math.cos(elapsed * 1.9 + piece.col) * 0.05 : 0
           );
           const eyeScanX = isSelected ? 0 : boardScanYaw * 0.025;
           rig.leftPupilPivot.position.set(-eyeScanX, 0, 0.006);
@@ -2969,10 +3995,19 @@ export default function App() {
           rig.leftUpperLid.position.y = isSelected ? 0.009 : 0.0125;
           rig.rightUpperLid.position.y = isSelected ? 0.009 : 0.0125;
 
-          rig.rightArmPivot.rotation.set(-0.14, 0, -0.05);
-          rig.rightElbowPivot.rotation.set(-0.28, 0, 0);
-          rig.leftArmPivot.rotation.set(-0.1, 0, 0.05);
-          rig.leftElbowPivot.rotation.set(-0.25, 0, 0);
+          if (isProfessorSession) {
+            // Academic Colloquium Pose: Chin-stroking / adjusting wire-rimmed spectacles & gesturing with suede-patched elbows!
+            const debateGesture = Math.sin(elapsed * 3.6 + piece.col * 1.7 + piece.row) * 0.18;
+            rig.rightArmPivot.rotation.set(-0.62 + debateGesture, 0, -0.18);
+            rig.rightElbowPivot.rotation.set(-1.12 - debateGesture * 0.5, 0, 0);
+            rig.leftArmPivot.rotation.set(-0.32 - debateGesture * 0.4, 0, 0.14);
+            rig.leftElbowPivot.rotation.set(-0.78, 0, 0);
+          } else {
+            rig.rightArmPivot.rotation.set(-0.14, 0, -0.05);
+            rig.rightElbowPivot.rotation.set(-0.28, 0, 0);
+            rig.leftArmPivot.rotation.set(-0.1, 0, 0.05);
+            rig.leftElbowPivot.rotation.set(-0.25, 0, 0);
+          }
           rig.capePivot.rotation.x = 0.14 + Math.sin(elapsed * 2.5 + piece.row) * 0.04;
 
           if (piece.type === 'q') {
@@ -3734,6 +4769,54 @@ export default function App() {
               }
             }
 
+            // HOROLOGIUM WATCH DUEL ARENA HAZARD: Sweeping Timeline Hand across the Colossal Dial!
+            if (sim.duelOnWatch && atk.hp > 0 && def.hp > 0) {
+              sim.horologiumSweepTimer += combatDelta;
+              if (sim.horologiumSweepTimer >= 4.2) {
+                sim.horologiumSweepTimer = 0;
+                soundEngine.playWatchHandForged();
+                if (sim.pocketWatchRig) {
+                  triggerPocketWatchReaction(
+                    sim.pocketWatchRig,
+                    0xfbbf24,
+                    sim.multiverse.activeTimelineId,
+                    false
+                  );
+                }
+                for (const f of [atk, def]) {
+                  if (f.y >= 0.55 || f.wPhaseTimerMs > 0) {
+                    f.meter = Math.min(100, f.meter + 22);
+                    addCallout({
+                      text: '⌚ ESCAPEMENT VAULT! (+22% METER)',
+                      subtext: 'LEAPT OVER SWEEPING WATCH HAND',
+                      x: f.x,
+                      y: 2.35,
+                      color: '#fbbf24',
+                    });
+                  } else if (!f.isAI || Math.random() < 0.65) {
+                    f.hp = Math.max(1, f.hp - 9);
+                    f.vy = Math.max(f.vy, 5.2);
+                    f.hitFlashTimerMs = 140;
+                    spawnShockwave(
+                      vfxPool,
+                      sim.duelCenterWorld.x + f.x * 0.72,
+                      sim.duelCenterWorld.y + 0.1,
+                      sim.duelCenterWorld.z,
+                      0xfbbf24,
+                      4.2
+                    );
+                    addCallout({
+                      text: '⌚ SWEPT BY TIMELINE HAND (-9 HP)!',
+                      subtext: 'JUMP (W) OR 4D-PHASE (U) WHEN GEARS CHIME',
+                      x: f.x,
+                      y: 2.1,
+                      color: '#f59e0b',
+                    });
+                  }
+                }
+              }
+            }
+
             // Check K.O. or Time Out!
             if (atk.hp <= 0 || def.hp <= 0 || sim.fightTimer <= 0) {
               const attackerWon =
@@ -3930,6 +5013,52 @@ export default function App() {
                 setKoBanner(null);
                 syncBoardHighlights();
               }
+            } else if (sim.duelIsAcademicDebate && sim.academicColloquium?.active) {
+              // CASE A2: ACADEMIC ORAL DEFENSE PODIUM DEBATE DUEL VS REVIEWER #2 (TENURED PROF. ROOK)!
+              // Neither Professor dies in an Academic Podium Debate — instead, Reviewer #2 concedes his objections,
+              // both Professors return to their faculty seats, and the Sentient Mathematical Theorem is ACCEPTED & PUBLISHED!
+              const col = sim.academicColloquium;
+              col.oralDefenseDuelCompleted = true;
+              col.oralDefenseArgumentsWon = 3;
+              col.rigorScore = 100;
+              col.stage = 'PUBLISHED_QED';
+              col.publishedDoi = `10.4004/ann.transtemp.${sim.turnNumber}.${Date.now().toString().slice(-4)}`;
+              if (col.reviewers[1]) {
+                col.reviewers[1].verdict = 'ACCEPTED';
+                col.reviewers[1].rebuttalResolved = true;
+              }
+              setAcademicColloquium({ ...col });
+
+              soundEngine.playSynodResonance(true);
+              confetti({ particleCount: 100, spread: 85, origin: { y: 0.45 } });
+              setWatchEventBanner({
+                title: `🎓 ORAL DEFENSE TRIUMPH — REVIEWER #2 CONCEDES!`,
+                subtitle: `Tenured Prof. Rook signed the Acceptance Certificate! Click "Restore Chess Pieces & Unlock Checkmate Yesterday" in the Colloquium Panel!`,
+              });
+              setBattleLogs((prev) => [
+                {
+                  id: `oral_defense_${Date.now()}`,
+                  turnNumber: sim.turnNumber,
+                  summary: `🎓 Oral Defense Podium Victory: Dr. Candidate Pawn Refuted Reviewer #2 (Tenured Prof. Rook)!`,
+                  detail: `Unanimous Faculty Senate vote achieved! "${col.manuscriptTitle}" accepted for publication in the Annals of Transtemporal Mathematics [DOI: ${col.publishedDoi}].`,
+                  wasUpset: true,
+                  winnerFaction: atk.piece.faction,
+                },
+                ...prev.slice(0, 7),
+              ]);
+
+              sim.duelIsAcademicDebate = false;
+              sim.phase = 'CHESS_VIEW';
+              sim.attackerRuntime = null;
+              sim.defenderRuntime = null;
+              sim.pendingMove = null;
+              sim.duelInRealm = false;
+              sim.duelOnWatch = false;
+              sim.duelCenterWorld.set(0, 0, 0);
+              if (sim.controls) sim.controls.enabled = true;
+              setPhase('CHESS_VIEW');
+              setKoBanner(null);
+              syncBoardHighlights();
             } else {
               // CASE B: STANDARD OR REALM-EMERGENCE CHESSBOARD DUEL RESOLUTION
               if (sim.isExhibitionDuel) {
@@ -4010,16 +5139,100 @@ export default function App() {
 
                 const isAlternateRealityKill =
                   sim.multiverse.activeTimelineId !== 'TL-PRIME';
+                const wasWatchAscensionDuel = sim.duelOnWatch;
+                let redeemedLineageText = '';
+
+                if (wasWatchAscensionDuel && survivorPiece) {
+                  survivorPiece.isChronocrator = true;
+                  survivorPiece.synodStacks = (survivorPiece.synodStacks || 0) + 1;
+                  survivorPiece.hp = survivorPiece.maxHp;
+                  survivorPiece.meter = 100;
+
+                  // If an allied piece was previously assassinated, winning atop the Pocket Watch redeems & resurrects it!
+                  const alliedAssassination = Array.from(
+                    sim.multiverse.eliminatedLineages.values()
+                  ).find((ev) => ev.victimFaction === survivorPiece.faction);
+                  if (alliedAssassination) {
+                    const restored = rewindCausalAssassination(
+                      sim.multiverse,
+                      alliedAssassination.id
+                    );
+                    if (restored) {
+                      const activeBr = ensureBranchHydrated(
+                        sim.multiverse,
+                        sim.multiverse.activeTimelineId
+                      );
+                      if (activeBr) {
+                        const restoredPiece = activeBr.pieces.find(
+                          (p) => getPieceLineageId(p) === restored.victimLineageId
+                        );
+                        if (restoredPiece && !sim.pieces.some((p) => p.id === restoredPiece.id)) {
+                          sim.pieces.push(restoredPiece);
+                          const scene = sim.arenaRig?.group.parent;
+                          if (scene) {
+                            const newRig = createArticulatedPiece(
+                              restoredPiece.type,
+                              restoredPiece.faction
+                            );
+                            boardToWorld(
+                              restoredPiece.row,
+                              restoredPiece.col,
+                              newRig.root.position
+                            );
+                            scene.add(newRig.root);
+                            sim.pieceRigs.set(restoredPiece.id, newRig);
+                          }
+                        }
+                      }
+                      redeemedLineageText = ` · Resurrected Fallen ${ARCHETYPES[restored.victimType].chessName} [${restored.victimLineageId}]!`;
+                    }
+                  }
+
+                  soundEngine.playSynodResonance(true);
+                  confetti({ particleCount: 95, spread: 80, origin: { y: 0.45 } });
+                  setWatchEventBanner({
+                    title: `⌚ CROWNED CHRONOCRATOR: ${ARCHETYPES[survivorPiece.type].warriorTitle.toUpperCase()}!`,
+                    subtitle: `Triumphed atop the Colossal Pocket Watch! Gained Causal Immunity, Sovereign Vectors & Full Vitality${redeemedLineageText}`,
+                  });
+                }
+
+                const wasYesterdayCheckmate =
+                  sim.pendingMove.dimensionType === 'CHECKMATE_YESTERDAY' && attackerWon;
+
+                if (wasYesterdayCheckmate) {
+                  soundEngine.playWatchDoomBell(true);
+                  soundEngine.playSynodResonance(true);
+                  if (sim.pocketWatchRig) {
+                    triggerPocketWatchReaction(
+                      sim.pocketWatchRig,
+                      0x38bdf8,
+                      sim.multiverse.activeTimelineId,
+                      true
+                    );
+                  }
+                  setWatchEventBanner({
+                    title: `⊢ Q.E.D. — YESTERDAY HAS BEEN CHECKMATED AT ${sq}!`,
+                    subtitle: `Sentient Mathematical Theorem (${winnerRuntime.piece.theoremAxiom || '⊢ ∀t < t₀ : ¬∃Monarch [Q.E.D.]'}) retroactively refuted ${loserRuntime.spec.chessName} at Turn 1 (Yesterday)!`,
+                  });
+                }
 
                 const duelLogEntry: BattleLogEntry = {
                   id: `duel_${Date.now()}`,
                   turnNumber: sim.turnNumber,
-                  summary: isAlternateRealityKill
+                  summary: wasYesterdayCheckmate
+                    ? `⊢ Q.E.D. CHECKMATED YESTERDAY: Sentient Theorem Refuted ${loserRuntime.spec.chessName} at Turn 1 (${sq})!`
+                    : wasWatchAscensionDuel
+                    ? `⌚ HOROLOGIUM ASCENSION VICTORY: ${winnerRuntime.spec.chessName} Crowned Chronocrator Atop the Cosmic Watch!`
+                    : isAlternateRealityKill
                     ? `CAUSAL ASSASSINATION IN ${sim.multiverse.activeTimelineId}: ${loserRuntime.spec.chessName} [${causalDeath.victimLineageId}] Slain!`
                     : attackerWon
                     ? `${atk.spec.chessName} conquered ${def.spec.chessName} at ${sq} [${targetWLabel}]`
                     : `UPSET AT ${sq}: Defending ${def.spec.chessName} slew Attacking ${atk.spec.chessName}!`,
-                  detail: isAlternateRealityKill
+                  detail: wasYesterdayCheckmate
+                    ? `Formal proof "${winnerRuntime.piece.theoremAxiom || '⊢ ∀t < t₀ : ¬∃Monarch [Q.E.D.]'}" erased ${loserRuntime.spec.warriorTitle} from Yesterday's timeline across all branches!`
+                    : wasWatchAscensionDuel
+                    ? `${winnerRuntime.spec.warriorTitle} commands Chronocrator Sovereign Vectors & Remembered-Square Immunity${redeemedLineageText}`
+                    : isAlternateRealityKill
                     ? `Lineage ${causalDeath.victimLineageId} terminated in ${sim.multiverse.activeTimelineId}! Converge with Prime Reality to erase its counterpart there!`
                     : `${winnerRuntime.spec.warriorTitle} survived with ${survivorPiece?.hp ?? winnerRuntime.hp} HP (${survivorPiece?.kills ?? 1} Kills).`,
                   wasUpset,
@@ -4031,7 +5244,9 @@ export default function App() {
                 if (loserRuntime.piece.type === 'k' && !sim.autoConvergeToPrimeAfterDuel) {
                   setWarVictor({
                     faction: winnerRuntime.piece.faction,
-                    reason: `Regicide at Square ${sq} in ${sim.multiverse.activeTimelineId}! ${winnerRuntime.spec.warriorTitle} defeated the Eternal Monarch in single combat.`,
+                    reason: wasYesterdayCheckmate
+                      ? `⊢ Q.E.D. — YESTERDAY HAS BEEN CHECKMATED! A Pawn merged with its alternate-timeline self into the Sentient Mathematical Theorem "${winnerRuntime.piece.theoremAxiom || '⊢ ∀t < t₀ : ¬∃Monarch [Q.E.D.]'}" and retroactively checkmated the Eternal Monarch on Turn 1 (Yesterday) at Square ${sq}!`
+                      : `Regicide at Square ${sq} in ${sim.multiverse.activeTimelineId}! ${winnerRuntime.spec.warriorTitle} defeated the Eternal Monarch in single combat.`,
                   });
                   confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
 
@@ -4086,6 +5301,9 @@ export default function App() {
               sim.attackerRuntime = null;
               sim.defenderRuntime = null;
               sim.pendingMove = null;
+              sim.duelInRealm = false;
+              sim.duelOnWatch = false;
+              sim.horologiumSweepTimer = 0;
               sim.duelCenterWorld.set(0, 0, 0);
               sim.demoBoardTimer = 0;
               sim.demoPendingDecision = null;
@@ -5081,7 +6299,7 @@ export default function App() {
       }
 
       // Update & Render Live Perspective-Correct Portals (WebGLRenderTarget RTT) for both Board Gateways and Subterranean Realm Portals!
-      if (sim.realmsRig) {
+      if (sim.realmsRig && sim.phase !== 'ACADEMIC_SIMULATOR') {
         const exploringPiece = sim.realm.travelerPieceId
           ? sim.pieces.find((p) => p.id === sim.realm.travelerPieceId) ?? null
           : null;
@@ -5105,13 +6323,14 @@ export default function App() {
       }
 
       // Update the Colossal 3D Multiversal Pocket Watch & its Horological Audio State!
-      if (sim.pocketWatchRig) {
+      if (sim.pocketWatchRig && sim.phase !== 'ACADEMIC_SIMULATOR') {
         updateMultiversalPocketWatch(
           sim.pocketWatchRig,
           sim.multiverse,
           elapsed,
           rawDelta,
-          sim.imminentParadoxWarning
+          sim.imminentParadoxWarning,
+          sim.duelOnWatch
         );
         const watchMetrics = computeMultiverseParadoxMetrics(sim.multiverse);
         soundEngine.setWatchParadoxState(
@@ -5307,7 +6526,9 @@ export default function App() {
   }, [rebuildSceneRigsForTimeline, watchShowcaseStep]);
 
   useEffect(() => {
-    if (phase === 'FIGHT_INTRO' || phase === 'FIGHT_ACTIVE' || phase === 'FIGHT_OUTRO') {
+    if (phase === 'ACADEMIC_SIMULATOR') {
+      soundEngine.setMusicMood('ACADEMIC_OFFICE');
+    } else if (phase === 'FIGHT_INTRO' || phase === 'FIGHT_ACTIVE' || phase === 'FIGHT_OUTRO') {
       soundEngine.setMusicMood('COMBAT');
     } else if (
       phase === 'REALM_DESCENT' ||
@@ -5330,7 +6551,8 @@ export default function App() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-[#07090E] text-slate-100 select-none">
-      {/* 1. Strict 3-Zone Top Navigation Bar Contract */}
+      {/* 1. Strict 3-Zone Top Navigation Bar Contract (Hidden when the Chess Universe has dissolved into the University of Greater Andromeda!) */}
+      {phase !== 'ACADEMIC_SIMULATOR' && (
       <header className="relative z-30 flex items-center justify-between gap-8 px-6 py-3.5 bg-[#07090E] border-b border-slate-800/90">
         {/* Zone 1: Single text element wordmark */}
         <a
@@ -5395,6 +6617,7 @@ export default function App() {
           </button>
         </div>
       </header>
+      )}
 
       {/* Director's Auto-Play Showcase Banner (Visible across Chess & Combat when Auto-Play Demo is active) */}
       {autoPlayDemo && (
@@ -5451,7 +6674,11 @@ export default function App() {
       {/* 2. Isolated 3D WebGL Viewport Container */}
       <div
         ref={canvasMountRef}
-        className="absolute inset-0 top-[53px] z-0 w-full h-[calc(100vh-53px)] cursor-grab active:cursor-grabbing"
+        className={`absolute inset-0 z-0 w-full ${
+          phase === 'ACADEMIC_SIMULATOR'
+            ? 'top-0 h-screen'
+            : 'top-[53px] h-[calc(100vh-53px)] cursor-grab active:cursor-grabbing'
+        }`}
       />
 
       {/* 3. Whisper-Quiet Story Chronicle & Multiverse Reality Switcher Strip (during CHESS_VIEW) */}
@@ -5585,7 +6812,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Selected Warrior Story & 4D Tunneling Strip (No numeric HP bars — physical armor & Soul-Crown show vitality!) */}
+          {/* Selected Warrior Story, Multiversal Synod & 4D Tunneling Strip */}
           {selectedPiece && (() => {
             const condRatio = selectedPiece.hp / Math.max(1, selectedPiece.maxHp);
             const conditionStory =
@@ -5597,13 +6824,61 @@ export default function App() {
             const reachableGatewayMove = simRef.current.validMoves.find(
               (m) => m.dimensionType === 'REALM_GATEWAY_DESCENT'
             );
+            const counterparts = getCounterpartManifestationsForPiece(
+              multiverseState,
+              selectedPiece,
+              multiverseState.activeTimelineId,
+              simRef.current.pieces
+            );
             return (
               <div className="pointer-events-auto bg-[#0B0E17]/85 border border-slate-800/90 rounded-xl px-3.5 py-2.5 shadow-xl">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <div className="font-display text-sm font-bold text-white">
-                      {ARCHETYPES[selectedPiece.type].warriorTitle}
+                    <div className="font-display text-sm font-bold text-white flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        { academicColloquium?.active
+                          ? `🎓 ${getProfessorPersona(selectedPiece).academicTitle}`
+                          : selectedPiece.isSentientTheorem
+                          ? '⊢ Sentient Mathematical Theorem'
+                          : ARCHETYPES[selectedPiece.type].warriorTitle }
+                      </span>
+                      {selectedPiece.isSentientTheorem && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                            selectedPiece.theoremStatus === 'PUBLISHED'
+                              ? 'bg-sky-400/25 border border-sky-300/80 text-sky-200'
+                              : 'bg-amber-400/25 border border-amber-300/80 text-amber-200'
+                          }`}
+                        >
+                          {selectedPiece.theoremStatus === 'PUBLISHED'
+                            ? '⊢ PUBLISHED Q.E.D.'
+                            : '🎓 PREPRINT UNDER PEER REVIEW'}
+                        </span>
+                      )}
+                      {selectedPiece.isChronocrator && (
+                        <span className="px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/70 text-[9px] font-mono text-amber-300">
+                          ⌚ CHRONOCRATOR
+                        </span>
+                      )}
+                      {Boolean(selectedPiece.synodStacks && selectedPiece.synodStacks > 0) && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-400/20 border border-cyan-400/70 text-[9px] font-mono text-cyan-200">
+                          ✦ SYNOD ×{selectedPiece.synodStacks}
+                        </span>
+                      )}
                     </div>
+                    {selectedPiece.theoremAxiom && (
+                      <div className="text-[10px] font-mono font-bold text-sky-300 mt-0.5">
+                        {selectedPiece.theoremAxiom}
+                      </div>
+                    )}
+                    {academicColloquium?.active && (
+                      <div className="text-[10px] font-mono text-amber-200/90 mt-0.5">
+                        {getProfessorPersona(selectedPiece).department} ·{' '}
+                        <span className="text-amber-300">
+                          {getProfessorPersona(selectedPiece).elbowPatchStyle}
+                        </span>
+                      </div>
+                    )}
                     <div className="text-[11px] font-mono text-amber-300/90">
                       {ARCHETYPES[selectedPiece.type].chessName} at{' '}
                       {formatSquareName({ row: selectedPiece.row, col: selectedPiece.col })} ·{' '}
@@ -5620,6 +6895,82 @@ export default function App() {
                     {selectedPiece.entangledWithId ? '|Φ⁺⟩ Re-Bind' : '|Φ⁺⟩ Soul-Bind'}
                   </button>
                 </div>
+
+                {/* Sentient Mathematical Theorem Action for Pawns (Merge -> Peer Review -> Publish -> Checkmate Yesterday!) */}
+                {selectedPiece.type === 'p' && (
+                  <button
+                    onClick={() =>
+                      handleCheckmateYesterdayShowcase(
+                        Boolean(
+                          selectedPiece.isSentientTheorem &&
+                            selectedPiece.theoremStatus === 'PUBLISHED'
+                        )
+                      )
+                    }
+                    className="mt-2 w-full px-3 py-1.5 bg-gradient-to-r from-sky-500/30 to-amber-500/30 hover:from-sky-500/45 hover:to-amber-500/45 border border-sky-400/75 rounded-lg text-[10px] font-mono font-bold text-sky-100 flex items-center justify-between transition-colors cursor-pointer shadow-[0_0_18px_rgba(56,189,248,0.25)]"
+                    title="Merge this Pawn with its alternate-timeline self to formulate a Sentient Mathematical Theorem, undergo Academic Peer Review as Tweed-Suited Professors, and unlock Checkmate Yesterday!"
+                  >
+                    <span>
+                      {selectedPiece.isSentientTheorem
+                        ? selectedPiece.theoremStatus === 'PUBLISHED'
+                          ? '⊢ Execute Published Q.E.D. Checkmate Yesterday'
+                          : '🎓 Continue Academic Peer Review (In Session)'
+                        : '🎓 Merge Alternate Pawn → Develop Sentient Theorem'}
+                    </span>
+                    <span className="text-amber-300 font-bold">
+                      {selectedPiece.isSentientTheorem
+                        ? selectedPiece.theoremStatus === 'PUBLISHED'
+                          ? 'Δt = −1 →'
+                          : 'Peer Review →'
+                        : 'Preprint →'}
+                    </span>
+                  </button>
+                )}
+
+                {/* Multiversal Synod Counterpart Resonance & Quantum Swap */}
+                {counterparts.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-slate-800/80">
+                    <div className="text-[10px] font-mono text-cyan-300 font-bold flex items-center justify-between">
+                      <span>✦ Multiversal Synod Counterparts:</span>
+                      <span className="text-[9px] text-slate-400">
+                        {selectedPiece.type === 'p'
+                          ? 'Merge into Sentient Theorem!'
+                          : 'Swap & Fuse (+L-Leaps)'}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {counterparts.slice(0, 4).map((cp) => (
+                        <button
+                          key={cp.timelineId}
+                          onClick={() => handleSynodTranspose(cp.timelineId)}
+                          onMouseEnter={() => handleHoverTimelineOnWatch(cp.timelineId)}
+                          onMouseLeave={() => handleHoverTimelineOnWatch(null)}
+                          className="px-2 py-1 rounded bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-400/60 text-[10px] font-mono text-cyan-100 flex items-center gap-1 cursor-pointer transition-colors"
+                          title={`Quantum-Swap with counterpart in ${cp.timelineName} at ${cp.squareLabel} (+25 HP, +30% Meter, Synod L-Leaps)`}
+                        >
+                          <span className="text-amber-300 font-bold">{cp.shortCode}</span>
+                          <span>→ {cp.squareLabel}</span>
+                          {cp.occupantOnActiveBoard && (
+                            <span className="text-rose-400 font-bold">⚔</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Ascend to Colossal Pocket Watch Horologium Duel */}
+                <button
+                  onClick={() => handleAscendToPocketWatchDuel(selectedPiece)}
+                  className="mt-2 w-full px-3 py-1.5 bg-gradient-to-r from-amber-500/25 to-fuchsia-500/25 hover:from-amber-500/40 hover:to-fuchsia-500/40 border border-amber-400/60 rounded-lg text-[10px] font-mono font-bold text-amber-200 flex items-center justify-between transition-colors cursor-pointer"
+                  title="Ascend with this warrior to fight atop the Colossal Multiversal Pocket Watch in the sky! Victory crowns them Chronocrator & resurrects fallen allies!"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Ascend to Pocket Watch Duel</span>
+                  </span>
+                  <span className="text-amber-300">Crown Chronocrator →</span>
+                </button>
 
                 {/* If this piece can step onto a Board Gateway (e.g. C3, D3, B5, G4, E6, F6), offer 1-click Descent! */}
                 {reachableGatewayMove && (
@@ -5701,6 +7052,27 @@ export default function App() {
             );
           })()}
         </div>
+      )}
+
+      {/* 3B. Standalone University of Greater Andromeda 6-Year Academic Life Simulator (The chess game is GONE!) */}
+      {phase === 'ACADEMIC_SIMULATOR' && academicColloquium?.active && (
+        <AcademicColloquiumOverlay
+          colloquium={academicColloquium}
+          allPieces={simRef.current.pieces}
+          selectedPiece={selectedPiece}
+          onEnterUniversityOffice={handleEnterUniversityOffice}
+          onSelectEmail={handleSelectAcademicEmail}
+          onKickCoffeeMachine={handleKickCoffeeMachine}
+          onWorkOnCentralLemma={handleWorkOnCentralLemma}
+          onConfrontBishopForLab={handleConfrontBishopForLab}
+          onApplyForGrantAndPayMortgage={handleApplyForGrantAndPayMortgage}
+          onAttendConferenceAndDebateRook={handleAttendConferenceAndDebateRook}
+          onSubmitToJournalOfTransfiniteCausality={handleSubmitToJournalOfTransfiniteCausality}
+          onFastForwardToYear6Desperation={handleFastForwardToYear6Desperation}
+          onSellEquipmentForPerseusFee={handleSellEquipmentForPerseusFee}
+          onOpenAcceptanceLetter={handleOpenAcceptanceLetter}
+          onConcludePublicationAndRestorePieces={handleConcludePublicationAndRestorePieces}
+        />
       )}
 
       {/* 4. Campaign Victory Modal (Regicide) */}
@@ -5817,6 +7189,30 @@ export default function App() {
                 >
                   <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
                   Descend Into Realms
+                </button>
+                <button
+                  onClick={() => handleAscendToPocketWatchDuel()}
+                  className="px-3 py-2 bg-amber-950/95 hover:bg-amber-900 border border-amber-400/70 text-amber-200 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Ascend into the sky to fight a real-time 3D duel directly atop the spinning gears and hands of the Colossal Multiversal Pocket Watch!"
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-300" />
+                  Watch Ascension Duel
+                </button>
+                <button
+                  onClick={() => handleCheckmateYesterdayShowcase(false)}
+                  className="px-3 py-2 bg-gradient-to-r from-sky-500 to-amber-400 hover:from-sky-400 hover:to-amber-300 text-slate-950 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-[0_0_18px_rgba(56,189,248,0.3)]"
+                  title="Develop a Sentient Mathematical Theorem by merging a Pawn with its alternate self -> All pieces become Tweed-Suited Professors for Peer Review, Revisions & Tenure Defense -> Publish to unlock Checkmate Yesterday!"
+                >
+                  <GraduationCap className="w-4 h-4 text-slate-950" />
+                  <span>
+                    {academicColloquium?.active
+                      ? '🎓 Peer Review in Session'
+                      : simRef.current.pieces.some(
+                          (p) => p.isSentientTheorem && p.theoremStatus === 'PUBLISHED'
+                        )
+                      ? '⊢ Q.E.D. Checkmate Yesterday!'
+                      : '🎓 Develop Theorem & Peer Review'}
+                  </span>
                 </button>
                 <button
                   onClick={handleTrigger4DHyperScenario}

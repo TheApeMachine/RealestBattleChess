@@ -1080,32 +1080,67 @@ export function stepCombatSimulation(
           atk.hasHitThisAction = true;
           const mult = isFinisher && atk.activeComboRecipe ? atk.activeComboRecipe.finisherMultiplier : 1.0;
           const entangledBonus = isFinisher && atk.entangledPartnerName ? 7 : 0;
-          const dmg = Math.round(baseMove.damage * mult) + entangledBonus;
+          const synodStacks = (atk.piece.synodStacks || 0) + (atk.piece.isChronocrator ? 1 : 0);
+          const theoremBonus = atk.piece.isSentientTheorem ? 14 : 0;
+          const synodBonus =
+            theoremBonus + ((isHeavy || isFinisher) && synodStacks > 0 ? synodStacks * 6 : 0);
+          const dmg = Math.round(baseMove.damage * mult) + entangledBonus + synodBonus;
 
-          atk.meter = Math.min(100, atk.meter + baseMove.meterGain);
+          atk.meter = Math.min(100, atk.meter + baseMove.meterGain + (atk.piece.isSentientTheorem ? 10 : 0));
 
           resolveStrikeImpact(
             atk,
             def,
             {
               damage: dmg,
-              chipDamage: baseMove.chipDamage,
+              chipDamage: baseMove.chipDamage + (synodBonus > 0 ? 4 : 0),
               hitstunMs: isFinisher ? baseMove.hitstunMs * 1.25 : baseMove.hitstunMs,
               blockstunMs: baseMove.blockstunMs,
               knockback: isFinisher ? baseMove.knockback * 1.35 : baseMove.knockback,
               launchY: isFinisher && atk.activeComboRecipe?.effect === 'launch' ? 7.8 : baseMove.launchY,
-              unblockable: false,
+              unblockable: Boolean(atk.piece.isSentientTheorem && isFinisher),
               effect: isFinisher ? atk.activeComboRecipe?.effect : undefined,
               isSpecial: false,
               underdogBonusPct: 0,
-              canHit4DPhase: isFinisher, // Combo Finishers can catch 4D Phase-Shifted foes!
+              canHit4DPhase: isFinisher || Boolean(atk.piece.isChronocrator) || Boolean(atk.piece.isSentientTheorem),
             },
             nowMs,
             events,
             onCallout
           );
 
-          if (entangledBonus > 0 && atk.entangledPartnerName) {
+          if (atk.piece.isSentientTheorem && atk.piece.theoremStatus === 'UNPUBLISHED_DRAFT') {
+            def.recoverableHp = def.hp;
+            onCallout({
+              text: isFinisher
+                ? `🎓 REVIEWER #2 OBJECTION OVERRULED (+${synodBonus} DMG)!`
+                : `📚 CITATION NEEDED! (+${synodBonus} DEBATE RIGOR)`,
+              subtext: 'ORAL DEFENSE PODIUM · PEER-REVIEW COUNTEREXAMPLE',
+              x: def.x,
+              y: 2.52,
+              color: '#fbbf24',
+            });
+          } else if (atk.piece.isSentientTheorem) {
+            // Published Sentient Mathematical Theorem rewinds the opponent's recoverable vitality ("Yesterday's Lemma")!
+            def.recoverableHp = def.hp;
+            onCallout({
+              text: `⊢ Q.E.D. AXIOMATIC PROOF STRIKE (+${synodBonus} DMG)!`,
+              subtext: atk.piece.theoremAxiom || 'RETROACTIVE INDUCTION · YESTERDAY REFUTED',
+              x: def.x,
+              y: 2.52,
+              color: '#38bdf8',
+            });
+          } else if (synodBonus > 0) {
+            onCallout({
+              text: atk.piece.isChronocrator
+                ? `⌚ CHRONOCRATOR SOVEREIGN STRIKE: +${synodBonus} DMG!`
+                : `✦ SYNOD TRIAD STRIKE (×${synodStacks}): +${synodBonus} DMG!`,
+              subtext: 'PARALLEL-UNIVERSE COUNTERPARTS STRUCK IN UNISON',
+              x: def.x,
+              y: 2.48,
+              color: '#fbbf24',
+            });
+          } else if (entangledBonus > 0 && atk.entangledPartnerName) {
             onCallout({
               text: `|Φ⁺⟩ ENTANGLED ASSIST: +${entangledBonus} DMG!`,
               subtext: `BELL RESONANCE WITH ${atk.entangledPartnerName.toUpperCase()}`,

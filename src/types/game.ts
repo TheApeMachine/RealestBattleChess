@@ -113,6 +113,110 @@ export interface ChessPiece {
   mirrorInvertedParity?: boolean;
   realmTraversals?: number;
   inRealm?: RealmId | null;
+  /** Number of parallel-universe counterparts fused into this warrior via Multiversal Synod Resonance */
+  synodStacks?: number;
+  /** True if this warrior's lineage triumphed in a Duel atop the Colossal Multiversal Pocket Watch */
+  isChronocrator?: boolean;
+  /** True when a Pawn has merged with its alternate-timeline self(s) to form a Sentient Mathematical Theorem capable of checkmating yesterday */
+  isSentientTheorem?: boolean;
+  /** Formal axiomatic inscription of the Sentient Mathematical Theorem (e.g. '⊢ ∀t < t₀ : ¬∃Monarch [Q.E.D.]') */
+  theoremAxiom?: string;
+  /** Publication status of the Sentient Mathematical Theorem ('UNPUBLISHED_DRAFT' during Peer Review -> 'PUBLISHED' once accepted) */
+  theoremStatus?: TheoremPublicationStatus;
+}
+
+export type TheoremPublicationStatus = 'UNPUBLISHED_DRAFT' | 'PUBLISHED';
+
+export type AcademicColloquiumStage =
+  | 'INACTIVE'
+  | 'WORLD_COLLAPSE_FADE'
+  | 'UNIVERSITY_SIMULATOR'
+  | 'PERSEUS_ARM_OFFER'
+  | 'ACCEPTANCE_LETTER'
+  | 'PREPRINT_SUBMISSION'
+  | 'PEER_REVIEW_ROUND_1'
+  | 'MAJOR_REVISIONS'
+  | 'ORAL_DEFENSE_DEBATE'
+  | 'PUBLISHED_QED';
+
+export interface AcademicReviewer {
+  id: 'REVIEWER_1' | 'REVIEWER_2' | 'REVIEWER_3';
+  label: string;
+  professorTitle: string;
+  department: string;
+  pieceType: PieceType;
+  pieceId?: string;
+  squareLabel: string;
+  verdict: 'PENDING' | 'MINOR_REVISION' | 'MAJOR_REVISION' | 'STRONG_REJECT' | 'ACCEPTED';
+  critiqueQuote: string;
+  rebuttalResolved: boolean;
+}
+
+export interface AcademicEmailItem {
+  id: string;
+  sender: string;
+  senderRole: string;
+  subject: string;
+  dateLabel: string;
+  body: string;
+  category: 'GRAD_STUDENT' | 'CHAIR' | 'ADMIN' | 'MORTGAGE' | 'REVIEWER_2' | 'LAB_POLITICS' | 'PERSEUS_ARM';
+  unread?: boolean;
+}
+
+export interface AcademicColloquiumState {
+  active: boolean;
+  stage: AcademicColloquiumStage;
+  candidatePieceId: string | null;
+  candidateLineageId: string | null;
+  coAuthorTimelineCode: string;
+  manuscriptTitle: string;
+  manuscriptVersion: string;
+  selectedAxiomMethodology: string;
+  rigorScore: number; // 0 to 100
+  citationsCollected: number;
+  requiredCitations: number;
+  reviewer2CitationsBribed: boolean;
+  latexOverfullHboxFixed: boolean;
+  supplementalAppendixAttached: boolean;
+  oralDefenseArgumentsWon: number;
+  oralDefenseDuelCompleted: boolean;
+  reviewers: AcademicReviewer[];
+  facultyEndorserIds: string[];
+  endorsedByIds: string[];
+  colloquiumLog: string[];
+  publishedDoi?: string;
+
+  // University of Greater Andromeda — 6-Year Academic Life Simulator State
+  academicYear: number; // 1 to 6
+  semester: 'Fall' | 'Spring';
+  annualSalary: number;
+  checkingBalance: number;
+  monthlyMortgage: number;
+  mortgageMonthsBehind: number;
+  departmentalBudget: number;
+  hIndex: number;
+  rookHIndex: number;
+  adminProductivityScore: number;
+  chairRelationship: number; // 0 to 100 ("Strained")
+  centralLemmaIntegrity: number; // Starts at 18% ("Grad student found central lemma may be incorrect!")
+  bishopLabAccessGranted: boolean;
+  bishopSuspectedWithholding: boolean;
+  rookIdenticalPapersCount: number; // 3 identical papers, yet received full tenure!
+  reviewer2RivalryLevel: number; // 0 to 100
+  journalRejections: number; // 0, 1, 2, 3 rejections from Journal of Transfinite Causality
+  equipmentSoldForFee: boolean;
+  coffeeMachineKickCount: number;
+  selectedEmailId: string;
+  inbox: AcademicEmailItem[];
+}
+
+export interface CounterpartManifestationSummary {
+  timelineId: string;
+  timelineName: string;
+  shortCode: string;
+  piece: ChessPiece;
+  squareLabel: string;
+  occupantOnActiveBoard?: ChessPiece | null;
 }
 
 export interface TimelineSnapshot {
@@ -134,7 +238,11 @@ export type MoveDimensionType =
   | 'TEMPORAL_INTERCEPT'
   | 'REALM_GATEWAY_DESCENT'
   | 'REALM_PORTAL_TRAVERSAL'
-  | 'MULTIVERSE_ASSASSINATION';
+  | 'MULTIVERSE_ASSASSINATION'
+  | 'SYNOD_TRANSPOSITION'
+  | 'WATCH_ASCENSION_DUEL'
+  | 'ACADEMIC_DEBATE_DUEL'
+  | 'CHECKMATE_YESTERDAY';
 
 export interface MoveOption {
   from: { row: number; col: number; z: number; w: number };
@@ -306,7 +414,10 @@ export type PocketWatchEventKind =
   | 'TIMELINE_ENTERED'
   | 'CAUSAL_ASSASSINATION'
   | 'TIMELINE_COLLAPSED'
-  | 'PARADOX_SQUARE_DEATH';
+  | 'PARADOX_SQUARE_DEATH'
+  | 'SYNOD_RESONANCE'
+  | 'HOROLOGIUM_ASCENSION'
+  | 'RETROACTIVE_YESTERDAY_CHECKMATE';
 
 export interface PocketWatchEvent {
   id: string;
@@ -381,6 +492,7 @@ export interface MultiverseState {
 
 export type GamePhase =
   | 'CHESS_VIEW'
+  | 'ACADEMIC_SIMULATOR'
   | 'REALM_DESCENT'
   | 'REALM_EXPLORATION'
   | 'REALM_ASCENT'

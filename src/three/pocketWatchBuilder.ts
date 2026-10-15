@@ -491,20 +491,45 @@ function renderPocketWatchDialFace(
     ctx.fillText(sd.valueText, sd.x, sd.y + 30);
   });
 
+  // Check if a Sentient Mathematical Theorem exists on the active board or if Yesterday was just checkmated
+  const theoremPiece = activeBranch?.pieces.find((p) => p.isSentientTheorem);
+  const recentYesterdayEvent = multiverse.watchEvents.find(
+    (ev) => ev.kind === 'RETROACTIVE_YESTERDAY_CHECKMATE'
+  );
+
   // 4. UPPER ACTIVE UNIVERSE CARTOUCHE (12 o'clock below XII)
+  const isPeerReviewDraft = theoremPiece && theoremPiece.theoremStatus === 'UNPUBLISHED_DRAFT';
   ctx.fillStyle = 'rgba(10, 14, 24, 0.92)';
-  ctx.strokeStyle = rig.imminentParadoxWarning ? '#ef4444' : '#fbbf24';
+  ctx.strokeStyle = rig.imminentParadoxWarning
+    ? '#ef4444'
+    : isPeerReviewDraft
+    ? '#f59e0b'
+    : theoremPiece || recentYesterdayEvent
+    ? '#38bdf8'
+    : '#fbbf24';
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.roundRect(cx - 175, cy - 245, 350, 74, 12);
+  ctx.roundRect(cx - 195, cy - 245, 390, 74, 12);
   ctx.fill();
   ctx.stroke();
 
-  ctx.font = 'bold 15px monospace';
-  ctx.fillStyle = rig.imminentParadoxWarning ? '#fca5a5' : '#fcd34d';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillStyle = rig.imminentParadoxWarning
+    ? '#fca5a5'
+    : isPeerReviewDraft
+    ? '#fde68a'
+    : theoremPiece || recentYesterdayEvent
+    ? '#7dd3fc'
+    : '#fcd34d';
   ctx.fillText(
     rig.imminentParadoxWarning
       ? '⚠ IMMINENT PARADOX SQUARE COLLISION ⚠'
+      : recentYesterdayEvent
+      ? '⊢ Q.E.D. · YESTERDAY RETROACTIVELY CHECKMATED'
+      : isPeerReviewDraft
+      ? '🎓 ACADEMIC PEER REVIEW IN SESSION · PREPRINT'
+      : theoremPiece
+      ? theoremPiece.theoremAxiom || '⊢ SENTIENT MATHEMATICAL THEOREM PUBLISHED'
       : 'CHRONO-CAUSAL LEDGER · ACTIVE REALITY',
     cx,
     cy - 222
@@ -512,7 +537,15 @@ function renderPocketWatchDialFace(
 
   ctx.font = 'bold 24px Georgia, serif';
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(`${activeCode} · TURN ${activeTurn}`, cx, cy - 190);
+  ctx.fillText(
+    recentYesterdayEvent
+      ? `${activeCode} · TURN ${activeTurn} → Δt = −1 (YESTERDAY)`
+      : isPeerReviewDraft
+      ? `${activeCode} · FACULTY COLLOQUIUM`
+      : `${activeCode} · TURN ${activeTurn}`,
+    cx,
+    cy - 190
+  );
 
   // 5. CRYSTAL FRACTURE LINES ETCHED INTO THE DIAL UNDER HIGH STRAIN OR COLLAPSE
   const crackCount = metrics.collapsedCount * 3 + Math.floor(metrics.paradoxStrain * 6);
@@ -906,12 +939,20 @@ export function updateMultiversalPocketWatch(
   multiverse: MultiverseState,
   elapsed: number,
   dt: number,
-  imminentParadoxWarning: boolean = false
+  imminentParadoxWarning: boolean = false,
+  duelOnWatchMode: boolean = false
 ) {
   rig.imminentParadoxWarning = imminentParadoxWarning;
   const metrics = computeMultiverseParadoxMetrics(multiverse);
   const visitedIds = multiverse.visitedTimelineIds;
   const totalVisited = visitedIds.length;
+
+  // Smoothly tilt the Colossal Pocket Watch into a horizontal Celestial Arena Platform during a Horologium Watch Duel!
+  const targetRotX = duelOnWatchMode ? -Math.PI / 2 : 0.54;
+  const targetRootY = duelOnWatchMode ? 16.5 : 17.2;
+  rig.rootGroup.rotation.x = THREE.MathUtils.damp(rig.rootGroup.rotation.x, targetRotX, 8, dt);
+  rig.rootGroup.position.y = THREE.MathUtils.damp(rig.rootGroup.position.y, targetRootY, 8, dt);
+  rig.crystalMesh.visible = !duelOnWatchMode;
 
   // 1. Ensure a persistent 3D WatchHandRig exists for every visited/created timeline
   visitedIds.forEach((tid, idx) => {
@@ -970,8 +1011,8 @@ export function updateMultiversalPocketWatch(
     // In Three.js XY plane, 12 o'clock is +Y (rotation.z = 0), clockwise is negative Z rotation
     handRig.rootPivot.rotation.z = -(handRig.currentAngle + jitter);
 
-    // Active hand rises slightly forward and pulses brightly
-    const targetZ = (isActive ? 0.58 : 0.28) + idx * 0.045;
+    // Active hand rises slightly forward and pulses brightly (kept flush when dueling atop the watch!)
+    const targetZ = duelOnWatchMode ? 0.12 + idx * 0.015 : (isActive ? 0.58 : 0.28) + idx * 0.045;
     handRig.rootPivot.position.z = THREE.MathUtils.lerp(
       handRig.rootPivot.position.z,
       targetZ,
@@ -1004,6 +1045,7 @@ export function updateMultiversalPocketWatch(
     }
 
     // Keep the floating 3D medallion upright and synchronized
+    handRig.labelSprite.visible = !duelOnWatchMode;
     handRig.labelSprite.material.rotation = handRig.rootPivot.rotation.z + handRig.upperBrokenPivot.rotation.z;
     const labelKey = `${branch.shortCode}|${branch.turnNumber}|${isActive}|${branch.isCollapsed}|${isHovered}`;
     if (labelKey !== handRig.lastLabelStateKey) {
@@ -1075,10 +1117,19 @@ export function updateMultiversalPocketWatch(
   rig.subDialNeedles.realitiesNeedle.rotation.z =
     -Math.min(Math.PI * 1.8, (metrics.visitedCount - 1) * 0.55);
 
-  // 4. Rotate Exposed Internal Clockwork Gears (with strain stutter at high paradox load)
-  const strainSpeedMult = 1 + metrics.paradoxStrain * 2.2;
+  // 4. Rotate Exposed Internal Clockwork Gears (reverses backward in time during a Retroactive Yesterday Checkmate!)
+  const latestWatchEv = multiverse.watchEvents[0];
+  const isReversingYesterday =
+    latestWatchEv &&
+    latestWatchEv.kind === 'RETROACTIVE_YESTERDAY_CHECKMATE' &&
+    rig.bellStrikeTimer > 0;
+  const strainSpeedMult =
+    ((duelOnWatchMode ? 2.4 : 1) + metrics.paradoxStrain * 2.2) *
+    (isReversingYesterday ? -3.6 : 1.0);
   const stutter =
-    metrics.paradoxStrain > 0.45 && Math.sin(elapsed * 19) > 0.72 ? -0.4 : 1.0;
+    !isReversingYesterday && metrics.paradoxStrain > 0.45 && Math.sin(elapsed * 19) > 0.72
+      ? -0.4
+      : 1.0;
   for (const g of rig.gears) {
     g.mesh.rotation.z += dt * g.ratio * strainSpeedMult * stutter;
   }
@@ -1100,9 +1151,9 @@ export function updateMultiversalPocketWatch(
   rig.caseMaterial.emissiveIntensity =
     0.22 + metrics.paradoxStrain * 0.55 + (rig.imminentParadoxWarning ? Math.sin(elapsed * 12) * 0.25 : 0);
 
-  // 6. Unlock & Orbit Outer Gimbaled Astrolabe Rings as more timelines are visited
+  // 6. Unlock & Orbit Outer Gimbaled Astrolabe Rings as more timelines are visited (or during Horologium Duels)
   rig.astrolabeRings.forEach((ring, idx) => {
-    const shouldShow = totalVisited >= idx + 2;
+    const shouldShow = duelOnWatchMode || totalVisited >= idx + 2;
     ring.visible = shouldShow;
     if (shouldShow) {
       ring.rotation.x = Math.sin(elapsed * (0.35 + idx * 0.18) + idx) * 0.32;
@@ -1130,11 +1181,12 @@ export function updateMultiversalPocketWatch(
     }
   }
 
-  // Gentle majestic levitation bob of the entire colossal pocket watch
-  rig.watchBodyGroup.position.y = Math.sin(elapsed * 0.9) * 0.28;
-  rig.watchBodyGroup.rotation.z =
-    Math.sin(elapsed * 0.45) * 0.025 +
-    (rig.imminentParadoxWarning ? Math.sin(elapsed * 28) * 0.012 : 0);
+  // Gentle majestic levitation bob of the entire colossal pocket watch (locked steady when fighters duel atop it!)
+  rig.watchBodyGroup.position.y = duelOnWatchMode ? 0 : Math.sin(elapsed * 0.9) * 0.28;
+  rig.watchBodyGroup.rotation.z = duelOnWatchMode
+    ? 0
+    : Math.sin(elapsed * 0.45) * 0.025 +
+      (rig.imminentParadoxWarning ? Math.sin(elapsed * 28) * 0.012 : 0);
 
   // Redraw dial canvas only when multiverse state signature changes
   renderPocketWatchDialFace(rig, multiverse);

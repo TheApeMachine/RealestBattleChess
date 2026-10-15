@@ -3,6 +3,7 @@ import {
   CausalCollapseResolution,
   CausalDeathEvent,
   ChessPiece,
+  CounterpartManifestationSummary,
   Faction,
   MoveOption,
   MultiverseMoveRecord,
@@ -1485,6 +1486,211 @@ export function getLineageManifestationsAcrossMultiverse(
     });
   }
   return out;
+}
+
+/**
+ * MULTIVERSAL SYNOD:
+ * Finds all living parallel-universe manifestations of `piece` (`same lineageId`) across
+ * other timelines in the multiverse whose square `(row, col)` differs from `piece`'s active square
+ * (or where a cross-timeline Synod resonance can be invoked).
+ */
+export function getCounterpartManifestationsForPiece(
+  multiverse: MultiverseState,
+  piece: ChessPiece,
+  activeTimelineId: string,
+  activePieces: ChessPiece[]
+): CounterpartManifestationSummary[] {
+  const lineageId = getPieceLineageId(piece);
+  const all = getLineageManifestationsAcrossMultiverse(multiverse, lineageId);
+  const results: CounterpartManifestationSummary[] = [];
+
+  for (const item of all) {
+    if (item.timelineId === activeTimelineId || !item.piece || item.piece.hp <= 0) continue;
+    const branch = multiverse.timelines.get(item.timelineId);
+    if (branch?.isCollapsed) continue;
+
+    const cp = item.piece;
+    const occupantOnActiveBoard =
+      activePieces.find(
+        (p) =>
+          p.id !== piece.id &&
+          p.row === cp.row &&
+          p.col === cp.col &&
+          p.z === cp.z &&
+          p.w === cp.w
+      ) || null;
+
+    // Exclude squares obstructed by an allied piece on the active board
+    if (occupantOnActiveBoard && occupantOnActiveBoard.faction === piece.faction) {
+      continue;
+    }
+
+    results.push({
+      timelineId: item.timelineId,
+      timelineName: item.timelineName,
+      shortCode: item.shortCode,
+      piece: clonePiece(cp),
+      squareLabel: formatSquareName(cp),
+      occupantOnActiveBoard,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Executes a Cross-Reality Synod Transposition & Fusion between `activePiece` in `activeTimelineId`
+ * and its living counterpart in `targetTimelineId`:
+ * - Swaps their spatial coordinates across the two timelines!
+ * - Fuses their parallel resonance (`synodStacks += 1`), healing +25 HP & +30 Meter!
+ * - Marks `targetTimelineId` as visited on the Multiversal Pocket Watch and emits a `SYNOD_RESONANCE` event!
+ */
+export function executeSynodTransposition(
+  multiverse: MultiverseState,
+  activePiece: ChessPiece,
+  targetTimelineId: string,
+  activePieces: ChessPiece[]
+): {
+  counterpartBranch: TimelineBranch;
+  destCoord: { row: number; col: number; z: number; w: number };
+  ambushedEnemy: ChessPiece | null;
+  newSynodStacks: number;
+} | null {
+  const lineageId = getPieceLineageId(activePiece);
+  const counterpartBranch = ensureBranchHydrated(multiverse, targetTimelineId);
+  if (!counterpartBranch || counterpartBranch.isCollapsed) return null;
+
+  const counterpartPiece = counterpartBranch.pieces.find(
+    (p) => getPieceLineageId(p) === lineageId && p.hp > 0
+  );
+  if (!counterpartPiece) return null;
+
+  const destCoord = {
+    row: counterpartPiece.row,
+    col: counterpartPiece.col,
+    z: counterpartPiece.z,
+    w: counterpartPiece.w,
+  };
+
+  // If the counterpart in the other timeline happens to be on the exact same square, shift it 1 legal step or forward rank so Synod Transposition always produces a meaningful spatial or resonant shift!
+  if (
+    destCoord.row === activePiece.row &&
+    destCoord.col === activePiece.col &&
+    destCoord.z === activePiece.z &&
+    destCoord.w === activePiece.w
+  ) {
+    const altMoves = getValidMovesForPiece(
+      activePiece,
+      activePieces,
+      activePiece.z,
+      activePiece.w
+    ).filter((m) => !m.isCapture);
+    if (altMoves.length > 0) {
+      destCoord.row = altMoves[0].to.row;
+      destCoord.col = altMoves[0].to.col;
+      destCoord.z = altMoves[0].to.z;
+      destCoord.w = altMoves[0].to.w;
+    }
+  }
+
+  const occupant =
+    activePieces.find(
+      (p) =>
+        p.id !== activePiece.id &&
+        p.row === destCoord.row &&
+        p.col === destCoord.col &&
+        p.z === destCoord.z &&
+        p.w === destCoord.w
+    ) || null;
+
+  if (occupant && occupant.faction === activePiece.faction) {
+    return null;
+  }
+
+  // Swap coordinates with the counterpart in `targetTimelineId`
+  counterpartPiece.row = activePiece.row;
+  counterpartPiece.col = activePiece.col;
+  counterpartPiece.z = activePiece.z;
+  counterpartPiece.w = activePiece.w;
+  counterpartPiece.synodStacks = (counterpartPiece.synodStacks || 0) + 1;
+
+  const newStacks = (activePiece.synodStacks || 0) + 1;
+  activePiece.synodStacks = newStacks;
+  activePiece.hp = Math.min(activePiece.maxHp, activePiece.hp + 25);
+  activePiece.meter = Math.min(100, activePiece.meter + 30);
+
+  // If this piece is a PAWN merging with its alternate-timeline self, it formulates a
+  // SENTIENT MATHEMATICAL THEOREM manuscript (`UNPUBLISHED_DRAFT`) that must undergo
+  // Rigorous Academic Peer Review, Revisions & Tenure Defense before "Checkmate Yesterday" unlocks!
+  const AXIOMS = [
+    '⊢ ∀t < t₀ : ¬∃Monarch(E8) [Q.E.D.]',
+    '⊢ Gödel-Cohen Retroactive Lemma (Δt = −∞)',
+    '⊢ Axiom of Non-Well-Founded Regicide',
+    '⊢ Transfinite Induction over Ω-Timelines',
+  ];
+  if (activePiece.type === 'p') {
+    const alreadyPublished = activePiece.theoremStatus === 'PUBLISHED';
+    activePiece.isSentientTheorem = true;
+    activePiece.theoremStatus = alreadyPublished ? 'PUBLISHED' : 'UNPUBLISHED_DRAFT';
+    activePiece.maxHp = Math.max(activePiece.maxHp, 165);
+    activePiece.hp = activePiece.maxHp;
+    activePiece.meter = 100;
+    activePiece.theoremAxiom = AXIOMS[(newStacks - 1) % AXIOMS.length];
+    counterpartPiece.isSentientTheorem = true;
+    counterpartPiece.theoremStatus = activePiece.theoremStatus;
+    counterpartPiece.theoremAxiom = activePiece.theoremAxiom;
+  }
+
+  markTimelineVisitedOnWatch(multiverse, targetTimelineId, false);
+  emitPocketWatchEvent(
+    multiverse,
+    'SYNOD_RESONANCE',
+    multiverse.activeTimelineId,
+    targetTimelineId,
+    activePiece.isSentientTheorem
+      ? `🎓 SENTIENT THEOREM MANUSCRIPT DRAFTED — PEER REVIEW CONVENED!`
+      : `Multiversal Synod Resonance (×${newStacks})`,
+    activePiece.isSentientTheorem
+      ? `Pawn [${lineageId}] merged with its ${counterpartBranch.shortCode} self to formulate "${activePiece.theoremAxiom}" — All pieces are now Professors until Peer Review & Publication complete!`
+      : `${ARCHETYPES[activePiece.type].chessName} [${lineageId}] fused across ${counterpartBranch.shortCode} → ${formatSquareName(destCoord)}!`
+  );
+
+  return {
+    counterpartBranch,
+    destCoord,
+    ambushedEnemy: occupant && occupant.faction !== activePiece.faction ? occupant : null,
+    newSynodStacks: newStacks,
+  };
+}
+
+/**
+ * Marks a Sentient Mathematical Theorem as officially PUBLISHED (`theoremStatus = 'PUBLISHED'`)
+ * across all timelines in the multiverse after surviving Peer Review, Revisions, and Oral Defense!
+ */
+export function publishSentientTheoremAcrossMultiverse(
+  multiverse: MultiverseState,
+  candidateLineageId: string,
+  finalAxiom: string,
+  publishedDoi: string
+) {
+  for (const [, branch] of multiverse.timelines.entries()) {
+    for (const p of branch.pieces) {
+      if (getPieceLineageId(p) === candidateLineageId || (p.type === 'p' && p.isSentientTheorem)) {
+        p.isSentientTheorem = true;
+        p.theoremStatus = 'PUBLISHED';
+        p.isChronocrator = true;
+        p.theoremAxiom = finalAxiom;
+      }
+    }
+  }
+  emitPocketWatchEvent(
+    multiverse,
+    'RETROACTIVE_YESTERDAY_CHECKMATE',
+    multiverse.activeTimelineId,
+    undefined,
+    `📜 SENTIENT THEOREM PUBLISHED (${publishedDoi})!`,
+    `"${finalAxiom}" passed Peer Review! All Professors have returned to Chess Warriors & "Checkmate Yesterday" is now UNLOCKED!`
+  );
 }
 
 export interface MultiverseVerificationResult {

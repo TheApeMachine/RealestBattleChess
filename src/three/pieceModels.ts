@@ -52,6 +52,9 @@ export interface ArticulatedPieceRig {
   rightPupilPivot: THREE.Group;
   leftUpperLid: THREE.Mesh;
   rightUpperLid: THREE.Mesh;
+  // 3D Academic Professor Attire (Tweed Lapels, Tie, Suede Elbow Patches, Wire-Rim Glasses, Mortarboard & Manuscript)
+  professorAttireNodes: THREE.Object3D[];
+  isProfessorModeActive?: boolean;
 }
 
 export interface FirstPersonViewmodelRig {
@@ -2736,6 +2739,181 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
     statusCrystals.push(cMesh);
   }
 
+  // ==========================================================================
+  // 10. 3D ACADEMIC PROFESSOR ATTIRE RIG (TWEED SUIT LAPELS, SHIRT & TIE,
+  //     SUEDE ELBOW PATCHES, WIRE-RIM SPECTACLES, MORTARBOARD & PREPRINT SCROLL)
+  //     Activated when a Sentient Mathematical Theorem enters Academic Peer Review!
+  // ==========================================================================
+  const professorAttireNodes: THREE.Object3D[] = [];
+
+  const tweedLapelMat = new THREE.MeshStandardMaterial({
+    color: isWhite ? 0x4e3b2c : 0x1e293b,
+    roughness: 0.9,
+    metalness: 0.05,
+  });
+  const shirtCollarMat = new THREE.MeshStandardMaterial({
+    color: 0xf8fafc,
+    roughness: 0.55,
+    metalness: 0.02,
+  });
+  const academicTieMat = new THREE.MeshStandardMaterial({
+    color: isWhite ? 0xbe123c : 0xd97706,
+    roughness: 0.4,
+    metalness: 0.15,
+  });
+  const suedePatchMat = new THREE.MeshStandardMaterial({
+    color: 0x9a5224, // Classic Cognac Suede Leather Elbow Patches!
+    roughness: 0.94,
+    metalness: 0.02,
+  });
+  const brassSpectacleMat = new THREE.MeshStandardMaterial({
+    color: 0xfbbf24,
+    roughness: 0.22,
+    metalness: 0.88,
+  });
+  const mortarboardMat = new THREE.MeshStandardMaterial({
+    color: 0x111827,
+    roughness: 0.82,
+    metalness: 0.08,
+  });
+
+  // 10A. Tailored Suit Lapels, Crisp White Dress Shirt & Academic Tie/Bowtie on Chest
+  const profTorsoGroup = new THREE.Group();
+  profTorsoGroup.visible = false;
+  bodyPivot.add(profTorsoGroup);
+  professorAttireNodes.push(profTorsoGroup);
+
+  const shirtFront = new THREE.Mesh(
+    new THREE.ConeGeometry(0.115 * torsoW, 0.28 * torsoH, 4),
+    shirtCollarMat
+  );
+  shirtFront.rotation.x = Math.PI;
+  shirtFront.rotation.y = Math.PI / 4;
+  shirtFront.scale.set(1.0, 1.0, 0.35);
+  shirtFront.position.set(0, torsoH * 0.78, 0.215 * torsoW);
+  profTorsoGroup.add(shirtFront);
+
+  // Left & Right Notched Tweed Jacket Lapels
+  for (const side of [-1, 1]) {
+    const lapel = new THREE.Mesh(
+      createBeveledTassetGeometry(0.085 * torsoW, 0.34 * torsoH),
+      tweedLapelMat
+    );
+    lapel.position.set(side * 0.082 * torsoW, torsoH * 0.72, 0.228 * torsoW);
+    lapel.rotation.z = side * 0.26;
+    lapel.rotation.y = side * 0.18;
+    profTorsoGroup.add(lapel);
+  }
+
+  // Academic Silk Tie & Bowtie Knot
+  const tieKnot = new THREE.Mesh(new THREE.OctahedronGeometry(0.028 * torsoW, 1), academicTieMat);
+  tieKnot.position.set(0, torsoH * 0.86, 0.242 * torsoW);
+  const tieBlade = new THREE.Mesh(
+    createSculptedBladeGeometry(0.048 * torsoW, 0.24 * torsoH, 0.012),
+    academicTieMat
+  );
+  tieBlade.rotation.z = Math.PI;
+  tieBlade.position.set(0, torsoH * 0.84, 0.244 * torsoW);
+  profTorsoGroup.add(tieKnot, tieBlade);
+
+  // 10B. Suede Leather Elbow Patches stitched onto BOTH Elbows (`leftElbowPivot` & `rightElbowPivot`)
+  const createElbowPatchNode = (side: -1 | 1) => {
+    const patchGroup = new THREE.Group();
+    patchGroup.visible = false;
+    const patchDisc = new THREE.Mesh(
+      new THREE.SphereGeometry(0.068 * torsoW, 16, 12),
+      suedePatchMat
+    );
+    patchDisc.scale.set(0.72, 1.28, 0.42);
+    patchDisc.position.set(side * 0.032, -0.02, -0.055);
+    const patchStitchRim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.058 * torsoW, 0.006, 8, 20),
+      brassSpectacleMat
+    );
+    patchStitchRim.scale.set(0.75, 1.25, 0.5);
+    patchStitchRim.position.set(side * 0.034, -0.02, -0.062);
+    patchGroup.add(patchDisc, patchStitchRim);
+    professorAttireNodes.push(patchGroup);
+    return patchGroup;
+  };
+  leftElbowPivot.add(createElbowPatchNode(-1));
+  rightElbowPivot.add(createElbowPatchNode(1));
+
+  // 10C. Rolled Preprint Manuscript Scroll tied with Crimson Ribbon in Left Hand
+  const manuscriptGroup = new THREE.Group();
+  manuscriptGroup.visible = false;
+  manuscriptGroup.position.set(-0.08, -0.03, forearmLen * 0.88);
+  manuscriptGroup.rotation.z = Math.PI * 0.25;
+  const scrollCyl = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.034, 0.034, 0.34, 16),
+    new THREE.MeshStandardMaterial({ color: 0xfef3c7, roughness: 0.7 })
+  );
+  const scrollRibbon = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.037, 0.037, 0.045, 16),
+    academicTieMat
+  );
+  manuscriptGroup.add(scrollCyl, scrollRibbon);
+  leftElbowPivot.add(manuscriptGroup);
+  professorAttireNodes.push(manuscriptGroup);
+
+  // 10D. Wire-Rimmed Reading Spectacles & Oxford Mortarboard Cap with Gold Tassel on Head
+  const profHeadGroup = new THREE.Group();
+  profHeadGroup.visible = false;
+  headGroup.add(profHeadGroup);
+  professorAttireNodes.push(profHeadGroup);
+
+  const lensMat = new THREE.MeshPhysicalMaterial({
+    color: 0xe0f2fe,
+    transparent: true,
+    opacity: 0.42,
+    roughness: 0.1,
+    metalness: 0.1,
+  });
+  for (const side of [-1, 1]) {
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.038, 0.0045, 8, 20),
+      brassSpectacleMat
+    );
+    rim.position.set(side * 0.052, 0.146, 0.188);
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.035, 16), lensMat);
+    lens.position.set(side * 0.052, 0.146, 0.188);
+    profHeadGroup.add(rim, lens);
+  }
+  const specBridge = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.004, 0.004, 0.032, 8),
+    brassSpectacleMat
+  );
+  specBridge.rotation.z = Math.PI / 2;
+  specBridge.position.set(0, 0.152, 0.19);
+  profHeadGroup.add(specBridge);
+
+  // Oxford Mortarboard Square Cap + Skullcap + Hanging Gold Tassel
+  const mortarSkull = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.145, 0.135, 0.075, 20),
+    mortarboardMat
+  );
+  mortarSkull.position.set(0, 0.34, 0);
+  const mortarBoardTop = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.018, 0.42),
+    mortarboardMat
+  );
+  mortarBoardTop.position.set(0, 0.382, 0);
+  mortarBoardTop.rotation.y = Math.PI / 4;
+
+  const tasselButton = new THREE.Mesh(
+    new THREE.SphereGeometry(0.018, 10, 10),
+    brassSpectacleMat
+  );
+  tasselButton.position.set(0, 0.395, 0);
+
+  const tasselCord = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.005, 0.008, 0.16, 8),
+    brassSpectacleMat
+  );
+  tasselCord.position.set(0.15, 0.31, 0.12);
+  tasselCord.rotation.z = -0.22;
+  profHeadGroup.add(mortarSkull, mortarBoardTop, tasselButton, tasselCord);
+
   return {
     root,
     pedestal,
@@ -2773,7 +2951,43 @@ export function createArticulatedPiece(type: PieceType, faction: Faction): Artic
     rightPupilPivot: rightEye.pupilPivot,
     leftUpperLid: leftEye.upperLid,
     rightUpperLid: rightEye.upperLid,
+    professorAttireNodes,
+    isProfessorModeActive: false,
   };
+}
+
+/**
+ * Toggles a 3D Chess Piece Rig between its Armored Warrior form and its
+ * Academic Professor form (Herringbone Tweed Suit, Suede Elbow Patches,
+ * Wire-Rim Spectacles, Mortarboard Cap with Gold Tassel & Preprint Scroll)!
+ */
+export function setPieceProfessorMode(
+  rig: ArticulatedPieceRig,
+  isProfessorMode: boolean,
+  faction: Faction
+) {
+  if (rig.isProfessorModeActive === isProfessorMode) return;
+  rig.isProfessorModeActive = isProfessorMode;
+
+  for (const node of rig.professorAttireNodes) {
+    node.visible = isProfessorMode;
+  }
+
+  const isWhite = faction === 'w';
+  if (isProfessorMode) {
+    // Transform primary armor into Herringbone Tweed Suit & Corduroy!
+    rig.primaryArmorMat.color.setHex(isWhite ? 0x5c4636 : 0x263346);
+    rig.primaryArmorMat.roughness = 0.88;
+    rig.primaryArmorMat.metalness = 0.06;
+    rig.primaryArmorMat.clearcoat = 0.04;
+  } else {
+    // Restore medieval Solaris / Obsidian battle armor!
+    rig.primaryArmorMat.color.setHex(isWhite ? 0xd8d0c0 : 0x242d40);
+    rig.primaryArmorMat.roughness = 0.3;
+    rig.primaryArmorMat.metalness = 0.52;
+    rig.primaryArmorMat.clearcoat = 0.55;
+  }
+  rig.primaryArmorMat.needsUpdate = true;
 }
 
 /**

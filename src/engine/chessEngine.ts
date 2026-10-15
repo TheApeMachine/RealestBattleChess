@@ -520,6 +520,132 @@ export function getValidMovesForPiece(
     }
   }
 
+  // 4. MULTIVERSAL SYNOD & CHRONOCRATOR OMNI-VECTORS:
+  // Warriors fused with parallel-universe counterparts (`synodStacks > 0`) or crowned `isChronocrator`
+  // atop the Colossal Pocket Watch command cross-archetype Synod L-Leaps & Royal Sovereign Vectors!
+  if ((piece.synodStacks && piece.synodStacks > 0) || piece.isChronocrator) {
+    if (type !== 'n') {
+      const synodJumps = [
+        [-2, -1], [-2, 1],
+        [-1, -2], [-1, 2],
+        [1, -2], [1, 2],
+        [2, -1], [2, 1],
+      ];
+      for (const [dr, dc] of synodJumps) {
+        const r = row + dr;
+        const c = col + dc;
+        if (!moves.some((m) => m.to.row === r && m.to.col === c && m.to.z === targetSliceZ && m.to.w === targetSliceW)) {
+          addMoveIfValid(
+            r,
+            c,
+            targetSliceZ,
+            targetSliceW,
+            piece.isChronocrator
+              ? '⌚ Chronocrator Horological L-Leap'
+              : `✦ Synod Resonance L-Leap (×${piece.synodStacks})`
+          );
+        }
+      }
+    }
+
+    if (piece.isChronocrator && type !== 'q') {
+      const omniDirs: [number, number][] = [
+        [-1, -1], [-1, 1], [1, -1], [1, 1],
+        [-1, 0], [1, 0], [0, -1], [0, 1],
+      ];
+      for (const [dr, dc] of omniDirs) {
+        for (let step = 1; step <= 3; step++) {
+          const r = row + dr * step;
+          const c = col + dc * step;
+          if (!isInsideBoard(r, c, targetSliceZ, targetSliceW)) break;
+          const already = moves.some(
+            (m) => m.to.row === r && m.to.col === c && m.to.z === targetSliceZ && m.to.w === targetSliceW
+          );
+          const occ = getPieceAt(pieces, r, c, targetSliceZ, targetSliceW);
+          if (!already) {
+            addMoveIfValid(r, c, targetSliceZ, targetSliceW, '⌚ Chronocrator Sovereign Ray');
+          }
+          if (occ) break;
+        }
+      }
+    }
+  }
+
+  // 5. SENTIENT MATHEMATICAL THEOREM (`piece.isSentientTheorem && piece.theoremStatus === 'PUBLISHED'`):
+  // When a Pawn merges with its alternate-timeline self(s), it first formulates an UNPUBLISHED_DRAFT
+  // and all pieces become Professors for Peer Review. ONLY once the theorem is PUBLISHED does it unlock
+  // "CHECKMATING YESTERDAY" — striking the past spacetime coordinates (t - 1, t - 2, or Turn 1 origin)
+  // of the Enemy King & Commanders to retroactively refute their existence!
+  if (piece.isSentientTheorem && piece.theoremStatus === 'PUBLISHED') {
+    // A. Transfinite Prime-Number Vectors ((±2, ±2), (±3, 0), (0, ±3), (±3, ±3))
+    const theoremVectors = [
+      [-2, -2], [-2, 2], [2, -2], [2, 2],
+      [-3, 0], [3, 0], [0, -3], [0, 3],
+      [-3, -3], [-3, 3], [3, -3], [3, 3],
+    ];
+    for (const [dr, dc] of theoremVectors) {
+      const r = row + dr;
+      const c = col + dc;
+      if (
+        isInsideBoard(r, c, targetSliceZ, targetSliceW) &&
+        !moves.some((m) => m.to.row === r && m.to.col === c && m.to.z === targetSliceZ && m.to.w === targetSliceW)
+      ) {
+        addMoveIfValid(
+          r,
+          c,
+          targetSliceZ,
+          targetSliceW,
+          '⊢ Gödelian Lemma Vector (Transfinite Step)'
+        );
+      }
+    }
+
+    // B. RETROACTIVE "CHECKMATE YESTERDAY" VECTORS:
+    // Target the Yesterday square (`history[0]` or `history[length - 2]`) of the Enemy King & high-value Enemy Pieces!
+    const enemies = pieces
+      .filter((e) => e.faction !== faction && e.hp > 0)
+      .sort((a, b) => ARCHETYPES[b.type].tacticalValue - ARCHETYPES[a.type].tacticalValue);
+
+    for (const enemy of enemies) {
+      if (enemy.type !== 'k' && enemy.type !== 'q' && enemy.type !== 'r') continue;
+      const yesterdayWp =
+        enemy.history.length >= 2
+          ? enemy.history[enemy.history.length - 2]
+          : enemy.history[0] || {
+              row: enemy.faction === 'b' ? 0 : 7,
+              col: enemy.col,
+              z: 0,
+              w: 0,
+              turn: 1,
+            };
+
+      // Ensure the Yesterday square isn't obstructed by a friendly piece right now
+      const occAtYesterday = getPieceAt(pieces, yesterdayWp.row, yesterdayWp.col, yesterdayWp.z, yesterdayWp.w);
+      if (occAtYesterday && occAtYesterday.faction === faction && occAtYesterday.id !== piece.id) {
+        continue;
+      }
+
+      const sqName = formatSquareName(yesterdayWp);
+      const pastTurnLabel = yesterdayWp.turn || 1;
+      moves.push({
+        from: { row, col, z, w },
+        to: {
+          row: yesterdayWp.row,
+          col: yesterdayWp.col,
+          z: yesterdayWp.z,
+          w: yesterdayWp.w,
+        },
+        isCapture: true,
+        targetPiece: enemy,
+        dimensionType: 'CHECKMATE_YESTERDAY',
+        dimensionLabel:
+          enemy.type === 'k'
+            ? `⊢ Q.E.D. CHECKMATE YESTERDAY: Refute ${ARCHETYPES[enemy.type].chessName} at Turn ${pastTurnLabel} (${sqName})!`
+            : `⊢ Retroactive Proof: Refute Yesterday's ${ARCHETYPES[enemy.type].chessName} at ${sqName} (Turn ${pastTurnLabel})!`,
+      });
+    }
+  }
+
   return moves;
 }
 
