@@ -44,13 +44,18 @@ import {
   getValidMovesForPiece,
 } from './engine/chessEngine';
 import {
+  collapseTimelineBranch,
+  computeMultiverseParadoxMetrics,
   createInitialMultiverseState,
   ensureBranchHydrated,
   executeAIMultiverseParadoxStrike,
   forkTimelineFromBranch,
+  getLethalRememberedSquareCollision,
   getPendingCausalBreachesForTimeline,
+  getRememberedSquaresForTimelineView,
   reconcileTimelineConvergence,
   recordCausalAssassination,
+  recordRememberedSquare,
   rewindCausalAssassination,
   switchActiveTimeline,
   syncActiveTimelineFromLiveBoard,
@@ -122,15 +127,21 @@ import { soundEngine } from './audio/soundEngine';
 import { CombatHudOverlay, PlayerCombatInputAction } from './components/CombatHudOverlay';
 import { RealmHudOverlay } from './components/RealmHudOverlay';
 import { CodexModal } from './components/CodexModal';
+import {
+  createMultiversalPocketWatch,
+  MultiversalPocketWatchRig,
+  triggerPocketWatchReaction,
+  updateMultiversalPocketWatch,
+} from './three/pocketWatchBuilder';
 import { MultiverseModal } from './components/MultiverseModal';
-import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle, Play, Pause, GitBranch, Zap, Skull } from 'lucide-react';
+import { Volume2, VolumeX, Swords, RotateCcw, Eye, Sparkles, Orbit, Layers, AlertTriangle, Play, Pause, GitBranch, Zap, Skull, Clock } from 'lucide-react';
 
 // Pre-allocated math helpers at module scope (Zero GC in render loop)
 const _vec3A = new THREE.Vector3();
 const _camTargetPos = new THREE.Vector3();
 const _camLookTarget = new THREE.Vector3();
 
-type CameraPreset = 'white_orbit' | 'top_tactical' | 'cinematic_angle';
+type CameraPreset = 'white_orbit' | 'top_tactical' | 'cinematic_angle' | 'pocket_watch';
 
 interface BystanderPhysics {
   offsetX: number;
@@ -197,6 +208,11 @@ export default function App() {
   const [multiverseModalOpen, setMultiverseModalOpen] = useState<boolean>(false);
   const [activeCollapseBanner, setActiveCollapseBanner] =
     useState<CausalCollapseResolution[] | null>(null);
+  const [watchShowcaseStep, setWatchShowcaseStep] = useState<number>(0);
+  const [watchEventBanner, setWatchEventBanner] = useState<{
+    title: string;
+    subtitle: string;
+  } | null>(null);
 
   // Subterranean Realms UI State
   const [activeRealmId, setActiveRealmId] = useState<RealmId>('SHATTERED_MIRROR');
@@ -289,6 +305,8 @@ export default function App() {
     fpMountGroup: THREE.Group | null;
     arenaRig: BoardArenaRig | null;
     realmsRig: SubterraneanRealmsRig | null;
+    pocketWatchRig: MultiversalPocketWatchRig | null;
+    imminentParadoxWarning: boolean;
     vfxPool: VFXPool | null;
     controls: OrbitControls | null;
     currentLookAt: THREE.Vector3;
@@ -365,6 +383,8 @@ export default function App() {
     fpMountGroup: null,
     arenaRig: null,
     realmsRig: null,
+    pocketWatchRig: null,
+    imminentParadoxWarning: false,
     vfxPool: null,
     controls: null,
     currentLookAt: new THREE.Vector3(0, 0.4, 0),
@@ -565,9 +585,26 @@ export default function App() {
       }
     }
 
-    // 2. Highlight selected piece and its valid moves (3D slice moves, 4D Hyper-Shifts, and Chrono-Intercepts!)
+    // 2. Highlight selected piece and its valid moves (3D slice moves, 4D Hyper-Shifts, Chrono-Intercepts & Lethal Remembered Squares!)
     const selPiece = sim.pieces.find((p) => p.id === sim.selectedPieceId) || null;
     setSelectedPiece(selPiece ? { ...selPiece } : null);
+
+    // Mark Remembered Squares from previous universes with warning sigils
+    const rememberedInOtherRealities = getRememberedSquaresForTimelineView(
+      sim.multiverse,
+      sim.multiverse.activeTimelineId,
+      selPiece
+    );
+    for (const rem of rememberedInOtherRealities) {
+      if (rem.w === sim.activeSliceW && rem.z === sim.activeSliceZ) {
+        const sigil = sim.arenaRig.threatSigilMeshes.get(`${rem.row}_${rem.col}`);
+        if (sigil) {
+          sigil.visible = true;
+        }
+      }
+    }
+
+    let hasLethalRememberedMove = false;
 
     if (selPiece) {
       const selMesh = sim.arenaRig.highlightMeshes.get(`${selPiece.row}_${selPiece.col}`);
@@ -580,10 +617,22 @@ export default function App() {
 
       for (const mv of sim.validMoves) {
         const hl = sim.arenaRig.highlightMeshes.get(`${mv.to.row}_${mv.to.col}`);
+        const lethalCollision = getLethalRememberedSquareCollision(
+          sim.multiverse,
+          selPiece,
+          mv.to,
+          sim.multiverse.activeTimelineId
+        );
+        if (lethalCollision) {
+          hasLethalRememberedMove = true;
+        }
         if (hl) {
           hl.visible = true;
           const mat = hl.material as THREE.MeshBasicMaterial;
-          if (
+          if (lethalCollision) {
+            mat.color.setHex(0xef4444); // Lethal Remembered Square Paradox Exclusion Warning!
+            mat.opacity = 0.82;
+          } else if (
             mv.dimensionType === 'REALM_GATEWAY_DESCENT' ||
             mv.dimensionType === 'REALM_PORTAL_TRAVERSAL'
           ) {
@@ -605,6 +654,8 @@ export default function App() {
         }
       }
     }
+
+    sim.imminentParadoxWarning = hasLethalRememberedMove;
   }, []);
 
   // Helper to change viewed 3D slice or target 4D move projection slice
@@ -1226,13 +1277,27 @@ export default function App() {
       if (sim.phase !== 'CHESS_VIEW') return;
       syncActiveBranchFromSim();
 
+      const wasVisitedBefore = sim.multiverse.visitedTimelineIds.includes(targetTimelineId);
       const targetBranch = switchActiveTimeline(sim.multiverse, targetTimelineId);
       rebuildSceneRigsForTimeline(targetBranch);
 
       if (sim.vfxPool) {
         spawnShockwave(sim.vfxPool, 0, 0.1, 0, 0xd946ef, 8.5);
       }
-      soundEngine.playQuantumEntangle(false);
+      if (!wasVisitedBefore) {
+        soundEngine.playWatchHandForged();
+      } else {
+        soundEngine.playQuantumEntangle(false);
+      }
+
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(
+          sim.pocketWatchRig,
+          wasVisitedBefore ? 0x38bdf8 : 0xfbbf24,
+          targetTimelineId,
+          false
+        );
+      }
 
       // If switching into a timeline that has unpropagated CausalDeathEvents, automatically converge them!
       const unpropagated = getPendingCausalBreachesForTimeline(
@@ -1273,8 +1338,11 @@ export default function App() {
       );
       const switched = switchActiveTimeline(sim.multiverse, newBranch.id);
       rebuildSceneRigsForTimeline(switched);
-      soundEngine.playSpecialActivate();
+      soundEngine.playWatchHandForged();
 
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(sim.pocketWatchRig, 0xfbbf24, newBranch.id, false);
+      }
       if (sim.vfxPool) {
         spawnShockwave(sim.vfxPool, 0, 0.12, 0, 0x38bdf8, 9.0);
       }
@@ -1283,7 +1351,7 @@ export default function App() {
         {
           id: `fork_${Date.now()}`,
           turnNumber: newBranch.turnNumber,
-          summary: `Forked New Reality ${newBranch.id} from ${sourceTimelineId}!`,
+          summary: `Forked New Reality ${newBranch.id} — New Hand Forged on Cosmic Watch!`,
           detail: newBranch.divergenceSummary,
           wasUpset: false,
           winnerFaction: newBranch.turnFaction,
@@ -1438,6 +1506,30 @@ export default function App() {
         return;
       }
 
+      // Check if `move.to` is a LETHAL REMEMBERED SQUARE from another universe for this piece's lineage!
+      const lethalRememberedCollision = getLethalRememberedSquareCollision(
+        sim.multiverse,
+        piece,
+        move.to,
+        sim.multiverse.activeTimelineId
+      );
+
+      // Record both the origin square and destination square into the Multiverse's Remembered-Square Ledger
+      recordRememberedSquare(
+        sim.multiverse,
+        piece,
+        move.from,
+        sim.multiverse.activeTimelineId,
+        sim.turnNumber
+      );
+      recordRememberedSquare(
+        sim.multiverse,
+        piece,
+        move.to,
+        sim.multiverse.activeTimelineId,
+        sim.turnNumber + 1
+      );
+
       soundEngine.playChessMove();
       const prevW = piece.w;
       const prevZ = piece.z;
@@ -1454,6 +1546,88 @@ export default function App() {
         w: piece.w,
         turn: sim.turnNumber + 1,
       });
+
+      // If this warrior stepped onto its own Remembered Square from a prior universe -> LETHAL PARADOX COLLISION!
+      if (lethalRememberedCollision) {
+        const sqLabel = formatSquareName(move.to);
+        const deathEv = recordCausalAssassination(
+          sim.multiverse,
+          sim.multiverse.activeTimelineId,
+          piece,
+          piece,
+          move.to,
+          sim.turnNumber + 1,
+          `LETHAL REMEMBERED SQUARE: ${ARCHETYPES[piece.type].chessName} stepped onto ${sqLabel} (previously occupied in ${lethalRememberedCollision.sourceShortCode})!`,
+          true
+        );
+
+        soundEngine.playWatchDoomBell(true);
+        if (sim.pocketWatchRig) {
+          triggerPocketWatchReaction(
+            sim.pocketWatchRig,
+            0xef4444,
+            sim.multiverse.activeTimelineId,
+            true
+          );
+        }
+
+        const worldTarget = boardToWorld(move.to.row, move.to.col);
+        if (sim.vfxPool) {
+          // Strike a bolt of crimson-gold temporal lightning from the Pocket Watch in the sky down onto the square!
+          spawnInterventionRift(
+            sim.vfxPool,
+            0,
+            15.5,
+            -12.5,
+            worldTarget.x,
+            0.8,
+            worldTarget.z,
+            0xef4444
+          );
+          spawnAuraPillar(sim.vfxPool, worldTarget.x, worldTarget.z, 0xef4444);
+          spawnShockwave(sim.vfxPool, worldTarget.x, 0.15, worldTarget.z, 0xfbbf24, 6.5);
+        }
+
+        // Remove the doomed piece from the live board and play its Causal Collapse disintegration!
+        const doomedRig = sim.pieceRigs.get(piece.id);
+        const doomedList: ArticulatedPieceRig[] = [];
+        if (doomedRig) {
+          boardToWorld(piece.row, piece.col, doomedRig.root.position);
+          doomedList.push(doomedRig);
+          sim.pieceRigs.delete(piece.id);
+        }
+        sim.pieces = sim.pieces.filter((p) => p.id !== piece.id);
+
+        const activeBranch = ensureBranchHydrated(
+          sim.multiverse,
+          sim.multiverse.activeTimelineId
+        );
+        const resolution: CausalCollapseResolution = {
+          event: deathEv,
+          targetTimelineId: sim.multiverse.activeTimelineId,
+          targetTimelineName: activeBranch?.name || sim.multiverse.activeTimelineId,
+          erasedPiece: piece,
+          erasedSquareLabel: sqLabel,
+        };
+
+        sim.selectedPieceId = null;
+        sim.validMoves = [];
+        sim.imminentParadoxWarning = false;
+        sim.activeCollapseResolution = [resolution];
+        sim.collapseDoomedRigs = doomedList;
+        sim.phase = 'CAUSAL_COLLAPSE';
+        sim.phaseTimer = 0;
+        sim.cameraShake = 0.65;
+        setActiveCollapseBanner([resolution]);
+        setPhase('CAUSAL_COLLAPSE');
+        setWatchEventBanner({
+          title: `THE WATCH REMEMBERS SQUARE ${sqLabel}!`,
+          subtitle: `${ARCHETYPES[piece.type].chessName} occupied ${sqLabel} in ${lethalRememberedCollision.sourceShortCode} — Paradox Exclusion Fatal Strike!`,
+        });
+        syncActiveBranchFromSim();
+        setMultiverseState({ ...sim.multiverse });
+        return;
+      }
 
       if (prevW !== piece.w || prevZ !== piece.z) {
         const sq = formatSquareName(move.to);
@@ -1847,11 +2021,22 @@ export default function App() {
       }
     }
 
+    if (sim.pocketWatchRig) {
+      for (const h of sim.pocketWatchRig.handsMap.values()) {
+        sim.pocketWatchRig.handsGroup.remove(h.rootPivot);
+      }
+      sim.pocketWatchRig.handsMap.clear();
+      sim.pocketWatchRig.lastDialSignature = '';
+    }
+    sim.imminentParadoxWarning = false;
+
     if (sim.controls) {
       sim.controls.enabled = true;
     }
 
     setMultiverseState(freshMultiverse);
+    setWatchShowcaseStep(0);
+    setWatchEventBanner(null);
     setActiveCollapseBanner(null);
     setTimelineBranchLabel('TL-PRIME · Prime Reality (α)');
     setActiveSliceW(0);
@@ -2251,13 +2436,13 @@ export default function App() {
     warmFill.position.set(0, 6, 0);
     scene.add(warmFill);
 
-    // OrbitControls for Chess View
+    // OrbitControls for Chess View (allowing upward camera tilt to inspect the Colossal Multiversal Pocket Watch!)
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
-    controls.maxPolarAngle = Math.PI * 0.46;
+    controls.maxPolarAngle = Math.PI * 0.68;
     controls.minDistance = 5.5;
-    controls.maxDistance = 24;
+    controls.maxDistance = 28;
     controls.target.set(0, 0.3, 0);
     simRef.current.controls = controls;
 
@@ -2265,6 +2450,11 @@ export default function App() {
     const arenaRig = createBoardArena(renderer);
     scene.add(arenaRig.group);
     simRef.current.arenaRig = arenaRig;
+
+    // Build Colossal 3D Multiversal Pocket Watch suspended high above the chessboard!
+    const pocketWatchRig = createMultiversalPocketWatch(renderer);
+    scene.add(pocketWatchRig.rootGroup);
+    simRef.current.pocketWatchRig = pocketWatchRig;
 
     // Build 3D Subterranean Impossible Realms (The Shattered Mirror, The Ashen Crucible, The Echoing Remnant)
     // and Live Perspective Render-To-Texture Portals + 6 Board Gateway Wells!
@@ -2446,6 +2636,11 @@ export default function App() {
         setCombatCameraMode(next);
       } else if (e.key === 'p' || e.key === 'P') {
         handleToggleAutoPlayDemo();
+        return;
+      } else if ((e.key === 'c' || e.key === 'C') && sim.phase === 'CHESS_VIEW') {
+        const nextPreset: CameraPreset =
+          sim.cameraPreset === 'pocket_watch' ? 'white_orbit' : 'pocket_watch';
+        handleSelectCameraPreset(nextPreset);
         return;
       }
 
@@ -4909,6 +5104,23 @@ export default function App() {
         );
       }
 
+      // Update the Colossal 3D Multiversal Pocket Watch & its Horological Audio State!
+      if (sim.pocketWatchRig) {
+        updateMultiversalPocketWatch(
+          sim.pocketWatchRig,
+          sim.multiverse,
+          elapsed,
+          rawDelta,
+          sim.imminentParadoxWarning
+        );
+        const watchMetrics = computeMultiverseParadoxMetrics(sim.multiverse);
+        soundEngine.setWatchParadoxState(
+          watchMetrics.visitedCount,
+          watchMetrics.paradoxStrain,
+          sim.imminentParadoxWarning
+        );
+      }
+
       if (battleWornPass) {
         battleWornPass.uniforms.uTime.value = elapsed;
         battleWornPass.uniforms.uIntensity.value = battleWornIntensity;
@@ -4965,9 +5177,134 @@ export default function App() {
     } else if (preset === 'cinematic_angle') {
       cam.position.set(-9.5, 7.5, 9.5);
       controls.target.set(0, 0.5, 0);
+    } else if (preset === 'pocket_watch') {
+      // Tilt upward from the chessboard to frame the Colossal Multiversal Pocket Watch in the sky!
+      cam.position.set(0, 5.2, 8.8);
+      controls.target.set(0, 16.2, -13.2);
     }
     controls.update();
   };
+
+  const handleHoverTimelineOnWatch = useCallback((timelineId: string | null) => {
+    const sim = simRef.current;
+    sim.multiverse.hoveredTimelineId = timelineId;
+  }, []);
+
+  // Playable 5-Stage Multiversal Pocket Watch Evolution Showcase (Requirement 11)
+  // Drives genuine multiverse state changes while framing the colossal 3D Pocket Watch above the board!
+  const handleAdvanceWatchShowcase = useCallback(() => {
+    const sim = simRef.current;
+    if (sim.phase !== 'CHESS_VIEW') return;
+    if (!soundEngine.muted) {
+      soundEngine.startMusic();
+    }
+
+    // Ensure camera is tilted up looking at the Colossal Pocket Watch
+    handleSelectCameraPreset('pocket_watch');
+
+    const nextStep = (watchShowcaseStep % 5) + 1;
+    setWatchShowcaseStep(nextStep);
+
+    if (nextStep === 1) {
+      // Stage 1: Prime Timeline — Simple Watch with 1 Hand, record initial Remembered Square at E4
+      const primeBranch = switchActiveTimeline(sim.multiverse, 'TL-PRIME');
+      const e2Pawn = primeBranch.pieces.find((p) => p.faction === 'w' && p.type === 'p' && p.col === 4);
+      if (e2Pawn) {
+        recordRememberedSquare(
+          sim.multiverse,
+          e2Pawn,
+          { row: 4, col: 4, z: 0, w: 0 },
+          'TL-PRIME',
+          1
+        );
+      }
+      rebuildSceneRigsForTimeline(primeBranch);
+      soundEngine.playChessSelect();
+      setWatchEventBanner({
+        title: 'STAGE 1/5 · PRIME REALITY (1 HAND ON THE WATCH)',
+        subtitle: 'The watch begins simple over TL-PRIME. Square E4 is recorded in the Remembered-Square ledger.',
+      });
+    } else if (nextStep === 2) {
+      // Stage 2: Enter Timeline Ω-1 -> A 2nd Hand materializes & swings into place!
+      const omega1 = switchActiveTimeline(sim.multiverse, 'TL-OMEGA-1');
+      rebuildSceneRigsForTimeline(omega1);
+      soundEngine.playWatchHandForged();
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(sim.pocketWatchRig, 0x38bdf8, 'TL-OMEGA-1', false);
+      }
+      setWatchEventBanner({
+        title: 'STAGE 2/5 · ENTERED TIMELINE Ω-1 (2ND HAND FORGED)',
+        subtitle: 'Entering Timeline Ω-1 awakens its Astral Cyan hand, unlocks the outer astrolabe ring, and aligns the Center Jewel Beam.',
+      });
+    } else if (nextStep === 3) {
+      // Stage 3: Visit Timeline Ω-2 and Fork Timeline Ω-3 -> 3rd & 4th Hands accumulate!
+      switchActiveTimeline(sim.multiverse, 'TL-OMEGA-2');
+      const omega3 = forkTimelineFromBranch(sim.multiverse, 'TL-OMEGA-2', {
+        customName: 'Timeline Ω-3 (Astral Divergence)',
+      });
+      const switched = switchActiveTimeline(sim.multiverse, omega3.id);
+      rebuildSceneRigsForTimeline(switched);
+      soundEngine.playWatchHandForged();
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(sim.pocketWatchRig, 0x34d399, omega3.id, false);
+      }
+      setWatchEventBanner({
+        title: `STAGE 3/5 · ${sim.multiverse.visitedTimelineIds.length} UNIVERSE HANDS & REMEMBERED SQUARES`,
+        subtitle: `Visited Ω-2 and forked ${omega3.shortCode}. Multiple hands, memory trails, and 3 orbiting astrolabe rings now track the expanding multiverse.`,
+      });
+    } else if (nextStep === 4) {
+      // Stage 4: Cross-Timeline Causal Assassination -> Victim Hand shudders, Causal Tether Arc forms, Doom Bell tolls!
+      const omega1 = switchActiveTimeline(sim.multiverse, 'TL-OMEGA-1');
+      const killer = omega1.pieces.find((p) => p.faction === 'w' && p.type === 'n') || omega1.pieces[0];
+      const victim = omega1.pieces.find((p) => p.faction === 'b' && p.type === 'q') || omega1.pieces.find((p) => p.faction === 'b');
+      if (killer && victim) {
+        recordCausalAssassination(
+          sim.multiverse,
+          'TL-OMEGA-1',
+          killer,
+          victim,
+          { row: victim.row, col: victim.col, z: victim.z, w: victim.w },
+          omega1.turnNumber,
+          `Cross-Timeline Causal Assassination of ${ARCHETYPES[victim.type].chessName} in Ω-1`,
+          false
+        );
+      }
+      rebuildSceneRigsForTimeline(omega1);
+      soundEngine.playWatchDoomBell(false);
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(sim.pocketWatchRig, 0xf43f5e, 'TL-OMEGA-1', true);
+      }
+      setWatchEventBanner({
+        title: 'STAGE 4/5 · CROSS-TIMELINE ASSASSINATION & CAUSAL TETHER',
+        subtitle: 'The Doom Bell tolls, the Ω-1 hand shudders violently, and a crimson 3D Causal Tether Arc links Ω-1 to Prime Reality!',
+      });
+    } else if (nextStep === 5) {
+      // Stage 5: Lethal Remembered-Square Paradox Collision & Timeline Collapse!
+      // A warrior in Ω-2 steps onto E4 (remembered from TL-PRIME) -> Fatal Paradox Strike + Timeline Collapse (Hand Cracks & Freezes!)
+      const omega2 = switchActiveTimeline(sim.multiverse, 'TL-OMEGA-2');
+      collapseTimelineBranch(
+        sim.multiverse,
+        'TL-OMEGA-2',
+        'Paradox Exclusion Rupture: Warrior stepped onto Remembered Square E4 from Prime Reality'
+      );
+      rebuildSceneRigsForTimeline(omega2);
+      soundEngine.playWatchDoomBell(true);
+      if (sim.pocketWatchRig) {
+        triggerPocketWatchReaction(sim.pocketWatchRig, 0xef4444, 'TL-OMEGA-2', true);
+      }
+      if (sim.vfxPool) {
+        const e4World = boardToWorld(4, 4);
+        spawnInterventionRift(sim.vfxPool, 0, 15.5, -12.5, e4World.x, 0.8, e4World.z, 0xef4444);
+        spawnShockwave(sim.vfxPool, e4World.x, 0.15, e4World.z, 0xef4444, 7.5);
+      }
+      setWatchEventBanner({
+        title: 'STAGE 5/5 · LETHAL REMEMBERED SQUARE & BROKEN TIMELINE HAND',
+        subtitle: 'Timeline Ω-2 collapsed from a Remembered-Square Paradox Collision! Its hand on the watch has cracked at a 35° angle, turned to scorched iron, and fractured the crystal face.',
+      });
+    }
+
+    setMultiverseState({ ...sim.multiverse });
+  }, [rebuildSceneRigsForTimeline, watchShowcaseStep]);
 
   useEffect(() => {
     if (phase === 'FIGHT_INTRO' || phase === 'FIGHT_ACTIVE' || phase === 'FIGHT_OUTRO') {
@@ -5016,10 +5353,28 @@ export default function App() {
             Multiverse Nexus ({multiverseState.timelines.size} Realities)
           </button>
           <button
-            onClick={handleTriggerGuidedAssassinationDemo}
-            className="text-amber-300 hover:text-amber-200 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
+            onClick={() =>
+              handleSelectCameraPreset(
+                cameraPreset === 'pocket_watch' ? 'white_orbit' : 'pocket_watch'
+              )
+            }
+            className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 font-semibold ${
+              cameraPreset === 'pocket_watch'
+                ? 'text-amber-300 underline'
+                : 'text-amber-400 hover:text-amber-200'
+            }`}
+            title="Tilt camera upward to inspect the Colossal Multiversal Pocket Watch above the chessboard (C Key)"
           >
-            <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <Clock className="w-3.5 h-3.5 text-amber-400" />
+            {cameraPreset === 'pocket_watch'
+              ? 'Return to Board (C)'
+              : `Cosmic Watch (${multiverseState.visitedTimelineIds.length} Hands)`}
+          </button>
+          <button
+            onClick={handleTriggerGuidedAssassinationDemo}
+            className="text-rose-300 hover:text-rose-200 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
+          >
+            <Zap className="w-3.5 h-3.5 text-rose-400" />
             Causal Assassination (Ω-1 → Prime)
           </button>
           <button
@@ -5027,17 +5382,6 @@ export default function App() {
             className="hover:text-cyan-300 text-cyan-400 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Impossible Realms
-          </button>
-          <button
-            onClick={handleToggleAutoPlayDemo}
-            className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 font-semibold ${
-              autoPlayDemo
-                ? 'text-emerald-400 hover:text-emerald-300'
-                : 'text-emerald-300 hover:text-emerald-200'
-            }`}
-          >
-            {autoPlayDemo ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-            {autoPlayDemo ? 'Stop Auto-Demo (P)' : 'Auto-Play Demo (P)'}
           </button>
         </nav>
 
@@ -5137,11 +5481,11 @@ export default function App() {
                 : 'The Obsidian Dominion Advances'}
             </div>
 
-            {/* Quick Parallel Reality Pills */}
+            {/* Quick Parallel Reality Switcher (Hovering highlights the corresponding hand on the 3D Pocket Watch!) */}
             <div className="mt-2 pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
               <span className="text-[10px] font-mono text-slate-400 mr-0.5">Realities:</span>
               {Array.from(multiverseState.timelines.values())
-                .slice(0, 5)
+                .slice(0, 6)
                 .map((br) => {
                   const isCur = br.id === multiverseState.activeTimelineId;
                   const unprop = getPendingCausalBreachesForTimeline(multiverseState, br.id);
@@ -5149,12 +5493,16 @@ export default function App() {
                     <button
                       key={br.id}
                       onClick={() => handleSwitchTimeline(br.id)}
+                      onMouseEnter={() => handleHoverTimelineOnWatch(br.id)}
+                      onMouseLeave={() => handleHoverTimelineOnWatch(null)}
                       className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all cursor-pointer flex items-center gap-1 ${
-                        isCur
+                        br.isCollapsed
+                          ? 'bg-rose-950/90 text-rose-300 border border-rose-500/60 line-through'
+                          : isCur
                           ? 'bg-fuchsia-500 text-slate-950 font-bold shadow-sm'
                           : 'bg-slate-900/90 hover:bg-slate-800 text-slate-300 border border-slate-700/80'
                       }`}
-                      title={`${br.name}: ${br.divergenceSummary}`}
+                      title={`${br.name}: ${br.divergenceSummary} (Hover to highlight hand on Cosmic Watch)`}
                     >
                       <span>{br.shortCode}</span>
                       {unprop.length > 0 && (
@@ -5164,6 +5512,34 @@ export default function App() {
                   );
                 })}
             </div>
+
+            {/* Multiversal Pocket Watch & Remembered-Square Ledger Bar */}
+            <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2 text-[10px] font-mono text-slate-300">
+              <span>
+                Watch Hands: <strong className="text-amber-300">{multiverseState.visitedTimelineIds.length}</strong> · Remembered Sq:{' '}
+                <strong className="text-rose-300">{multiverseState.rememberedSquares.length}</strong>
+              </span>
+              <button
+                onClick={handleAdvanceWatchShowcase}
+                className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/60 text-amber-200 font-bold cursor-pointer transition-colors"
+                title="Step through the 5-stage Multiversal Pocket Watch Evolution Showcase"
+              >
+                {watchShowcaseStep === 0
+                  ? 'Watch Showcase →'
+                  : `Watch Stage ${watchShowcaseStep}/5 →`}
+              </button>
+            </div>
+
+            {watchEventBanner && (
+              <div className="mt-2 bg-[#140C1C]/95 border-l-2 border-amber-400 pl-2.5 py-1.5 pr-2 rounded-r-lg">
+                <div className="text-[10px] font-mono font-bold text-amber-300">
+                  {watchEventBanner.title}
+                </div>
+                <div className="text-[10px] text-slate-300 leading-snug mt-0.5">
+                  {watchEventBanner.subtitle}
+                </div>
+              </div>
+            )}
 
             {/* If an alternate-timeline Causal Assassination is ready to converge into Prime Reality, show 1-click Convergence CTA! */}
             {getPendingCausalBreachesForTimeline(multiverseState, 'TL-PRIME').length > 0 && (
@@ -5486,6 +5862,7 @@ export default function App() {
                       ['white_orbit', 'Orbit'],
                       ['top_tactical', 'Top'],
                       ['cinematic_angle', 'Flank'],
+                      ['pocket_watch', 'Watch (C)'],
                     ] as [CameraPreset, string][]
                   ).map(([preset, label]) => (
                     <button

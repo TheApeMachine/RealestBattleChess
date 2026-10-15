@@ -16,6 +16,11 @@ class SoundEngine {
   private barIndex: number = 0;
   private currentMood: MusicMood = 'CHESS';
 
+  // Multiversal Pocket Watch horological state
+  private watchHandsCount: number = 1;
+  private watchParadoxStrain: number = 0;
+  private watchImminentWarning: boolean = false;
+
   public get muted(): boolean {
     return this._muted;
   }
@@ -34,6 +39,16 @@ class SoundEngine {
 
   public setMusicMood(mood: MusicMood) {
     this.currentMood = mood;
+  }
+
+  public setWatchParadoxState(
+    handsCount: number,
+    paradoxStrain: number,
+    imminentWarning: boolean
+  ) {
+    this.watchHandsCount = Math.max(1, handsCount);
+    this.watchParadoxStrain = Math.max(0, Math.min(1, paradoxStrain));
+    this.watchImminentWarning = imminentWarning;
   }
 
   private getContext(): AudioContext | null {
@@ -294,6 +309,54 @@ class SoundEngine {
       pulseGain.connect(dest);
       pulseOsc.start(now);
       pulseOsc.stop(now + 0.19);
+    }
+
+    // 5. MULTIVERSAL POCKET WATCH ESCAPEMENT TICK-TOCK & PARADOX GEAR STRAIN
+    if (step % 2 === 0 || this.watchImminentWarning || this.watchHandsCount >= 3) {
+      const isTick = step % 4 === 0;
+      const tickOsc = ctx.createOscillator();
+      const tickFilter = ctx.createBiquadFilter();
+      const tickGain = ctx.createGain();
+
+      tickOsc.type = 'triangle';
+      const tickFreq = isTick ? 1920 : 1480;
+      tickOsc.frequency.setValueAtTime(
+        tickFreq * (this.watchImminentWarning ? 1.18 : 1.0),
+        now
+      );
+      tickOsc.frequency.exponentialRampToValueAtTime(380, now + 0.024);
+
+      tickFilter.type = 'bandpass';
+      tickFilter.frequency.setValueAtTime(1650, now);
+      tickFilter.Q.setValueAtTime(3.5, now);
+
+      const tickVol = Math.min(
+        0.16,
+        0.045 + (this.watchHandsCount - 1) * 0.015 + this.watchParadoxStrain * 0.06
+      );
+      tickGain.gain.setValueAtTime(tickVol, now);
+      tickGain.gain.exponentialRampToValueAtTime(0.0005, now + 0.028);
+
+      tickOsc.connect(tickFilter);
+      tickFilter.connect(tickGain);
+      tickGain.connect(dest);
+      tickOsc.start(now);
+      tickOsc.stop(now + 0.03);
+    }
+
+    // Stressed metallic gear creak under high paradox load
+    if (this.watchParadoxStrain > 0.45 && step === 6) {
+      const creakOsc = ctx.createOscillator();
+      const creakGain = ctx.createGain();
+      creakOsc.type = 'sawtooth';
+      creakOsc.frequency.setValueAtTime(215, now);
+      creakOsc.frequency.linearRampToValueAtTime(178, now + 0.19);
+      creakGain.gain.setValueAtTime(0.04 * this.watchParadoxStrain, now);
+      creakGain.gain.exponentialRampToValueAtTime(0.0005, now + 0.22);
+      creakOsc.connect(creakGain);
+      creakGain.connect(dest);
+      creakOsc.start(now);
+      creakOsc.stop(now + 0.23);
     }
 
     this.stepIndex += 1;
@@ -811,6 +874,88 @@ class SoundEngine {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.32);
+    }
+  }
+
+  public playWatchHandForged() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // 1. Heavy mechanical clockwork ratchet clicks (3 rapid escapement locks)
+    for (let i = 0; i < 3; i++) {
+      const t0 = now + i * 0.055;
+      const clickOsc = ctx.createOscillator();
+      const clickGain = ctx.createGain();
+      clickOsc.type = 'square';
+      clickOsc.frequency.setValueAtTime(920 + i * 240, t0);
+      clickOsc.frequency.exponentialRampToValueAtTime(220, t0 + 0.035);
+      clickGain.gain.setValueAtTime(0.14, t0);
+      clickGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.04);
+      clickOsc.connect(clickGain);
+      clickGain.connect(ctx.destination);
+      clickOsc.start(t0);
+      clickOsc.stop(t0 + 0.045);
+    }
+
+    // 2. Ascending horological chime as the new hand locks into place
+    [440, 554.37, 659.25, 880].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const t0 = now + 0.12 + idx * 0.05;
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0.11 / (idx * 0.35 + 1), t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.58);
+    });
+  }
+
+  public playWatchDoomBell(isParadoxCollision: boolean = false) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // 1. Deep cathedral bronze bell partials (inharmonic minor third overtone series)
+    const partials = isParadoxCollision
+      ? [98.0, 196.0, 233.08, 293.66, 466.16, 783.99]
+      : [110.0, 220.0, 261.63, 329.63, 523.25];
+
+    partials.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = idx === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.992, now + 1.45);
+
+      gain.gain.setValueAtTime(0.24 / (idx * 0.55 + 1), now);
+      gain.gain.exponentialRampToValueAtTime(0.0008, now + 1.5);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 1.55);
+    });
+
+    // 2. If Paradox Square Death or Timeline Collapse: sharp crystal fracture snap!
+    if (isParadoxCollision) {
+      [1480, 2240, 3120].forEach((f, i) => {
+        const snapOsc = ctx.createOscillator();
+        const snapGain = ctx.createGain();
+        snapOsc.type = 'sawtooth';
+        const t0 = now + i * 0.03;
+        snapOsc.frequency.setValueAtTime(f, t0);
+        snapOsc.frequency.exponentialRampToValueAtTime(f * 0.42, t0 + 0.14);
+        snapGain.gain.setValueAtTime(0.14, t0);
+        snapGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+        snapOsc.connect(snapGain);
+        snapGain.connect(ctx.destination);
+        snapOsc.start(t0);
+        snapOsc.stop(t0 + 0.17);
+      });
     }
   }
 }

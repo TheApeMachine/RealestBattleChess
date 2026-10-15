@@ -285,6 +285,39 @@ export interface VulnerableTargetSummary {
   tacticalValue: number;
 }
 
+export interface RememberedSquareEntry {
+  id: string;
+  lineageId: string;
+  pieceType: PieceType;
+  faction: Faction;
+  row: number;
+  col: number;
+  z: number;
+  w: number;
+  squareLabel: string;
+  sourceTimelineId: string;
+  sourceShortCode: string;
+  turnNumber: number;
+  createdAtSeq: number;
+}
+
+export type PocketWatchEventKind =
+  | 'NEW_TIMELINE_HAND'
+  | 'TIMELINE_ENTERED'
+  | 'CAUSAL_ASSASSINATION'
+  | 'TIMELINE_COLLAPSED'
+  | 'PARADOX_SQUARE_DEATH';
+
+export interface PocketWatchEvent {
+  id: string;
+  kind: PocketWatchEventKind;
+  timelineId: string;
+  secondaryTimelineId?: string;
+  title: string;
+  subtitle: string;
+  timestampMs: number;
+}
+
 export interface TimelineBranch {
   id: string;
   name: string;
@@ -306,6 +339,13 @@ export interface TimelineBranch {
   createdAtSeq: number;
   /** True if currently dehydrated out of the active working set to bound memory */
   isDehydrated?: boolean;
+  /** True once the player has visited, created, or interacted with this timeline (creates its hand on the Pocket Watch) */
+  visitedByPlayer?: boolean;
+  /** Fork depth from TL-PRIME (0 for Prime, 1 for direct fork, 2 for secondary fork, etc.) */
+  divergenceDepth?: number;
+  /** True if this timeline has collapsed due to Regicide, Paradox Collision, or Timeline Collapse */
+  isCollapsed?: boolean;
+  collapseReason?: string;
 }
 
 export interface MultiverseTravelerState {
@@ -329,6 +369,14 @@ export interface MultiverseState {
   eliminatedLineages: Map<string, CausalDeathEvent>;
   /** Active cross-timeline traveler tracking so a traveler has a single coherent manifestation */
   activeTraveler: MultiverseTravelerState | null;
+  /** Ordered list of timeline IDs the player has visited/created — each corresponds 1:1 to a persistent hand on the Multiversal Pocket Watch */
+  visitedTimelineIds: string[];
+  /** Authoritative ledger of squares occupied by pieces in visited universes (lethal when revisited by the same lineage in another universe) */
+  rememberedSquares: RememberedSquareEntry[];
+  /** Recent horological events driving physical reactions on the 3D Multiversal Pocket Watch */
+  watchEvents: PocketWatchEvent[];
+  /** Optional timeline ID currently hovered in the UI to highlight its hand on the 3D Pocket Watch */
+  hoveredTimelineId?: string | null;
 }
 
 export type GamePhase =

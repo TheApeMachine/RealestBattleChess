@@ -8,6 +8,9 @@ import {
   MultiverseMoveRecord,
   MultiverseState,
   PieceType,
+  PocketWatchEvent,
+  PocketWatchEventKind,
+  RememberedSquareEntry,
   TimelineBranch,
   VulnerableTargetSummary,
 } from '../types/game';
@@ -198,6 +201,7 @@ export function forkTimelineFromBranch(
     exposeTargetLineageId?: string;
     preferAggressiveDivergence?: boolean;
     seedOffset?: number;
+    isBackgroundSeed?: boolean;
   }
 ): TimelineBranch {
   const parent =
@@ -467,6 +471,9 @@ export function forkTimelineFromBranch(
       moveHistory[0]?.summary || `Forked from ${parent.shortCode} at Turn ${parent.turnNumber}`;
   }
 
+  const divergenceDepth = (parent.divergenceDepth ?? 0) + 1;
+  const visitedByPlayer = !options?.isBackgroundSeed;
+
   const newBranch: TimelineBranch = {
     id: newId,
     name,
@@ -482,19 +489,316 @@ export function forkTimelineFromBranch(
     appliedDeathEventIds: Array.from(multiverse.eliminatedLineages.values()).map((e) => e.id),
     createdAtSeq: multiverse.seqCounter,
     isDehydrated: false,
+    visitedByPlayer,
+    divergenceDepth,
+    isCollapsed: false,
   };
 
   multiverse.timelines.set(newId, newBranch);
   multiverse.hydratedOrder.push(newId);
+
+  if (visitedByPlayer) {
+    if (!multiverse.visitedTimelineIds.includes(newId)) {
+      multiverse.visitedTimelineIds.push(newId);
+    }
+    // Record initial diverged footprints in rememberedSquares
+    for (const rec of moveHistory) {
+      const sqLabel = formatSquareName(rec.to);
+      multiverse.rememberedSquares.push({
+        id: `rem_${newId}_${rec.seq}`,
+        lineageId: rec.pieceLineageId,
+        pieceType: rec.pieceType,
+        faction: rec.faction,
+        row: rec.to.row,
+        col: rec.to.col,
+        z: rec.to.z,
+        w: rec.to.w,
+        squareLabel: sqLabel,
+        sourceTimelineId: newId,
+        sourceShortCode: shortCode,
+        turnNumber: rec.turnNumber,
+        createdAtSeq: rec.seq,
+      });
+    }
+    emitPocketWatchEvent(
+      multiverse,
+      'NEW_TIMELINE_HAND',
+      newId,
+      parent.id,
+      `New Hand Forged: ${shortCode}`,
+      divergenceSummary
+    );
+  }
+
   enforceWorkingSetLimit(multiverse);
 
   return newBranch;
 }
 
 /**
- * Initializes the authoritative Multiverse State with Prime (`TL-PRIME`) and two initial
- * legally diverged timelines (`TL-OMEGA-1` where the Obsidian Queen is exposed on F6,
- * and `TL-OMEGA-2` where a White Knight is exposed on C3/D4).
+ * Emits a horological event to drive physical animations on the 3D Multiversal Pocket Watch.
+ */
+export function emitPocketWatchEvent(
+  multiverse: MultiverseState,
+  kind: PocketWatchEventKind,
+  timelineId: string,
+  secondaryTimelineId: string | undefined,
+  title: string,
+  subtitle: string
+): PocketWatchEvent {
+  const ev: PocketWatchEvent = {
+    id: `watch_ev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    kind,
+    timelineId,
+    secondaryTimelineId,
+    title,
+    subtitle,
+    timestampMs: performance.now(),
+  };
+  multiverse.watchEvents = [ev, ...multiverse.watchEvents.slice(0, 15)];
+  return ev;
+}
+
+/**
+ * Marks a timeline as visited/awakened on the Multiversal Pocket Watch, adding a persistent hand
+ * for that universe if it did not already have one, and seeding its diverged footprints into `rememberedSquares`.
+ */
+export function markTimelineVisitedOnWatch(
+  multiverse: MultiverseState,
+  timelineId: string,
+  emitEvent: boolean = true
+): boolean {
+  const branch = ensureBranchHydrated(multiverse, timelineId);
+  if (!branch) return false;
+
+  const isFirstVisit = !multiverse.visitedTimelineIds.includes(timelineId);
+  branch.visitedByPlayer = true;
+
+  if (isFirstVisit) {
+    multiverse.visitedTimelineIds.push(timelineId);
+    // Record its diverged moves into the Remembered-Square ledger
+    for (const rec of branch.moveHistory) {
+      const exists = multiverse.rememberedSquares.some(
+        (r) =>
+          r.sourceTimelineId === timelineId &&
+          r.lineageId === rec.pieceLineageId &&
+          r.row === rec.to.row &&
+          r.col === rec.to.col &&
+          r.z === rec.to.z &&
+          r.w === rec.to.w
+      );
+      if (!exists) {
+        multiverse.rememberedSquares.push({
+          id: `rem_${timelineId}_${rec.seq}`,
+          lineageId: rec.pieceLineageId,
+          pieceType: rec.pieceType,
+          faction: rec.faction,
+          row: rec.to.row,
+          col: rec.to.col,
+          z: rec.to.z,
+          w: rec.to.w,
+          squareLabel: formatSquareName(rec.to),
+          sourceTimelineId: timelineId,
+          sourceShortCode: branch.shortCode,
+          turnNumber: rec.turnNumber,
+          createdAtSeq: rec.seq,
+        });
+      }
+    }
+    if (emitEvent) {
+      emitPocketWatchEvent(
+        multiverse,
+        'NEW_TIMELINE_HAND',
+        timelineId,
+        branch.parentTimelineId || undefined,
+        `Universe Hand Awakened: ${branch.shortCode}`,
+        branch.divergenceSummary
+      );
+    }
+  } else if (emitEvent) {
+    emitPocketWatchEvent(
+      multiverse,
+      'TIMELINE_ENTERED',
+      timelineId,
+      undefined,
+      `Active Dial Aligned: ${branch.shortCode}`,
+      branch.name
+    );
+  }
+
+  return isFirstVisit;
+}
+
+/**
+ * Records a square occupied by a warrior in `timelineId` into the multiverse's Remembered-Square ledger.
+ * Every square a piece occupies in a visited universe becomes a Lethal Remembered Square for that piece's
+ * lineage when revisited in a different universe!
+ */
+export function recordRememberedSquare(
+  multiverse: MultiverseState,
+  piece: ChessPiece,
+  coord: { row: number; col: number; z: number; w: number },
+  timelineId: string,
+  turnNumber: number
+): RememberedSquareEntry {
+  const lineageId = getPieceLineageId(piece);
+  const branch = multiverse.timelines.get(timelineId);
+  const shortCode = branch?.shortCode || timelineId;
+  const sqLabel = formatSquareName(coord);
+
+  const existing = multiverse.rememberedSquares.find(
+    (r) =>
+      r.lineageId === lineageId &&
+      r.sourceTimelineId === timelineId &&
+      r.row === coord.row &&
+      r.col === coord.col &&
+      r.z === coord.z &&
+      r.w === coord.w
+  );
+  if (existing) return existing;
+
+  multiverse.seqCounter += 1;
+  const entry: RememberedSquareEntry = {
+    id: `rem_${timelineId}_${lineageId}_${multiverse.seqCounter}`,
+    lineageId,
+    pieceType: piece.type,
+    faction: piece.faction,
+    row: coord.row,
+    col: coord.col,
+    z: coord.z,
+    w: coord.w,
+    squareLabel: sqLabel,
+    sourceTimelineId: timelineId,
+    sourceShortCode: shortCode,
+    turnNumber,
+    createdAtSeq: multiverse.seqCounter,
+  };
+  multiverse.rememberedSquares.push(entry);
+  return entry;
+}
+
+/**
+ * Checks if `targetCoord` in `activeTimelineId` is a Lethal Remembered Square for `piece`
+ * (meaning the same `lineageId` previously occupied `targetCoord` in a DIFFERENT visited universe!).
+ */
+export function getLethalRememberedSquareCollision(
+  multiverse: MultiverseState,
+  piece: ChessPiece,
+  targetCoord: { row: number; col: number; z: number; w: number },
+  activeTimelineId: string
+): RememberedSquareEntry | null {
+  const lineageId = getPieceLineageId(piece);
+  return (
+    multiverse.rememberedSquares.find(
+      (r) =>
+        r.lineageId === lineageId &&
+        r.sourceTimelineId !== activeTimelineId &&
+        r.row === targetCoord.row &&
+        r.col === targetCoord.col &&
+        r.z === targetCoord.z &&
+        r.w === targetCoord.w
+    ) || null
+  );
+}
+
+/**
+ * Returns all Remembered Squares from OTHER universes that apply to `activeTimelineId`.
+ * If `selectedPiece` is provided, prioritizes squares lethal to `selectedPiece`'s lineage.
+ */
+export function getRememberedSquaresForTimelineView(
+  multiverse: MultiverseState,
+  activeTimelineId: string,
+  selectedPiece?: ChessPiece | null
+): RememberedSquareEntry[] {
+  const selectedLin = selectedPiece ? getPieceLineageId(selectedPiece) : null;
+  return multiverse.rememberedSquares.filter((r) => {
+    if (r.sourceTimelineId === activeTimelineId) return false;
+    if (selectedLin) return r.lineageId === selectedLin;
+    return true;
+  });
+}
+
+/**
+ * Collapses a timeline branch (e.g. due to Regicide, Paradox Collision, or Causal Pruning).
+ * The timeline's hand on the Multiversal Pocket Watch does NOT disappear; it cracks, bends,
+ * freezes in place, and fractures the watch crystal further!
+ */
+export function collapseTimelineBranch(
+  multiverse: MultiverseState,
+  timelineId: string,
+  reason: string
+): TimelineBranch | null {
+  const branch = ensureBranchHydrated(multiverse, timelineId);
+  if (!branch) return null;
+  markTimelineVisitedOnWatch(multiverse, timelineId, false);
+  branch.isCollapsed = true;
+  branch.collapseReason = reason;
+
+  emitPocketWatchEvent(
+    multiverse,
+    'TIMELINE_COLLAPSED',
+    timelineId,
+    branch.parentTimelineId || undefined,
+    `Timeline Collapsed: ${branch.shortCode}`,
+    reason
+  );
+
+  return branch;
+}
+
+/**
+ * Computes authoritative horological strain and paradox metrics from `MultiverseState`
+ * to drive the 3D Multiversal Pocket Watch's hands, sub-dials, gears, crystal cracks, and audio.
+ */
+export function computeMultiverseParadoxMetrics(multiverse: MultiverseState): {
+  visitedCount: number;
+  totalBranches: number;
+  collapsedCount: number;
+  rememberedSquareCount: number;
+  causalDeathCount: number;
+  pendingBreachCount: number;
+  paradoxStrain: number;
+} {
+  const visitedCount = multiverse.visitedTimelineIds.length;
+  const totalBranches = multiverse.timelines.size;
+  let collapsedCount = 0;
+  let pendingBreachCount = 0;
+
+  for (const tid of multiverse.visitedTimelineIds) {
+    const b = multiverse.timelines.get(tid);
+    if (b?.isCollapsed) collapsedCount += 1;
+    for (const [, ev] of multiverse.eliminatedLineages.entries()) {
+      if (b && !b.appliedDeathEventIds.includes(ev.id)) {
+        pendingBreachCount += 1;
+      }
+    }
+  }
+
+  const rememberedSquareCount = multiverse.rememberedSquares.length;
+  const causalDeathCount = multiverse.eliminatedLineages.size;
+
+  const rawStrain =
+    Math.max(0, visitedCount - 1) * 0.14 +
+    rememberedSquareCount * 0.035 +
+    causalDeathCount * 0.18 +
+    collapsedCount * 0.24 +
+    pendingBreachCount * 0.12;
+
+  return {
+    visitedCount,
+    totalBranches,
+    collapsedCount,
+    rememberedSquareCount,
+    causalDeathCount,
+    pendingBreachCount,
+    paradoxStrain: Math.min(1, rawStrain),
+  };
+}
+
+/**
+ * Initializes the authoritative Multiverse State with Prime (`TL-PRIME`) as the initial
+ * visited reality on the Pocket Watch, plus two legally diverged branches (`TL-OMEGA-1` and `TL-OMEGA-2`)
+ * ready to be discovered or entered.
  */
 export function createInitialMultiverseState(
   initialPrimePieces?: ChessPiece[]
@@ -516,6 +820,9 @@ export function createInitialMultiverseState(
     appliedDeathEventIds: [],
     createdAtSeq: 0,
     isDehydrated: false,
+    visitedByPlayer: true,
+    divergenceDepth: 0,
+    isCollapsed: false,
   };
 
   const multiverse: MultiverseState = {
@@ -528,16 +835,22 @@ export function createInitialMultiverseState(
     timelines: new Map([['TL-PRIME', primeBranch]]),
     eliminatedLineages: new Map(),
     activeTraveler: null,
+    visitedTimelineIds: ['TL-PRIME'],
+    rememberedSquares: [],
+    watchEvents: [],
+    hoveredTimelineId: null,
   };
 
   // Seed Branch 1 (Timeline Ω-1): Obsidian Queen (`lineage_b_q_3`) legally advances to an exposed square!
   forkTimelineFromBranch(multiverse, 'TL-PRIME', {
     exposeTargetLineageId: 'lineage_b_q_3',
+    isBackgroundSeed: true,
   });
 
   // Seed Branch 2 (Timeline Ω-2): Solaris Queen's Knight (`lineage_w_n_1`) legally advances into an exposed clash vector!
   forkTimelineFromBranch(multiverse, 'TL-PRIME', {
     exposeTargetLineageId: 'lineage_w_n_1',
+    isBackgroundSeed: true,
   });
 
   return multiverse;
@@ -674,6 +987,27 @@ export function recordCausalAssassination(
 
   if (multiverse.activeTraveler) {
     multiverse.activeTraveler.assassinationsInBranch.push(event);
+  }
+
+  markTimelineVisitedOnWatch(multiverse, sourceTimelineId, false);
+  emitPocketWatchEvent(
+    multiverse,
+    isParadoxStrike ? 'PARADOX_SQUARE_DEATH' : 'CAUSAL_ASSASSINATION',
+    sourceTimelineId,
+    multiverse.primeTimelineId,
+    isParadoxStrike
+      ? `Paradox Exclusion Strike in ${srcBranch?.shortCode || sourceTimelineId}`
+      : `Causal Assassination in ${srcBranch?.shortCode || sourceTimelineId}`,
+    combatSummary
+  );
+
+  // If a King was assassinated, collapse that timeline branch immediately!
+  if (victimPiece.type === 'k') {
+    collapseTimelineBranch(
+      multiverse,
+      sourceTimelineId,
+      `Regicide of ${ARCHETYPES[victimPiece.type].chessName} at ${sqLabel}`
+    );
   }
 
   return event;
@@ -1112,6 +1446,7 @@ export function switchActiveTimeline(
     ensureBranchHydrated(multiverse, targetTimelineId) ||
     ensureBranchHydrated(multiverse, multiverse.primeTimelineId)!;
   multiverse.activeTimelineId = branch.id;
+  markTimelineVisitedOnWatch(multiverse, branch.id, true);
   return branch;
 }
 
