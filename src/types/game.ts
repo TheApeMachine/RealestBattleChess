@@ -145,7 +145,10 @@ export type UniversityRoomId =
   | 'FACULTY_CORRIDOR'
   | 'SEMINAR_ROOM_204'
   | 'CAFETERIA'
-  | 'DRY_CLEANER';
+  | 'CAMPUS_QUAD'
+  | 'CITY_STREETS'
+  | 'DRY_CLEANER'
+  | 'PAWN_HOUSE';
 
 export type AcademicShirtState =
   | 'CLEAN'
@@ -269,6 +272,13 @@ export interface AcademicColloquiumState {
   energyLevel: number; // 0 to 100 (affected by sleep vs late-night chalkboard sessions)
   currentRoom: UniversityRoomId;
   activeDrawerTab: 'NONE' | 'CHALKBOARD_PROOF' | 'FINANCE_LEDGER' | 'PINE_MAIL' | 'CALENDAR_NPCS';
+
+  // Open-World City & Drivable 1984 Station Wagon State
+  isDrivingCar?: boolean;
+  carSpeedMph?: number;
+  carWorldX?: number;
+  carWorldZ?: number;
+  carYaw?: number;
 
   // Clothing, Cafeteria Queue & Dry-Cleaner State
   shirtState: AcademicShirtState;

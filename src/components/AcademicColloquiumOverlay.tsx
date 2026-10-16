@@ -269,7 +269,7 @@ export function createInitialAcademicColloquiumState(
     ],
     colloquiumLog: [
       '🌧️ Tuesday, 09:15 AM — Room 4B, Peano Hall. Rain streaks the window. The 1987 coffee machine is stone dead.',
-      '☕ You desperately need coffee from the Lagrange Point Cafeteria down the hall before your 10:00 AM meeting with Toby and your 14:30 review with Prof. Bishop.',
+      '☕ You need coffee from the Cafeteria before your 10:00 AM meeting with Toby and 14:30 review with Prof. Bishop. Your 1984 Station Wagon is parked outside on the Campus Quad.',
     ],
     academicYear: 1,
     semester: 'Fall',
@@ -278,6 +278,12 @@ export function createInitialAcademicColloquiumState(
     energyLevel: 76,
     currentRoom: 'OFFICE_4B',
     activeDrawerTab: 'NONE',
+
+    isDrivingCar: false,
+    carSpeedMph: 0,
+    carWorldX: -6.0,
+    carWorldZ: 14.5,
+    carYaw: 0,
 
     shirtState: 'CLEAN',
     hasSpareCleanShirtAtHome: true,
@@ -309,7 +315,7 @@ export function createInitialAcademicColloquiumState(
         account: 'PERSONAL',
         dayLabel: 'Monday',
         timeLabel: '18:30',
-        description: 'Campus Transit Pass & Rainy Evening Groceries',
+        description: 'Unleaded Fuel (1984 Station Wagon) & Rainy Evening Groceries',
         category: 'CAFETERIA',
         amount: -18.5,
         runningBalance: 2195.0,
@@ -411,6 +417,7 @@ interface AcademicColloquiumOverlayProps {
   onPickUpCleanedShirt: () => void;
   onBuyNewShirtAtHaberdashery: () => void;
   onCommuteHomeForSpareShirt: () => void;
+  onToggleDriveCar?: () => void;
   onAttendScheduledMeetingInRoom: (appointmentId: string) => void;
   onTalkToNpcInRoom: (npcId: 'TOBY' | 'BISHOP' | 'QUEEN' | 'ROOK') => void;
   onSelectBoundaryGauge: (
@@ -449,6 +456,7 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
   onPickUpCleanedShirt,
   onBuyNewShirtAtHaberdashery,
   onCommuteHomeForSpareShirt,
+  onToggleDriveCar,
   onAttendScheduledMeetingInRoom,
   onTalkToNpcInRoom,
   onSelectBoundaryGauge,
@@ -861,10 +869,30 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
               </span>
             </button>
           )}
+
+          {colloquium.isDrivingCar && (
+            <span className="px-2 py-0.5 rounded-lg bg-amber-500/25 border border-amber-400/60 text-amber-200 font-mono text-[10px] font-extrabold">
+              🚗 1984 Wagon · {Math.round(colloquium.carSpeedMph || 0)} mph
+            </span>
+          )}
         </div>
 
         {/* Top-Right: On-Demand Notebook Drawers + Camera POV Pills */}
         <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
+          {onToggleDriveCar && (
+            <button
+              onClick={onToggleDriveCar}
+              className={`px-2.5 py-1.5 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 backdrop-blur-md transition-all ${
+                colloquium.isDrivingCar
+                  ? 'bg-amber-400 text-slate-950 shadow-lg'
+                  : 'bg-[#060911]/78 hover:bg-slate-900 text-amber-300 border border-amber-500/40'
+              }`}
+              title="Enter or Exit your 1984 Andromeda Station Wagon [E]"
+            >
+              <span>{colloquium.isDrivingCar ? '🚗 Park [E]' : '🚗 Drive Wagon [E]'}</span>
+            </button>
+          )}
+
           <button
             onClick={() =>
               onSetDrawerTab(
@@ -1648,6 +1676,21 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
             </>
           )}
 
+          {(colloquium.currentRoom === 'CAMPUS_QUAD' ||
+            colloquium.currentRoom === 'CITY_STREETS') &&
+            onToggleDriveCar && (
+              <button
+                onClick={onToggleDriveCar}
+                className="px-3 py-1 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-mono text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5"
+              >
+                <span>
+                  {colloquium.isDrivingCar
+                    ? '🚗 Park & Exit 1984 Station Wagon [E]'
+                    : '🚗 Enter 1984 Station Wagon & Drive [E]'}
+                </span>
+              </button>
+            )}
+
           {colloquium.currentRoom === 'DRY_CLEANER' && (
             <>
               {colloquium.shirtState === 'COFFEE_STAINED' && (
@@ -1693,9 +1736,30 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
             </>
           )}
 
+          {colloquium.currentRoom === 'PAWN_HOUSE' && (
+            <>
+              {colloquium.shirtState !== 'CLEAN' && colloquium.hasSpareCleanShirtAtHome && (
+                <button
+                  onClick={onCommuteHomeForSpareShirt}
+                  className="px-3 py-1 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-mono text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5"
+                >
+                  <Shirt className="w-3.5 h-3.5" />
+                  <span>Put On Clean Spare Dress Shirt from Wardrobe (Free)</span>
+                </button>
+              )}
+              <button
+                onClick={onSleepUntilNextMorning}
+                className="px-3 py-1 rounded-xl bg-indigo-500/30 hover:bg-indigo-500/45 border border-indigo-400/60 text-indigo-100 font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5"
+              >
+                <Moon className="w-3.5 h-3.5" />
+                <span>Sleep in Your Own Bed Until 08:30 Tomorrow</span>
+              </button>
+            </>
+          )}
+
           <div className="h-4 w-px bg-slate-800 mx-0.5 hidden sm:block" />
 
-          {/* Compact Room Walk Pills */}
+          {/* Compact Campus & Open-World Town Navigation Pills */}
           <div className="flex flex-wrap items-center gap-1">
             {(
               [
@@ -1703,7 +1767,9 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
                 ['FACULTY_CORRIDOR', 'Corridor'],
                 ['SEMINAR_ROOM_204', 'Seminar 204'],
                 ['CAFETERIA', 'Cafeteria'],
-                ['DRY_CLEANER', 'Cleaners'],
+                ['CAMPUS_QUAD', '🚗 Parking'],
+                ['DRY_CLEANER', '🏙️ Cleaners'],
+                ['PAWN_HOUSE', '🏡 Home'],
               ] as [UniversityRoomId, string][]
             ).map(([roomId, label]) => (
               <button

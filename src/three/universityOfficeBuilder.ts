@@ -86,6 +86,23 @@ export interface UniversityOfficeRig {
   distractedStudentRig: HumanAcademicRig;
   queueNpcRigs: HumanAcademicRig[];
 
+  // Open-World Vehicle, Home & City Traffic Rigs
+  playerCarGroup: THREE.Group;
+  playerCarWheels: THREE.Group[];
+  playerCarHeadlight: THREE.PointLight;
+  houseBoardCanvas: HTMLCanvasElement;
+  houseBoardTex: THREE.CanvasTexture;
+  spareShirtHangerMesh: THREE.Object3D;
+  trafficCars: {
+    group: THREE.Group;
+    axis: 'X' | 'Z';
+    dir: number;
+    laneCoord: number;
+    minCoord: number;
+    maxCoord: number;
+    speed: number;
+  }[];
+
   // Coffee spill particle burst
   coffeeSplashPoints: THREE.Points;
   coffeeSplashVelocities: Float32Array;
@@ -98,6 +115,7 @@ export interface UniversityOfficeRig {
   lastCafeteriaSignature: string;
   lastCleanerSignature: string;
   lastSeminarSignature: string;
+  lastHouseSignature: string;
 }
 
 export const UNIVERSITY_ROOM_CENTERS: Record<
@@ -108,13 +126,13 @@ export const UNIVERSITY_ROOM_CENTERS: Record<
     x: -10.0,
     z: -4.0,
     label: 'Room 4B · Dr. Pawn’s Office',
-    subtitle: 'Chalkboard Proof Workbench, Pine Mail Terminal & 1987 Coffee Machine',
+    subtitle: 'Peano Hall · Chalkboard Proof Workbench, Pine Mail Terminal & 1987 Coffee Machine',
   },
   FACULTY_CORRIDOR: {
     x: 0.0,
     z: 1.4,
     label: 'Peano Hall · Faculty Corridor',
-    subtitle: 'Central Hallway Connecting Office 4B, Seminar Room 204, Cafeteria & Dry Cleaners',
+    subtitle: 'Central Hallway · Head South Out the Portico Doors to Campus Quad & Faculty Parking',
   },
   SEMINAR_ROOM_204: {
     x: 0.0,
@@ -126,26 +144,58 @@ export const UNIVERSITY_ROOM_CENTERS: Record<
     x: 11.0,
     z: -3.8,
     label: 'The Lagrange Point Cafeteria',
-    subtitle: 'Live Coffee Queue ($4.50) · Beware Distracted Undergraduates Carrying Textbooks',
+    subtitle: 'Peano Hall East Wing · Live Coffee Queue ($4.50) · Beware Rushing Undergraduates',
+  },
+  CAMPUS_QUAD: {
+    x: -5.5,
+    z: 13.5,
+    label: 'Campus Quad & Faculty Parking Lot',
+    subtitle: 'Dr. Pawn’s 1984 Station Wagon Parked in Bay #4B · Press [E] or Click Car to Drive',
+  },
+  CITY_STREETS: {
+    x: 0.0,
+    z: 26.0,
+    label: 'Greater Andromeda City Avenues',
+    subtitle: 'Drive East to Downtown Perseus Cleaners (x:+68, z:+72) or West to Home (x:-68, z:+72)',
   },
   DRY_CLEANER: {
-    x: 11.0,
-    z: 7.0,
-    label: 'Perseus Dry Cleaners & Haberdashery',
-    subtitle: 'Open 08:30–17:30 · Express Stain Removal ($28.50, 75m) or New Oxford Shirt ($68.00)',
+    x: 68.0,
+    z: 71.5,
+    label: 'Perseus Dry Cleaners & Haberdashery (Downtown)',
+    subtitle: '412 Commerce St. · Open 08:30–17:30 · Express Stain Removal ($28.50) or New Shirt ($68)',
+  },
+  PAWN_HOUSE: {
+    x: -68.0,
+    z: 71.5,
+    label: '742 Retrocausal Terrace · Dr. Pawn’s Home',
+    subtitle: 'Mortgaged Suburban Residence · Wardrobe Closet (Spare Clean Shirt) & Bedroom',
   },
 };
 
 export function getRoomAtWorldPos(x: number, z: number): UniversityRoomId {
-  if (z < -0.75) {
-    if (x < -5.0) return 'OFFICE_4B';
-    if (x <= 5.2) return 'SEMINAR_ROOM_204';
-    return 'CAFETERIA';
+  // 1. Inside Peano Hall (University Building)
+  if (x >= -16.5 && x <= 17.0 && z >= -8.5 && z <= 3.6) {
+    if (z < -0.75) {
+      if (x < -5.0) return 'OFFICE_4B';
+      if (x <= 5.2) return 'SEMINAR_ROOM_204';
+      return 'CAFETERIA';
+    }
+    return 'FACULTY_CORRIDOR';
   }
-  if (z > 3.7 && x > 5.0) {
+  // 2. Campus Quad & Faculty Parking Lot outside Peano Hall
+  if (x >= -28.0 && x <= 28.0 && z > 3.6 && z <= 21.0) {
+    return 'CAMPUS_QUAD';
+  }
+  // 3. Downtown Perseus Dry Cleaners & Haberdashery District
+  if (x >= 56.0 && x <= 80.0 && z >= 60.0 && z <= 82.0) {
     return 'DRY_CLEANER';
   }
-  return 'FACULTY_CORRIDOR';
+  // 4. Dr. Pawn's Mortgaged Suburban Home (742 Retrocausal Terrace)
+  if (x >= -80.0 && x <= -56.0 && z >= 60.0 && z <= 82.0) {
+    return 'PAWN_HOUSE';
+  }
+  // 5. Open-World City Avenues & Neighborhoods
+  return 'CITY_STREETS';
 }
 
 // ============================================================================
@@ -2165,6 +2215,212 @@ function createBookshelfUnitGroup(woodMat: THREE.Material): THREE.Group {
   return g;
 }
 
+// Procedural 1984 Andromeda Station Wagon & AI Traffic Sedan Builder
+function createProceduralStationWagon(options: {
+  bodyColor: number;
+  roofColor: number;
+  isWagon?: boolean;
+  isPlayerCar?: boolean;
+}): {
+  group: THREE.Group;
+  wheels: THREE.Group[];
+  headlight?: THREE.PointLight;
+} {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: options.bodyColor,
+    roughness: 0.28,
+    metalness: 0.42,
+  });
+  const roofMat = new THREE.MeshStandardMaterial({
+    color: options.roofColor,
+    roughness: 0.35,
+    metalness: 0.3,
+  });
+  const woodPanelMat = new THREE.MeshStandardMaterial({
+    color: 0x78350f,
+    roughness: 0.55,
+    metalness: 0.08,
+  });
+  const chromeMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.18,
+    metalness: 0.88,
+  });
+  const darkTrimMat = new THREE.MeshStandardMaterial({
+    color: 0x111827,
+    roughness: 0.72,
+  });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x93c5fd,
+    transparent: true,
+    opacity: 0.34,
+    roughness: 0.1,
+    metalness: 0.25,
+  });
+  const headlightMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    emissive: 0xfde047,
+    emissiveIntensity: 1.5,
+  });
+  const taillightMat = new THREE.MeshStandardMaterial({
+    color: 0xef4444,
+    emissive: 0xdc2626,
+    emissiveIntensity: 1.2,
+  });
+
+  // Lower Chassis Body (width 1.92m, height 0.58m, length 4.46m; +Z is forward)
+  const lowerBody = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.58, 4.46), bodyMat);
+  lowerBody.position.set(0, 0.62, 0);
+  lowerBody.castShadow = true;
+  lowerBody.receiveShadow = true;
+  g.add(lowerBody);
+
+  // Classic 1984 Woodgrain Side Trim on Station Wagon
+  if (options.isWagon) {
+    [-0.966, 0.966].forEach((sx) => {
+      const woodPanel = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.28, 3.85), woodPanelMat);
+      woodPanel.position.set(sx, 0.64, -0.08);
+      g.add(woodPanel);
+      const chromeTrim = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.03, 3.9), chromeMat);
+      chromeTrim.position.set(sx, 0.79, -0.08);
+      g.add(chromeTrim);
+    });
+  }
+
+  // Front Hood Slope
+  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.84, 0.14, 1.38), bodyMat);
+  hood.position.set(0, 0.92, 1.48);
+  hood.rotation.x = 0.05;
+  hood.castShadow = true;
+  g.add(hood);
+
+  // Cabin Greenhouse & Roof
+  const cabinLen = options.isWagon ? 2.75 : 2.05;
+  const cabinCenterZ = options.isWagon ? -0.52 : -0.22;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.09, cabinLen), roofMat);
+  roof.position.set(0, 1.52, cabinCenterZ);
+  roof.castShadow = true;
+  g.add(roof);
+
+  if (options.isWagon) {
+    [-0.68, 0.68].forEach((rx) => {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.05, 1.95), chromeMat);
+      rail.position.set(rx, 1.59, -0.65);
+      g.add(rail);
+    });
+  }
+
+  // Windshield & Rear Window
+  const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.66, 0.06), glassMat);
+  windshield.position.set(0, 1.21, 0.86);
+  windshield.rotation.x = -0.46;
+  g.add(windshield);
+
+  const rearWin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.62, 0.06), glassMat);
+  rearWin.position.set(0, 1.21, options.isWagon ? -1.88 : -1.24);
+  rearWin.rotation.x = options.isWagon ? 0.22 : 0.44;
+  g.add(rearWin);
+
+  // Side Glass & Roof Pillars
+  [-0.81, 0.81].forEach((sx) => {
+    const sideGlass = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.54, cabinLen - 0.24),
+      glassMat
+    );
+    sideGlass.position.set(sx, 1.21, cabinCenterZ);
+    g.add(sideGlass);
+
+    const pillarZs = options.isWagon ? [0.72, -0.05, -0.95, -1.82] : [0.72, -0.15, -1.12];
+    pillarZs.forEach((pz) => {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.6, 0.09), roofMat);
+      pillar.position.set(sx, 1.22, pz);
+      g.add(pillar);
+    });
+  });
+
+  // Interior Bench Seats, Dashboard & Steering Wheel
+  const seatMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.78 });
+  const frontBench = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.42, 0.52), seatMat);
+  frontBench.position.set(0, 0.86, 0.15);
+  g.add(frontBench);
+  const frontBackrest = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.52, 0.14), seatMat);
+  frontBackrest.position.set(0, 1.12, -0.08);
+  g.add(frontBackrest);
+  const rearBench = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.42, 0.52), seatMat);
+  rearBench.position.set(0, 0.86, -0.78);
+  g.add(rearBench);
+
+  const dashMesh = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.28, 0.36), darkTrimMat);
+  dashMesh.position.set(0, 0.98, 0.66);
+  g.add(dashMesh);
+
+  const steeringWheel = new THREE.Mesh(
+    new THREE.TorusGeometry(0.16, 0.024, 8, 18),
+    darkTrimMat
+  );
+  steeringWheel.position.set(-0.42, 1.08, 0.44);
+  steeringWheel.rotation.x = -0.35;
+  g.add(steeringWheel);
+
+  // Chrome Bumpers, Grille, Dual Headlights & Taillights
+  const frontBumper = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.16, 0.18), chromeMat);
+  frontBumper.position.set(0, 0.44, 2.26);
+  g.add(frontBumper);
+  const rearBumper = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.16, 0.18), chromeMat);
+  rearBumper.position.set(0, 0.44, -2.26);
+  g.add(rearBumper);
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.24, 0.06), chromeMat);
+  grille.position.set(0, 0.68, 2.24);
+  g.add(grille);
+
+  [-0.68, 0.68].forEach((hx) => {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.06), headlightMat);
+    hl.position.set(hx, 0.68, 2.24);
+    g.add(hl);
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 0.06), taillightMat);
+    tl.position.set(hx, 0.68, -2.24);
+    g.add(tl);
+  });
+
+  // 4 Articulated Wheels with Chrome Hubcaps
+  const wheels: THREE.Group[] = [];
+  const wheelCoords: [number, number][] = [
+    [-0.92, 1.38],
+    [0.92, 1.38],
+    [-0.92, -1.36],
+    [0.92, -1.36],
+  ];
+  wheelCoords.forEach(([wx, wz]) => {
+    const wg = new THREE.Group();
+    wg.position.set(wx, 0.36, wz);
+    const tire = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.36, 0.36, 0.26, 20),
+      darkTrimMat
+    );
+    tire.rotation.z = Math.PI / 2;
+    tire.castShadow = true;
+    wg.add(tire);
+    const hubcap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.21, 0.21, 0.28, 16),
+      chromeMat
+    );
+    hubcap.rotation.z = Math.PI / 2;
+    wg.add(hubcap);
+    g.add(wg);
+    wheels.push(wg);
+  });
+
+  let headlight: THREE.PointLight | undefined;
+  if (options.isPlayerCar) {
+    headlight = new THREE.PointLight(0xfef08a, 4.2, 28);
+    headlight.position.set(0, 0.85, 3.2);
+    g.add(headlight);
+  }
+
+  return { group: g, wheels, headlight };
+}
+
 export function createUniversityOfficeRig(): UniversityOfficeRig {
   const rootGroup = new THREE.Group();
   rootGroup.position.set(0, 0, 0);
@@ -2193,18 +2449,28 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   const checkerTileTex = getSharedCheckerTileTexture();
 
   // ============================================================================
-  // 1. CONTINUOUS WALKABLE CAMPUS FLOORPLAN (5 CONNECTED SPACES)
+  // 1. GRAND OPEN-WORLD TOWN GROUND (240m × 240m) & PEANO HALL FLOORPLAN
   // ============================================================================
+  const townGrassMat = new THREE.MeshStandardMaterial({
+    color: 0x0f291e,
+    roughness: 0.94,
+    metalness: 0.02,
+  });
+  const walkableFloorMesh = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), townGrassMat);
+  walkableFloorMesh.rotation.x = -Math.PI / 2;
+  walkableFloorMesh.position.set(0, -0.02, 42);
+  walkableFloorMesh.receiveShadow = true;
+  rootGroup.add(walkableFloorMesh);
+
   const floorMat = new THREE.MeshStandardMaterial({
     map: parquetTex,
     roughness: 0.62,
     metalness: 0.08,
   });
-  const walkableFloorMesh = new THREE.Mesh(new THREE.PlaneGeometry(36, 22), floorMat);
-  walkableFloorMesh.rotation.x = -Math.PI / 2;
-  walkableFloorMesh.position.set(0.5, 0, 1.2);
-  walkableFloorMesh.receiveShadow = true;
-  rootGroup.add(walkableFloorMesh);
+  const peanoFloorMesh = new THREE.Mesh(new THREE.BoxGeometry(34.0, 0.02, 12.2), floorMat);
+  peanoFloorMesh.position.set(0.8, 0.0, -1.6);
+  peanoFloorMesh.receiveShadow = true;
+  rootGroup.add(peanoFloorMesh);
 
   // Room 4B Woven Persian Study Rug (with subtle 4D Tesseract medallion!)
   const officeRug = new THREE.Mesh(
@@ -2216,13 +2482,13 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
       roughness: 0.88,
     })
   );
-  officeRug.position.set(-10.0, 0.012, -4.1);
+  officeRug.position.set(-10.0, 0.014, -4.1);
   officeRug.receiveShadow = true;
   rootGroup.add(officeRug);
 
   // Faculty Corridor Carpet Runner with Gold Trim Borders
   const corridorRunner = new THREE.Mesh(
-    new THREE.BoxGeometry(31.5, 0.02, 3.8),
+    new THREE.BoxGeometry(31.5, 0.022, 3.8),
     new THREE.MeshStandardMaterial({
       color: 0x1e293b,
       bumpMap: tweedTex,
@@ -2230,13 +2496,13 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
       roughness: 0.82,
     })
   );
-  corridorRunner.position.set(0.5, 0.01, 1.4);
+  corridorRunner.position.set(0.5, 0.012, 1.4);
   corridorRunner.receiveShadow = true;
   rootGroup.add(corridorRunner);
 
   // Seminar Room 204 Royal Blue Carpet
   const seminarCarpet = new THREE.Mesh(
-    new THREE.BoxGeometry(9.0, 0.022, 6.2),
+    new THREE.BoxGeometry(9.0, 0.024, 6.2),
     new THREE.MeshStandardMaterial({
       color: 0x172554,
       bumpMap: tweedTex,
@@ -2244,32 +2510,33 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
       roughness: 0.86,
     })
   );
-  seminarCarpet.position.set(0.0, 0.011, -4.1);
+  seminarCarpet.position.set(0.0, 0.013, -4.1);
   seminarCarpet.receiveShadow = true;
   rootGroup.add(seminarCarpet);
 
-  // Cafeteria & Dry Cleaners Terrazzo Checkerboard Tile Zones
+  // Cafeteria Terrazzo Checkerboard Tile Zone
   const cafeteriaTile = new THREE.Mesh(
-    new THREE.BoxGeometry(10.2, 0.022, 6.2),
+    new THREE.BoxGeometry(10.2, 0.024, 6.2),
     new THREE.MeshStandardMaterial({
       map: checkerTileTex,
       roughness: 0.38,
       metalness: 0.1,
     })
   );
-  cafeteriaTile.position.set(11.0, 0.011, -4.1);
+  cafeteriaTile.position.set(11.0, 0.013, -4.1);
   cafeteriaTile.receiveShadow = true;
   rootGroup.add(cafeteriaTile);
 
+  // Relocated Downtown Perseus Dry Cleaners Floor (at X = 71.2, Z = 72.8)
   const cleanerTile = new THREE.Mesh(
-    new THREE.BoxGeometry(10.2, 0.022, 6.0),
+    new THREE.BoxGeometry(11.6, 0.026, 8.2),
     new THREE.MeshStandardMaterial({
       map: checkerTileTex,
       roughness: 0.35,
       metalness: 0.12,
     })
   );
-  cleanerTile.position.set(11.0, 0.011, 7.0);
+  cleanerTile.position.set(71.2, 0.013, 72.8);
   cleanerTile.receiveShadow = true;
   rootGroup.add(cleanerTile);
 
@@ -2329,8 +2596,8 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   addWallSegment(0.25, 4.8, 6.4, -5.0, 2.4, -4.2);
   // Divider between Seminar Room 204 and Cafeteria (at x = +5.2)
   addWallSegment(0.25, 4.8, 6.4, 5.2, 2.4, -4.2);
-  // East Wall of Cafeteria & Dry Cleaner
-  addWallSegment(0.25, 4.8, 18.0, 16.4, 2.4, 1.5);
+  // East Wall of Peano Hall
+  addWallSegment(0.25, 4.8, 12.0, 16.4, 2.4, -1.4);
 
   // Corridor Partition Wall (z = -0.8) with 3 wide open doorways into Office 4B (x=-10), Seminar 204 (x=0), and Cafeteria (x=+11)
   addWallSegment(3.2, 3.2, 0.22, -13.1, 1.6, -0.8);
@@ -2338,11 +2605,285 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   addWallSegment(4.6, 3.2, 0.22, 5.2, 1.6, -0.8);
   addWallSegment(2.4, 3.2, 0.22, 15.1, 1.6, -0.8);
 
-  // South Wall & West Wall of Perseus Dry Cleaners
-  addWallSegment(11.4, 4.2, 0.25, 10.8, 2.1, 10.2);
-  addWallSegment(0.25, 4.2, 6.2, 5.2, 2.1, 7.1);
+  // South Facade of Peano Hall (z = 4.2) with Wide Open Main Double Doors at X = [-2.4 .. +2.4] leading out to the Campus Quad!
+  addWallSegment(12.4, 4.6, 0.28, -8.6, 2.3, 4.2);
+  addWallSegment(14.0, 4.6, 0.28, 9.4, 2.3, 4.2);
 
-  // Faculty Corridor Noticeboard on South Wall of Seminar Partition (x = -1.6, z = -0.66)
+  // Georgian Limestone Portico Pillars at Peano Hall South Entrance (X = 0, Z = 4.5..6.4)
+  const limestoneMat = new THREE.MeshStandardMaterial({
+    color: 0xd6d3d1,
+    roughness: 0.6,
+    metalness: 0.08,
+  });
+  const porticoGroup = new THREE.Group();
+  porticoGroup.position.set(0, 0, 5.0);
+  const porticoSteps = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.14, 2.6), limestoneMat);
+  porticoSteps.position.set(0, 0.07, 0.2);
+  porticoSteps.receiveShadow = true;
+  porticoGroup.add(porticoSteps);
+  [-2.6, -1.4, 1.4, 2.6].forEach((px) => {
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 4.4, 16), limestoneMat);
+    col.position.set(px, 2.2, 0.6);
+    col.castShadow = true;
+    porticoGroup.add(col);
+  });
+  const pediment = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.65, 2.2), limestoneMat);
+  pediment.position.set(0, 4.65, 0.2);
+  porticoGroup.add(pediment);
+  rootGroup.add(porticoGroup);
+  registerShatterable(porticoGroup);
+
+  // ============================================================================
+  // 1B. OPEN-WORLD CITY INFRASTRUCTURE: CAMPUS QUAD, PARKING LOT, ROADS & TRAFFIC
+  // ============================================================================
+  const asphaltMat = new THREE.MeshStandardMaterial({
+    color: 0x18181b,
+    roughness: 0.78,
+    metalness: 0.12,
+  });
+  const sidewalkMat = new THREE.MeshStandardMaterial({
+    color: 0x57534e,
+    roughness: 0.85,
+  });
+  const yellowLineMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    emissive: 0xca8a04,
+    emissiveIntensity: 0.25,
+    roughness: 0.5,
+  });
+  const whiteLineMat = new THREE.MeshStandardMaterial({
+    color: 0xf8fafc,
+    roughness: 0.5,
+  });
+
+  // Campus Quad Limestone Walkway & Memorial Obelisk
+  const quadWalkway = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.03, 14.0), sidewalkMat);
+  quadWalkway.position.set(0, 0.008, 11.5);
+  quadWalkway.receiveShadow = true;
+  rootGroup.add(quadWalkway);
+
+  const obeliskBase = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 1.8), limestoneMat);
+  obeliskBase.position.set(4.5, 0.25, 11.0);
+  rootGroup.add(obeliskBase);
+  const obeliskSpire = new THREE.Mesh(new THREE.ConeGeometry(0.45, 2.6, 4), limestoneMat);
+  obeliskSpire.position.set(4.5, 1.8, 11.0);
+  obeliskSpire.rotation.y = Math.PI / 4;
+  obeliskSpire.castShadow = true;
+  rootGroup.add(obeliskSpire);
+
+  // Faculty Parking Lot Apron (X = -14 to -2, Z = 9.5 to 19.5)
+  const parkingLot = new THREE.Mesh(new THREE.BoxGeometry(13.5, 0.025, 10.5), asphaltMat);
+  parkingLot.position.set(-8.2, 0.006, 14.5);
+  parkingLot.receiveShadow = true;
+  rootGroup.add(parkingLot);
+
+  [-11.5, -8.5, -5.5, -2.5].forEach((px) => {
+    const stallLine = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 5.2), whiteLineMat);
+    stallLine.position.set(px, 0.01, 13.8);
+    rootGroup.add(stallLine);
+  });
+
+  // Prof. Rook's Tenured Luxury Sedan parked in Stall #1 (-10.0, 14.2)
+  const rookParkedCar = createProceduralStationWagon({
+    bodyColor: 0x1e3a8a,
+    roofColor: 0x172554,
+    isWagon: false,
+  });
+  rookParkedCar.group.position.set(-10.0, 0, 14.2);
+  rootGroup.add(rookParkedCar.group);
+
+  // City Road Network: University Ave (Z=22), Central Causeway (X=0, Z=22..72), Perseus Blvd (Z=60)
+  const addRoadSegment = (
+    cx: number,
+    cz: number,
+    widthX: number,
+    lengthZ: number,
+    isEastWest: boolean
+  ) => {
+    const road = new THREE.Mesh(new THREE.BoxGeometry(widthX, 0.025, lengthZ), asphaltMat);
+    road.position.set(cx, 0.004, cz);
+    road.receiveShadow = true;
+    rootGroup.add(road);
+
+    if (isEastWest) {
+      [-lengthZ * 0.5 - 1.1, lengthZ * 0.5 + 1.1].forEach((sz) => {
+        const sw = new THREE.Mesh(new THREE.BoxGeometry(widthX, 0.07, 2.2), sidewalkMat);
+        sw.position.set(cx, 0.025, cz + sz);
+        sw.receiveShadow = true;
+        rootGroup.add(sw);
+      });
+      for (let x = cx - widthX * 0.46; x <= cx + widthX * 0.46; x += 6.0) {
+        const dash = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.03, 0.18), yellowLineMat);
+        dash.position.set(x, 0.009, cz);
+        rootGroup.add(dash);
+      }
+    } else {
+      [-widthX * 0.5 - 1.1, widthX * 0.5 + 1.1].forEach((sx) => {
+        const sw = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.07, lengthZ), sidewalkMat);
+        sw.position.set(cx + sx, 0.025, cz);
+        sw.receiveShadow = true;
+        rootGroup.add(sw);
+      });
+      for (let z = cz - lengthZ * 0.46; z <= cz + lengthZ * 0.46; z += 6.0) {
+        const dash = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 2.8), yellowLineMat);
+        dash.position.set(cx, 0.009, z);
+        rootGroup.add(dash);
+      }
+    }
+  };
+
+  addRoadSegment(0, 22.0, 176.0, 10.0, true);
+  addRoadSegment(0, 46.0, 10.0, 48.0, false);
+  addRoadSegment(0, 60.0, 176.0, 10.0, true);
+
+  // Streetlamps, Trees & City Blocks
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x27272a, metalness: 0.7, roughness: 0.35 });
+  const bulbMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    emissive: 0xfde047,
+    emissiveIntensity: 1.8,
+  });
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.9 });
+  const foliageMat = new THREE.MeshStandardMaterial({ color: 0x14532d, roughness: 0.85 });
+
+  [
+    [-64, 16],
+    [-32, 16],
+    [-14, 16],
+    [14, 16],
+    [38, 16],
+    [66, 16],
+    [-6, 36],
+    [6, 36],
+    [-6, 52],
+    [6, 52],
+    [-68, 53],
+    [-36, 53],
+    [36, 53],
+    [68, 53],
+  ].forEach(([lx, lz]) => {
+    const g = new THREE.Group();
+    g.position.set(lx, 0, lz);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 4.8, 10), poleMat);
+    pole.position.y = 2.4;
+    pole.castShadow = true;
+    g.add(pole);
+    const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), bulbMat);
+    lantern.position.y = 4.9;
+    g.add(lantern);
+    rootGroup.add(g);
+  });
+
+  [
+    [-20, 8, 1.15],
+    [19, 9, 1.2],
+    [9, 12, 0.95],
+    [-26, 14, 1.1],
+    [-46, 36, 1.25],
+    [-28, 42, 1.05],
+    [28, 38, 1.15],
+    [48, 42, 1.3],
+    [-80, 72, 1.2],
+    [-55, 76, 1.1],
+    [54, 74, 1.15],
+    [84, 72, 1.25],
+  ].forEach(([tx, tz, ts]) => {
+    const g = new THREE.Group();
+    g.position.set(tx, 0, tz);
+    g.scale.setScalar(ts);
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 2.2, 10), trunkMat);
+    trunk.position.y = 1.1;
+    trunk.castShadow = true;
+    g.add(trunk);
+    const crown1 = new THREE.Mesh(new THREE.DodecahedronGeometry(1.45, 1), foliageMat);
+    crown1.position.y = 2.8;
+    crown1.castShadow = true;
+    g.add(crown1);
+    const crown2 = new THREE.Mesh(new THREE.DodecahedronGeometry(1.05, 1), foliageMat);
+    crown2.position.set(0.4, 3.6, -0.2);
+    g.add(crown2);
+    rootGroup.add(g);
+  });
+
+  const cityBuildings: [number, number, number, number, number, number][] = [
+    [-38, 38, 14, 11, 10, 0x334155], // Andromeda Savings Bank
+    [-18, 38, 12, 9, 9, 0x3f3f46], // University Bookshop
+    [20, 38, 13, 12, 10, 0x1e293b], // Perseus Municipal Library
+    [42, 38, 16, 14, 11, 0x292524], // Andromeda Telegraph & Post
+    [46, 74, 14, 9, 10, 0x374151], // Downtown Commercial Block
+  ];
+  cityBuildings.forEach(([bx, bz, bw, bh, bd, bcol]) => {
+    const bGroup = new THREE.Group();
+    bGroup.position.set(bx, 0, bz);
+    const bMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(bw, bh, bd),
+      new THREE.MeshStandardMaterial({ color: bcol, roughness: 0.8 })
+    );
+    bMesh.position.y = bh * 0.5;
+    bMesh.castShadow = true;
+    bMesh.receiveShadow = true;
+    bGroup.add(bMesh);
+    const winLitMat = new THREE.MeshStandardMaterial({
+      color: 0xfef3c7,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 0.7,
+    });
+    for (let wy = 2.4; wy < bh - 1.2; wy += 2.6) {
+      for (let wx = -bw * 0.36; wx <= bw * 0.36; wx += 2.6) {
+        const wPane = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.3, bd + 0.08), winLitMat);
+        wPane.position.set(wx, wy, 0);
+        bGroup.add(wPane);
+      }
+    }
+    rootGroup.add(bGroup);
+    registerShatterable(bGroup);
+  });
+
+  // Dr. Pawn's Drivable 1984 Burgundy Station Wagon + 4 Autonomous AI City Traffic Cars
+  const playerCarBuilt = createProceduralStationWagon({
+    bodyColor: 0x7f1d1d,
+    roofColor: 0x991b1b,
+    isWagon: true,
+    isPlayerCar: true,
+  });
+  const playerCarGroup = playerCarBuilt.group;
+  const playerCarWheels = playerCarBuilt.wheels;
+  const playerCarHeadlight = playerCarBuilt.headlight!;
+  playerCarGroup.position.set(-6.0, 0, 14.5);
+  playerCarGroup.userData = {
+    uniInteract: 'TOGGLE_DRIVE_CAR',
+    interactLabel: "Drive / Exit Dr. Pawn's 1984 Station Wagon",
+  };
+  rootGroup.add(playerCarGroup);
+
+  const trafficColors = [0x0284c7, 0xd97706, 0x059669, 0x4f46e5];
+  const trafficCars = trafficColors.map((col, idx) => {
+    const built = createProceduralStationWagon({
+      bodyColor: col,
+      roofColor: 0xe2e8f0,
+      isWagon: idx % 2 === 0,
+    });
+    rootGroup.add(built.group);
+    return {
+      group: built.group,
+      wheels: built.wheels,
+      laneZ: idx < 2 ? (idx === 0 ? 19.8 : 24.2) : idx === 2 ? 57.8 : 62.2,
+      speed: (idx % 2 === 0 ? 1 : -1) * (9.5 + idx * 1.4),
+      x: -60 + idx * 38,
+    };
+  });
+
+  // Relocated Downtown Perseus Dry Cleaners Exterior Walls (around X = 71.2, Z = 72.8)
+  addWallSegment(11.8, 4.2, 0.25, 71.2, 2.1, 76.2); // South Back Wall
+  addWallSegment(0.25, 4.2, 8.2, 65.4, 2.1, 72.8); // West Wall
+  addWallSegment(0.25, 4.2, 8.2, 77.0, 2.1, 72.8); // East Wall
+  // Parking Pad outside Downtown Dry Cleaners
+  const cleanerParking = new THREE.Mesh(new THREE.BoxGeometry(9.0, 0.025, 8.0), asphaltMat);
+  cleanerParking.position.set(60.5, 0.005, 71.0);
+  cleanerParking.receiveShadow = true;
+  rootGroup.add(cleanerParking);
+
+  // Faculty Corridor Noticeboard on South Wall of Seminar Partition (x = -4.8, z = -0.66)
   const corridorBoardGroup = new THREE.Group();
   corridorBoardGroup.position.set(-4.8, 2.1, -0.66);
   const corkFrame = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.35, 0.06), wainscotMat);
@@ -2469,7 +3010,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     interactZ: -3.6,
     interactLabel: 'Use Pine Mail & Ledger Terminal',
   };
-  // Green Leather Desk Blotter Inlay
   const deskBlotter = new THREE.Mesh(
     new THREE.BoxGeometry(1.1, 0.015, 0.72),
     new THREE.MeshStandardMaterial({ color: 0x064e3b, roughness: 0.65 })
@@ -2485,7 +3025,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   modestyPanel.position.set(-0.4, 0.42, -0.98);
   officeGroup.add(deskTop, deskBlotter, deskPedL, deskPedR, modestyPanel);
 
-  // Brass Drawer Handles on Desk Pedestals
   for (const px of [-1.28, 0.48]) {
     for (let dy = 0.2; dy <= 0.62; dy += 0.21) {
       const pull = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.024, 0.03), brassMat);
@@ -2494,7 +3033,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     }
   }
 
-  // Tufted Leather Professor's Desk Chair & Guest Chair for Toby
   const profChair = createAcademicChairGroup(deskWoodMat, 0x451a03);
   profChair.position.set(-0.55, 0, 0.35);
   profChair.rotation.y = Math.PI;
@@ -2503,7 +3041,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   guestChair.rotation.y = 0.65;
   officeGroup.add(profChair, guestChair);
 
-  // Sculpted Brass & Emerald Glass Banker's Lamp on Desk
   const lampBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.09, 0.13, 0.045, 18),
     brassMat
@@ -2569,7 +3106,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   mechKeyboard.rotation.x = 0.08;
   officeGroup.add(crtSwivelBase, crtBezel, crtRearTube, crtFace, mechKeyboard);
 
-  // The Broken 1987 Bunn-O-Matic Commercial Pour-Over Coffee Brewer (with Glass Carafe!)
+  // The Broken 1987 Bunn-O-Matic Commercial Pour-Over Coffee Brewer
   const coffeeMachineGroup = new THREE.Group();
   coffeeMachineGroup.position.set(3.6, 0, -2.2);
   coffeeMachineGroup.userData = {
@@ -2595,7 +3132,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.5 })
   );
   filterFunnel.position.set(0, 1.24, 0.14);
-  // Glass Coffee Carafe with 1987 Petrified Coffee Sludge at Bottom
   const carafeGlass = new THREE.Mesh(
     new THREE.SphereGeometry(0.12, 16, 14),
     new THREE.MeshPhysicalMaterial({
@@ -2627,7 +3163,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   );
   officeGroup.add(coffeeMachineGroup);
 
-  // Chiral Quantum Lab Rack (Tektronix Dual-Trace Oscilloscope with Live Lissajous Screen + Cryo Dewar)
+  // Chiral Quantum Lab Rack
   const labEquipmentGroup = new THREE.Group();
   labEquipmentGroup.position.set(3.4, 0, 0.6);
   const labBench = new THREE.Mesh(
@@ -2653,7 +3189,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     new THREE.MeshBasicMaterial({ map: oscilloscopeScreenTex })
   );
   scopeScreen.position.set(-0.36, 1.04, 0.265);
-  // Rotary Knobs on Oscilloscope Front Panel
   for (let ky = 0; ky < 3; ky++) {
     for (let kx = 0; kx < 2; kx++) {
       const knob = new THREE.Mesh(
@@ -2666,7 +3201,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     }
   }
 
-  // Sculpted Cryogenic Liquid-Helium Dewar Vessel with Brass Pressure Manifold
   const dewarPoints = [
     new THREE.Vector2(0.005, 0),
     new THREE.Vector2(0.24, 0),
@@ -2716,7 +3250,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   };
   seminarGroup.add(seminarFrame, seminarBoardMesh);
 
-  // Boat-Shaped Executive Conference Table + 6 Upholstered Seminar Chairs + Overhead Projector
   const confTable = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.12, 1.65), deskWoodMat);
   confTable.position.set(0, 0.76, 0.2);
   confTable.castShadow = true;
@@ -2734,7 +3267,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   confBase2.position.set(1.35, 0.37, 0.2);
   seminarGroup.add(confTable, confBase1, confBase2);
 
-  // 6 Upholstered Conference Chairs around the table
   for (const cx of [-1.45, 0, 1.45]) {
     const chairNorth = createAcademicChairGroup(deskWoodMat, 0x1e3a8a);
     chairNorth.position.set(cx, 0, -0.82);
@@ -2744,7 +3276,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     seminarGroup.add(chairNorth, chairSouth);
   }
 
-  // Vintage Overhead Transparency Projector on Conference Table
   const projBase = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.14, 0.38), stainlessMat);
   projBase.position.set(-0.6, 0.89, 0.15);
   const projGlass = new THREE.Mesh(
@@ -2785,7 +3316,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   };
   cafeteriaGroup.add(cafeteriaBoardMesh);
 
-  // Espresso & Cashier Service Counter with Marble Top & Glass Pastry Case
   const counterMesh = new THREE.Mesh(
     new THREE.BoxGeometry(5.5, 1.05, 1.12),
     new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.42, metalness: 0.25 })
@@ -2801,7 +3331,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   counterMarbleTop.userData = cafeteriaBoardMesh.userData;
   cafeteriaGroup.add(counterMesh, counterMarbleTop);
 
-  // Glass Pastry Display Case with Croissants & Bagels
   const pastryCase = new THREE.Mesh(
     new THREE.BoxGeometry(1.6, 0.52, 0.72),
     new THREE.MeshPhysicalMaterial({
@@ -2824,7 +3353,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     cafeteriaGroup.add(croissant);
   }
 
-  // Italian Dual-Group Brass & Chrome Commercial Espresso Machine + Stacked Cups
   const espressoMachineGroup = new THREE.Group();
   espressoMachineGroup.position.set(2.1, 1.12, -1.6);
   const espBody = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.56, 0.58), brassMat);
@@ -2849,7 +3377,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   espressoMachineGroup.add(espBody, espHood);
   cafeteriaGroup.add(espressoMachineGroup);
 
-  // Brass Queue Stanchions with Draped Burgundy Velvet Ropes (`TubeGeometry` Catenary Curves!)
   const velvetRopeMat = new THREE.MeshStandardMaterial({
     color: 0x991b1b,
     roughness: 0.78,
@@ -2880,7 +3407,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     }
   }
 
-  // Round Café Bistro Table near Prof. Rook
   const bistroTop = new THREE.Mesh(
     new THREE.CylinderGeometry(0.68, 0.68, 0.06, 24),
     counterMarbleTop.material
@@ -2892,12 +3418,24 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   cafeteriaGroup.add(bistroTop, bistroPed);
 
   // ============================================================================
-  // 5. SPACE 5 — PERSEUS DRY CLEANERS & HABERDASHERY (x = +11.0, z = +7.0)
+  // 5. SPACE 5 — RELOCATED DOWNTOWN: PERSEUS DRY CLEANERS & HABERDASHERY (x = +71.2, z = +72.8)
   // ============================================================================
   const cleanerGroup = new THREE.Group();
-  cleanerGroup.position.set(11.0, 0, 7.0);
+  cleanerGroup.position.set(71.2, 0, 72.8);
   rootGroup.add(cleanerGroup);
   registerShatterable(cleanerGroup);
+
+  // Glowing Neon Storefront Header facing Perseus Blvd (North)
+  const cleanerNeonHeader = new THREE.Mesh(
+    new THREE.BoxGeometry(11.8, 1.15, 0.42),
+    new THREE.MeshStandardMaterial({
+      color: 0x0891b2,
+      emissive: 0x06b6d4,
+      emissiveIntensity: 0.9,
+    })
+  );
+  cleanerNeonHeader.position.set(0, 4.1, -3.4);
+  cleanerGroup.add(cleanerNeonHeader);
 
   const cleanerBoardCanvas = document.createElement('canvas');
   cleanerBoardCanvas.width = 1024;
@@ -2912,13 +3450,12 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   cleanerBoardMesh.rotation.y = Math.PI;
   cleanerBoardMesh.userData = {
     uniInteract: 'CLEANER_COUNTER',
-    interactX: 11.0,
-    interactZ: 7.2,
-    interactLabel: 'Perseus Dry Cleaners Counter',
+    interactX: 71.2,
+    interactZ: 72.6,
+    interactLabel: 'Perseus Dry Cleaners Counter (Downtown)',
   };
   cleanerGroup.add(cleanerBoardMesh);
 
-  // Dry Cleaners Service Counter + Vintage Brass Cash Register & Call Bell
   const cleanerCounter = new THREE.Mesh(
     new THREE.BoxGeometry(4.8, 1.02, 1.04),
     new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.52 })
@@ -2944,8 +3481,8 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   mannequinGroup.position.set(3.2, 0, 0.8);
   mannequinGroup.userData = {
     uniInteract: 'BUY_HABERDASHERY_SHIRT',
-    interactX: 13.5,
-    interactZ: 7.4,
+    interactX: 74.0,
+    interactZ: 73.0,
     interactLabel: 'Buy New Oxford Shirt ($68.00)',
   };
   const manBase = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.06, 16), brassMat);
@@ -2962,11 +3499,11 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     createSilkNecktieGeometry(),
     new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.35 })
   );
-  manTie.position.set(0, 1.21, 0.145);
+  manTie.position.set(0, 0.78, 0);
   mannequinGroup.add(manBase, manPole, manShirt, manTie);
   cleanerGroup.add(mannequinGroup);
 
-  // Hanging Pressed Shirts Conveyor Rack inside Perseus Cleaners (Sculpted Shirts on Wire Hangers!)
+  // Hanging Pressed Shirts Conveyor Rack inside Perseus Cleaners
   const cleanerHangingShirtGroup = new THREE.Group();
   cleanerHangingShirtGroup.position.set(-2.6, 1.25, 1.5);
   const rackLoop = new THREE.Mesh(
@@ -2982,8 +3519,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   for (let i = 0; i < 4; i++) {
     const itemGroup = new THREE.Group();
     itemGroup.position.set(-0.95 + i * 0.62, 0, 0);
-
-    // Wire Hanger Hook
     const hook = new THREE.Mesh(
       new THREE.TorusGeometry(0.05, 0.006, 6, 12, Math.PI * 1.3),
       stainlessMat
@@ -2998,8 +3533,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     );
     pressedShirt.scale.set(0.95, 0.95, 0.55);
     pressedShirt.castShadow = true;
-
-    // Translucent Dry-Cleaner Poly Garment Bag Shroud
     const polyBag = new THREE.Mesh(
       new THREE.CylinderGeometry(0.24, 0.26, 0.62, 16),
       new THREE.MeshPhysicalMaterial({
@@ -3017,7 +3550,6 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   }
   cleanerGroup.add(cleanerHangingShirtGroup);
 
-  // Metal Security Shutter (Lowers when Perseus Cleaners is CLOSED before 08:30 or after 17:30!)
   const cleanerClosedShutter = new THREE.Mesh(
     new THREE.BoxGeometry(9.6, 3.6, 0.12),
     new THREE.MeshStandardMaterial({
@@ -3033,22 +3565,142 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   cleanerGroup.add(cleanerClosedShutter);
 
   // ============================================================================
-  // 6. RAIN PARTICLES OUTSIDE ROOM 4B & COFFEE SPLASH PARTICLES IN CAFETERIA
+  // 5B. SPACE 6 — DR. PAWN'S MORTGAGED SUBURBAN HOME: 742 RETROCAUSAL TERRACE (x = -68.0, z = +72.0)
   // ============================================================================
-  const rainCount = 320;
+  const pawnHouseGroup = new THREE.Group();
+  pawnHouseGroup.position.set(-68.0, 0, 72.0);
+  rootGroup.add(pawnHouseGroup);
+  registerShatterable(pawnHouseGroup);
+
+  // Private Concrete Driveway connecting to Perseus Blvd (local X = +7.5, Z = -4.2)
+  const houseDriveway = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.025, 11.5), sidewalkMat);
+  houseDriveway.position.set(7.5, 0.006, -4.2);
+  houseDriveway.receiveShadow = true;
+  pawnHouseGroup.add(houseDriveway);
+
+  // Warm Hardwood Floor & Persian Rug inside Dr. Pawn's Residence
+  const houseFloor = new THREE.Mesh(new THREE.BoxGeometry(11.2, 0.03, 9.6), floorMat);
+  houseFloor.position.set(0, 0.012, 0);
+  houseFloor.receiveShadow = true;
+  pawnHouseGroup.add(houseFloor);
+
+  const houseRug = new THREE.Mesh(
+    new THREE.BoxGeometry(5.4, 0.025, 4.2),
+    new THREE.MeshStandardMaterial({ map: persianRugTex, roughness: 0.88 })
+  );
+  houseRug.position.set(1.2, 0.03, 0.4);
+  pawnHouseGroup.add(houseRug);
+
+  const houseBrickMat = new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.82 });
+  const hSouthWall = new THREE.Mesh(new THREE.BoxGeometry(11.2, 4.0, 0.35), houseBrickMat);
+  hSouthWall.position.set(0, 2.0, 4.8);
+  const hWestWall = new THREE.Mesh(new THREE.BoxGeometry(0.35, 4.0, 9.6), houseBrickMat);
+  hWestWall.position.set(-5.5, 2.0, 0);
+  const hEastWall = new THREE.Mesh(new THREE.BoxGeometry(0.35, 4.0, 9.6), houseBrickMat);
+  hEastWall.position.set(5.5, 2.0, 0);
+  const hNorthLeft = new THREE.Mesh(new THREE.BoxGeometry(3.8, 4.0, 0.35), houseBrickMat);
+  hNorthLeft.position.set(-3.6, 2.0, -4.8);
+  const hNorthRight = new THREE.Mesh(new THREE.BoxGeometry(3.8, 4.0, 0.35), houseBrickMat);
+  hNorthRight.position.set(3.6, 2.0, -4.8);
+  pawnHouseGroup.add(hSouthWall, hWestWall, hEastWall, hNorthLeft, hNorthRight);
+
+  // Oak Wardrobe Closet inside Bedroom Corner (world -71.6, 0, 74.8)
+  const wardrobeGroup = new THREE.Group();
+  wardrobeGroup.position.set(-3.6, 0, 2.8);
+  wardrobeGroup.userData = {
+    uniInteract: 'HOME_WARDROBE',
+    interactX: -70.6,
+    interactZ: 73.2,
+    interactLabel: 'Open Home Wardrobe (Put on Clean Spare Dress Shirt)',
+  };
+  const wardrobeCabinet = new THREE.Mesh(new THREE.BoxGeometry(1.75, 2.35, 0.85), deskWoodMat);
+  wardrobeCabinet.position.y = 1.175;
+  wardrobeCabinet.castShadow = true;
+  wardrobeCabinet.userData = wardrobeGroup.userData;
+  wardrobeGroup.add(wardrobeCabinet);
+
+  const spareShirtHangerGroup = new THREE.Group();
+  spareShirtHangerGroup.position.set(0, 0.95, 0.46);
+  const spareShirtBody = new THREE.Mesh(
+    createTailoredShirtTorsoGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.45 })
+  );
+  spareShirtBody.scale.set(0.95, 0.95, 0.55);
+  spareShirtHangerGroup.add(spareShirtBody);
+  wardrobeGroup.add(spareShirtHangerGroup);
+  pawnHouseGroup.add(wardrobeGroup);
+
+  // Dr. Pawn's Bed for Resting & Advancing to Next Morning (world -64.8, 0, 74.4)
+  const bedGroup = new THREE.Group();
+  bedGroup.position.set(3.2, 0, 2.4);
+  bedGroup.userData = {
+    uniInteract: 'HOME_BED',
+    interactX: -65.4,
+    interactZ: 72.2,
+    interactLabel: 'Sleep in Bed Until 08:30 Next Morning',
+  };
+  const bedFrame = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.42, 2.4), deskWoodMat);
+  bedFrame.position.y = 0.21;
+  bedFrame.userData = bedGroup.userData;
+  const mattress = new THREE.Mesh(
+    new THREE.BoxGeometry(1.95, 0.26, 2.2),
+    new THREE.MeshStandardMaterial({ color: 0x1e3a8a, roughness: 0.8 })
+  );
+  mattress.position.y = 0.52;
+  mattress.userData = bedGroup.userData;
+  const pillow = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.14, 0.45),
+    new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6 })
+  );
+  pillow.position.set(0, 0.7, 0.75);
+  bedGroup.add(bedFrame, mattress, pillow);
+  pawnHouseGroup.add(bedGroup);
+
+  const houseBoardCanvas = document.createElement('canvas');
+  houseBoardCanvas.width = 1024;
+  houseBoardCanvas.height = 512;
+  const houseBoardTex = new THREE.CanvasTexture(houseBoardCanvas);
+  houseBoardTex.colorSpace = THREE.SRGBColorSpace;
+  const houseBoardMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.2, 1.85),
+    new THREE.MeshBasicMaterial({ map: houseBoardTex })
+  );
+  houseBoardMesh.position.set(0, 2.4, 4.55);
+  houseBoardMesh.rotation.y = Math.PI;
+  pawnHouseGroup.add(houseBoardMesh);
+
+  const houseLight = new THREE.PointLight(0xfde68a, 3.8, 18);
+  houseLight.position.set(0, 3.6, 0);
+  pawnHouseGroup.add(houseLight);
+
+  // Neighboring Suburban Houses along Retrocausal Terrace
+  [-86.0, -48.0].forEach((nx) => {
+    const neighbor = new THREE.Mesh(
+      new THREE.BoxGeometry(9.5, 3.8, 8.5),
+      new THREE.MeshStandardMaterial({ color: 0x44403c, roughness: 0.85 })
+    );
+    neighbor.position.set(nx, 1.9, 73.0);
+    neighbor.castShadow = true;
+    rootGroup.add(neighbor);
+  });
+
+  // ============================================================================
+  // 6. RAIN PARTICLES ACROSS THE OPEN WORLD & COFFEE SPLASH IN CAFETERIA
+  // ============================================================================
+  const rainCount = 850;
   const rainPositions = new Float32Array(rainCount * 3);
   const rainVelocities = new Float32Array(rainCount);
   for (let i = 0; i < rainCount; i++) {
-    rainPositions[i * 3 + 0] = -10.0 + (Math.random() - 0.5) * 4.5;
-    rainPositions[i * 3 + 1] = 1.2 + Math.random() * 4.2;
-    rainPositions[i * 3 + 2] = -7.25 - Math.random() * 0.8;
-    rainVelocities[i] = 5.5 + Math.random() * 3.5;
+    rainPositions[i * 3 + 0] = (Math.random() - 0.5) * 48;
+    rainPositions[i * 3 + 1] = 1.0 + Math.random() * 12.0;
+    rainPositions[i * 3 + 2] = (Math.random() - 0.5) * 48;
+    rainVelocities[i] = 9.5 + Math.random() * 5.5;
   }
   const rainGeo = new THREE.BufferGeometry();
   rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
   const rainPoints = new THREE.Points(
     rainGeo,
-    new THREE.PointsMaterial({ color: 0x93c5fd, size: 0.06, transparent: true, opacity: 0.65 })
+    new THREE.PointsMaterial({ color: 0x93c5fd, size: 0.07, transparent: true, opacity: 0.6 })
   );
   rootGroup.add(rainPoints);
 
@@ -3072,11 +3724,11 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     archetype: 'DR_PAWN',
     nameTag: 'Dr. Pawn',
     roleTag: 'Untenured Researcher · Room 4B',
-    jacketColor: 0x5c4033, // Warm Oxford brown herringbone tweed
+    jacketColor: 0x5c4033,
     trouserColor: 0x334155,
     tieColor: 0x991b1b,
     hairColor: 0x27272a,
-    elbowPatchColor: 0x9a3412, // Stitched Cognac suede elbow patches
+    elbowPatchColor: 0x9a3412,
     eyeColor: 0x2563eb,
     hasGlasses: true,
   });
@@ -3087,7 +3739,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     archetype: 'GRAD_TOBY',
     nameTag: 'Toby (Grad Student)',
     roleTag: '7th-Year PhD Candidate · Lemma 3.2',
-    jacketColor: 0x3f6212, // Olive corduroy jacket
+    jacketColor: 0x3f6212,
     trouserColor: 0x1e293b,
     tieColor: 0xd97706,
     hairColor: 0x78350f,
@@ -3105,7 +3757,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     archetype: 'PROF_BISHOP',
     nameTag: 'Prof. Bishop',
     roleTag: 'Director, Chiral Quantum Lab',
-    jacketColor: 0x3b0764, // Deep plum velvet blazer
+    jacketColor: 0x3b0764,
     trouserColor: 0x18181b,
     tieColor: 0x9333ea,
     hairColor: 0x9ca3af,
@@ -3123,7 +3775,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     archetype: 'CHAIR_QUEEN',
     nameTag: 'Dr. Queen',
     roleTag: 'Department Chairwoman',
-    jacketColor: 0x1e293b, // Charcoal tailored suit
+    jacketColor: 0x1e293b,
     trouserColor: 0x0f172a,
     tieColor: 0xbe123c,
     hairColor: 0x1c1917,
@@ -3141,7 +3793,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     archetype: 'PROF_ROOK',
     nameTag: 'Prof. Rook (Tenured)',
     roleTag: 'h-index: 64 · Reviewer #2',
-    jacketColor: 0x451a03, // Oxblood Harris tweed with gold watch chain
+    jacketColor: 0x451a03,
     trouserColor: 0x27272a,
     tieColor: 0xb45309,
     hairColor: 0xd1d5db,
@@ -3174,6 +3826,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   };
   rootGroup.add(cashierRig.root);
 
+  // Mr. Henderson now works inside the relocated Downtown Perseus Dry Cleaners (71.2, 0, 74.8)
   const cleanerClerkRig = createHumanAcademicCharacter({
     archetype: 'CLEANER_CLERK',
     nameTag: 'Mr. Henderson',
@@ -3184,12 +3837,12 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     hairColor: 0x6b7280,
     hasGlasses: true,
   });
-  cleanerClerkRig.root.position.set(11.0, 0, 9.0);
+  cleanerClerkRig.root.position.set(71.2, 0, 74.8);
   cleanerClerkRig.root.rotation.y = Math.PI;
   cleanerClerkRig.root.userData = {
     uniInteract: 'CLEANER_COUNTER',
-    interactX: 11.0,
-    interactZ: 7.2,
+    interactX: 71.2,
+    interactZ: 72.6,
     interactLabel: 'Speak with Mr. Henderson (Dry Cleaners)',
   };
   rootGroup.add(cleanerClerkRig.root);
@@ -3223,7 +3876,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   });
 
   // ============================================================================
-  // 8. ARCHITECTURAL LIGHTING ACROSS ALL 5 UNIVERSITY ROOMS
+  // 8. ARCHITECTURAL LIGHTING ACROSS CAMPUS, DOWNTOWN & SUBURBAN HOME
   // ============================================================================
   const deskLampLight = new THREE.PointLight(0xfde68a, 3.8, 12);
   deskLampLight.position.set(-10.8, 2.3, -4.6);
@@ -3245,8 +3898,8 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   cafeteriaLight.position.set(11.0, 4.0, -4.0);
   rootGroup.add(cafeteriaLight);
 
-  const cleanerLight = new THREE.PointLight(0x67e8f9, 3.6, 15);
-  cleanerLight.position.set(11.0, 3.8, 7.0);
+  const cleanerLight = new THREE.PointLight(0x67e8f9, 4.2, 20);
+  cleanerLight.position.set(71.2, 3.8, 72.8);
   rootGroup.add(cleanerLight);
 
   return {
@@ -3272,6 +3925,13 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     oscilloscopeScreenTex,
     cleanerClosedShutter,
     cleanerHangingShirtGroup,
+    playerCarGroup,
+    playerCarWheels,
+    playerCarHeadlight,
+    houseBoardCanvas,
+    houseBoardTex,
+    spareShirtHangerGroup,
+    trafficCars,
     deskLampLight,
     windowMoonLight,
     fluorescentLight,
@@ -3295,6 +3955,7 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     lastCafeteriaSignature: '',
     lastCleanerSignature: '',
     lastSeminarSignature: '',
+    lastHouseSignature: '',
   };
 }
 
@@ -3335,6 +3996,13 @@ export function updateUniversityOfficeScene(
     playerWorldZ: number;
     playerYaw: number;
     playerIsMoving: boolean;
+    carWorldX: number;
+    carWorldZ: number;
+    carYaw: number;
+    carSpeed: number;
+    isDrivingCar: boolean;
+    homeSpareShirts: number;
+    weeklyMortgagePayment: number;
     shirtState: AcademicShirtState;
     carryingHotCoffee: boolean;
     cafeteriaQueuePosition: number | null;
@@ -3374,17 +4042,54 @@ export function updateUniversityOfficeScene(
     }
   }
 
-  // 2. Rain outside Room 4B (Freezes in mid-air when Reality Shatter begins!)
+  // 2. Rain across the Open World (follows Dr. Pawn; freezes in mid-air when Reality Shatter begins!)
   if (!isShattering) {
     const posAttr = rig.rainPoints.geometry.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < posAttr.count; i++) {
-      let y = posAttr.getY(i) - rig.rainVelocities[i] * rawDelta;
-      if (y < 1.1) {
-        y = 5.1;
+      let rx = posAttr.getX(i);
+      let ry = posAttr.getY(i) - rig.rainVelocities[i] * rawDelta;
+      let rz = posAttr.getZ(i);
+      if (
+        ry < 0.1 ||
+        Math.abs(rx - state.playerWorldX) > 26 ||
+        Math.abs(rz - state.playerWorldZ) > 26
+      ) {
+        ry = 9.0 + Math.random() * 4.5;
+        rx = state.playerWorldX + (Math.random() - 0.5) * 48;
+        rz = state.playerWorldZ + (Math.random() - 0.5) * 48;
       }
-      posAttr.setY(i, y);
+      posAttr.setXYZ(i, rx, ry, rz);
     }
     posAttr.needsUpdate = true;
+  }
+
+  // 2a. Update Dr. Pawn's 1984 Station Wagon & Autonomous AI City Traffic
+  rig.playerCarGroup.position.set(state.carWorldX, 0, state.carWorldZ);
+  rig.playerCarGroup.rotation.y = state.carYaw;
+  rig.playerCarHeadlight.intensity = state.isDrivingCar ? 5.2 : 1.4;
+
+  const wheelSpinDelta = state.carSpeed * rawDelta * 2.4;
+  rig.playerCarWheels.forEach((wg, idx) => {
+    wg.children.forEach((c) => {
+      c.rotation.x += wheelSpinDelta;
+    });
+    if (idx < 2) {
+      wg.rotation.y = state.isDrivingCar ? Math.sin(elapsed * 3.0) * 0.04 : 0;
+    }
+  });
+
+  if (!isShattering) {
+    rig.trafficCars.forEach((tc) => {
+      tc.x += tc.speed * rawDelta;
+      if (tc.speed > 0 && tc.x > 86) tc.x = -86;
+      if (tc.speed < 0 && tc.x < -86) tc.x = 86;
+      const distToPlayer = Math.hypot(tc.x - state.playerWorldX, tc.laneZ - state.playerWorldZ);
+      if (distToPlayer < 5.5) {
+        tc.x -= tc.speed * rawDelta;
+      }
+      tc.group.position.set(tc.x, 0, tc.laneZ);
+      tc.group.rotation.y = tc.speed > 0 ? Math.PI / 2 : -Math.PI / 2;
+    });
   }
 
   // 2b. Animate Tektronix Oscilloscope Chiral Lissajous Wave in Room 4B
@@ -3443,35 +4148,51 @@ export function updateUniversityOfficeScene(
     }
   }
 
-  // 4. Update Dr. Pawn's Human Academic Rig (Position, Garment State, Coffee Stain, Walk Stride)
-  rig.drPawnRig.root.position.set(state.playerWorldX, 0, state.playerWorldZ);
-  rig.drPawnRig.root.rotation.y = state.playerYaw;
+  // 4. Update Dr. Pawn's Human Academic Rig (Seated in Station Wagon when driving, walking on foot otherwise)
+  if (state.isDrivingCar) {
+    const cosY = Math.cos(state.carYaw);
+    const sinY = Math.sin(state.carYaw);
+    const seatOffsetX = -0.42 * cosY + 0.12 * sinY;
+    const seatOffsetZ = 0.42 * sinY + 0.12 * cosY;
+    rig.drPawnRig.root.position.set(
+      state.carWorldX + seatOffsetX,
+      -0.26,
+      state.carWorldZ + seatOffsetZ
+    );
+    rig.drPawnRig.root.rotation.y = state.carYaw;
+    animateHumanRigWalkAndPose(rig.drPawnRig, elapsed, false, false, 0, false);
+  } else {
+    rig.drPawnRig.root.position.set(state.playerWorldX, 0, state.playerWorldZ);
+    rig.drPawnRig.root.rotation.y = state.playerYaw;
+    animateHumanRigWalkAndPose(
+      rig.drPawnRig,
+      elapsed,
+      state.playerIsMoving,
+      state.carryingHotCoffee,
+      0,
+      state.shirtState === 'COFFEE_STAINED'
+    );
+  }
+
   rig.drPawnRig.coffeeStainGroup.visible = state.shirtState === 'COFFEE_STAINED';
   rig.drPawnRig.jacketMesh.visible = state.shirtState !== 'AT_CLEANERS_WEARING_SWEATER';
   rig.drPawnRig.shirtChestMesh.visible = state.shirtState !== 'AT_CLEANERS_WEARING_SWEATER';
   rig.drPawnRig.necktieMesh.visible = state.shirtState !== 'AT_CLEANERS_WEARING_SWEATER';
   rig.drPawnRig.sweaterMesh.visible = state.shirtState === 'AT_CLEANERS_WEARING_SWEATER';
-  rig.drPawnRig.labelSprite.visible = false; // Never show a giant self-label above Dr. Pawn!
+  rig.drPawnRig.labelSprite.visible = false;
 
-  animateHumanRigWalkAndPose(
-    rig.drPawnRig,
-    elapsed,
-    state.playerIsMoving,
-    state.carryingHotCoffee,
-    0,
-    state.shirtState === 'COFFEE_STAINED'
-  );
+  // Update Home Wardrobe Spare Shirt visibility
+  rig.spareShirtHangerGroup.visible = state.homeSpareShirts > 0;
 
-  // Helper to show NPC nameplate only when Dr. Pawn is nearby (prevents distant room labels floating through walls!)
+  // Helper to show NPC nameplate only when Dr. Pawn is nearby
   const updateNpcLabelVisibility = (npcRig: HumanAcademicRig, maxDist: number = 7.5) => {
     const dx = npcRig.root.position.x - state.playerWorldX;
     const dz = npcRig.root.position.z - state.playerWorldZ;
     npcRig.labelSprite.visible = !isShattering && Math.hypot(dx, dz) <= maxDist;
   };
 
-  // 5. Update Dynamic NPC Positions & Schedules Across the 5 Rooms
+  // 5. Update Dynamic NPC Positions & Schedules
   const mins = state.timeOfDayMinutes;
-  // Grad Student Toby: In Office 4B (08:00–12:30), Seminar Room 204 (12:30–15:30), Office 4B (15:30+)
   if (mins >= 750 && mins < 930) {
     rig.tobyRig.root.position.set(-2.6, 0, -4.6);
     rig.tobyRig.root.rotation.y = 0.4;
@@ -3494,7 +4215,6 @@ export function updateUniversityOfficeScene(
   updateNpcLabelVisibility(rig.tobyRig, 7.2);
   animateHumanRigWalkAndPose(rig.tobyRig, elapsed, false, false, 1.3);
 
-  // Prof. Bishop: In Seminar Room 204 during 13:30–16:00 (for the 14:30 Appointment!), otherwise in Corridor/Cafeteria
   if (mins >= 810 && mins <= 960) {
     rig.bishopRig.root.position.set(1.6, 0, -5.2);
     rig.bishopRig.root.rotation.y = -0.25;
@@ -3519,7 +4239,6 @@ export function updateUniversityOfficeScene(
   updateNpcLabelVisibility(rig.bishopRig, 7.5);
   animateHumanRigWalkAndPose(rig.bishopRig, elapsed, false, false, 2.7);
 
-  // Department Chairwoman Dr. Queen: In Seminar Room 204 during 14:00–15:45, otherwise in Faculty Corridor
   if (mins >= 840 && mins <= 945) {
     rig.queenRig.root.position.set(-1.5, 0, -5.2);
     rig.queenRig.root.rotation.y = 0.2;
@@ -3542,20 +4261,17 @@ export function updateUniversityOfficeScene(
   updateNpcLabelVisibility(rig.queenRig, 7.5);
   animateHumanRigWalkAndPose(rig.queenRig, elapsed, false, false, 3.9);
 
-  // Tenured Prof. Rook (Reviewer #2): Lounging near the Cafeteria with espresso
   rig.rookRig.root.position.set(14.2, 0, -2.5);
   rig.rookRig.root.rotation.y = -Math.PI * 0.35;
   updateNpcLabelVisibility(rig.rookRig, 7.2);
   animateHumanRigWalkAndPose(rig.rookRig, elapsed, false, true, 4.8);
 
-  // Cafeteria Barista & Dry Cleaner Clerk subtle idle animation & proximity labels
   updateNpcLabelVisibility(rig.cashierRig, 7.0);
-  updateNpcLabelVisibility(rig.cleanerClerkRig, 7.0);
+  updateNpcLabelVisibility(rig.cleanerClerkRig, 9.0);
   updateNpcLabelVisibility(rig.distractedStudentRig, 5.5);
   animateHumanRigWalkAndPose(rig.cashierRig, elapsed, false, false, 6.1);
   animateHumanRigWalkAndPose(rig.cleanerClerkRig, elapsed, false, false, 7.2);
 
-  // Cafeteria Queue NPCs: Show the patrons ahead of Dr. Pawn in the physical queue
   const queueCountAhead =
     state.cafeteriaQueuePosition !== null ? state.cafeteriaQueuePosition : 3;
   for (let i = 0; i < rig.queueNpcRigs.length; i++) {
@@ -3570,24 +4286,20 @@ export function updateUniversityOfficeScene(
     }
   }
 
-  // Distracted Undergraduate Student: Paces near the Cafeteria doorway (`x: 8.5 .. 10.5, z: -2.0`)
   const studentPace = Math.sin(elapsed * 2.1) * 0.9;
   rig.distractedStudentRig.root.position.set(9.2 + studentPace, 0, -1.5);
   rig.distractedStudentRig.root.rotation.y =
     Math.cos(elapsed * 2.1) >= 0 ? Math.PI / 2 : -Math.PI / 2;
   animateHumanRigWalkAndPose(rig.distractedStudentRig, elapsed, true, false, 5.5);
 
-  // Perseus Dry Cleaners Opening Hours (`08:30` = 510m to `17:30` = 1050m)
   const cleanerIsOpen = mins >= 510 && mins <= 1050;
   rig.cleanerClosedShutter.visible = !cleanerIsOpen;
   rig.cleanerClerkRig.root.visible = cleanerIsOpen;
 
-  // Gently rotate the dry-cleaning conveyor rack when open
   if (cleanerIsOpen && !isShattering) {
     rig.cleanerHangingShirtGroup.position.x = -2.6 + Math.sin(elapsed * 0.8) * 0.12;
   }
 
-  // Hide Lab Equipment if liquidated for Perseus Arm fee
   rig.labEquipmentGroup.visible = !state.equipmentSold;
 
   // 6. Update Room 4B Chalkboard & CRT Monitor
@@ -3653,6 +4365,14 @@ export function updateUniversityOfficeScene(
           '★ FORMALLY ACCEPTED: GALACTIC ADVANCES IN THEORETICAL EVERYTHING ★',
           36,
           425
+        );
+      } else {
+        ctx.fillStyle = '#93c5fd';
+        ctx.font = '20px monospace';
+        ctx.fillText(
+          '📍 TOWN DIRECTORY: Station Wagon in South Lot | Perseus Cleaners (Downtown SE) | Home (SW)',
+          36,
+          445
         );
       }
       rig.chalkboardTex.needsUpdate = true;
@@ -3721,7 +4441,7 @@ export function updateUniversityOfficeScene(
     }
   }
 
-  // 8. Update Perseus Dry Cleaners Board
+  // 8. Update Downtown Perseus Dry Cleaners Board
   const ticket = state.activeDryCleaningTicket;
   const cleanSig = `${cleanerIsOpen}_${state.shirtState}_${ticket?.ticketNumber}_${ticket?.readyMinutes}_${Math.floor(mins / 5)}`;
   if (cleanSig !== rig.lastCleanerSignature) {
@@ -3737,7 +4457,7 @@ export function updateUniversityOfficeScene(
       ctx.fillStyle = '#67e8f9';
       ctx.font = 'bold 34px Georgia, serif';
       ctx.fillText(
-        `PERSEUS DRY CLEANERS & HABERDASHERY — ${cleanerIsOpen ? 'OPEN (08:30–17:30)' : 'CLOSED'}`,
+        `PERSEUS DRY CLEANERS (DOWNTOWN) — ${cleanerIsOpen ? 'OPEN (08:30–17:30)' : 'CLOSED'}`,
         40,
         68
       );
@@ -3746,7 +4466,7 @@ export function updateUniversityOfficeScene(
       ctx.font = '23px monospace';
       ctx.fillText('1. Standard Next-Day Press (Ready Tomorrow 09:00) .......... $14.00', 40, 140);
       ctx.fillText('2. 1-Hour Express Coffee-Stain Removal (Takes 75m) ......... $28.50', 40, 190);
-      ctx.fillText('3. Campus Haberdashery: Brand-New Oxford Dress Shirt ....... $68.00', 40, 240);
+      ctx.fillText('3. Downtown Haberdashery: Brand-New Oxford Dress Shirt ..... $68.00', 40, 240);
 
       if (ticket && !ticket.collected) {
         const readyH = Math.floor(ticket.readyMinutes / 60)
@@ -3771,7 +4491,7 @@ export function updateUniversityOfficeScene(
         ctx.fillText(
           state.shirtState === 'COFFEE_STAINED'
             ? '⚠️ COFFEE-STAINED SHIRT DETECTED — Bring to Counter Before 14:30 Appt!'
-            : 'All garments clean. Have a productive day at Peano Hall!',
+            : 'All garments clean. Safe drive back to Peano Hall!',
           40,
           345
         );
@@ -3812,4 +4532,44 @@ export function updateUniversityOfficeScene(
       rig.seminarBoardTex.needsUpdate = true;
     }
   }
+
+  // 10. Update Dr. Pawn's Suburban Home Notice Board (742 Retrocausal Terrace)
+  const houseSig = `${state.dayName}_${state.homeSpareShirts}_${state.weeklyMortgagePayment}_${state.personalBalance.toFixed(0)}_${state.shirtState}`;
+  if (houseSig !== rig.lastHouseSignature) {
+    rig.lastHouseSignature = houseSig;
+    const ctx = rig.houseBoardCanvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#292524';
+      ctx.fillRect(0, 0, 1024, 512);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(16, 16, 992, 480);
+
+      ctx.fillStyle = '#fde68a';
+      ctx.font = 'bold 32px Georgia, serif';
+      ctx.fillText('742 RETROCAUSAL TERRACE — DR. PAWN RESIDENCE', 40, 68);
+      ctx.fillStyle = '#e7e5e4';
+      ctx.font = '25px monospace';
+      ctx.fillText(
+        `• Weekly Mortgage Installment (Due Friday): $${state.weeklyMortgagePayment.toFixed(2)}`,
+        40,
+        145
+      );
+      ctx.fillText(
+        `• Clean Spare Dress Shirts in Oak Wardrobe: ${state.homeSpareShirts} remaining`,
+        40,
+        195
+      );
+      ctx.fillStyle = state.shirtState !== 'CLEAN' ? '#fde047' : '#86efac';
+      ctx.fillText(
+        state.shirtState !== 'CLEAN'
+          ? '→ Click Oak Wardrobe or Press [E] to change into a clean spare dress shirt!'
+          : '→ Click Bed or Press [E] to sleep until 08:30 tomorrow morning.',
+        40,
+        290
+      );
+      rig.houseBoardTex.needsUpdate = true;
+    }
+  }
 }
+
