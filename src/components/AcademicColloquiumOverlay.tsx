@@ -3,25 +3,49 @@ import {
   AcademicColloquiumState,
   AcademicEmailItem,
   ChessPiece,
+  GrantBudgetLineItem,
   PieceType,
+  UniversityRoomId,
 } from '../types/game';
 import { formatSquareName } from '../engine/chessEngine';
+import { UNIVERSITY_ROOM_CENTERS } from '../three/universityOfficeBuilder';
 import {
+  AlertTriangle,
+  ArrowRight,
+  Award,
   BookOpen,
+  Calendar,
   CheckCircle2,
+  Clock,
   Coffee,
   DollarSign,
   FileText,
   FlaskConical,
+  Footprints,
   GraduationCap,
   Home,
   Mail,
+  MapPin,
+  Moon,
+  Shirt,
   Sparkles,
-  TrendingUp,
-  AlertTriangle,
-  Award,
-  ArrowRight,
+  Ticket,
+  Users,
+  X,
 } from 'lucide-react';
+
+export const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+export function formatSimTime(minutes: number): string {
+  const clamped = ((minutes % 1440) + 1440) % 1440;
+  const h = Math.floor(clamped / 60)
+    .toString()
+    .padStart(2, '0');
+  const m = Math.floor(clamped % 60)
+    .toString()
+    .padStart(2, '0');
+  return `${h}:${m}`;
+}
 
 export interface ProfessorPersona {
   academicTitle: string;
@@ -44,7 +68,7 @@ export function getProfessorPersona(piece: ChessPiece): ProfessorPersona {
     n: {
       academicTitle: isSolaris
         ? 'Toby (7th-Year ABD Graduate Student)'
-        : 'Assoc. Prof. Knight (Rival Sirius-B Group)',
+        : 'Assoc. Prof. Knight (Colleague · Sub-Basement Lab)',
       department: 'Sub-Basement Cubicle 02, Peano Hall',
       elbowPatchStyle: 'Coffee-Stained Corduroy Patches',
       hIndex: 2,
@@ -63,7 +87,7 @@ export function getProfessorPersona(piece: ChessPiece): ProfessorPersona {
       elbowPatchStyle: 'Oxblood Saddle-Leather Elbow Patches',
       hIndex: 64,
       monograph:
-        'On Rectilinear Files (1997a), Rectilinear Files Revisited (1997b), & Files: A Rectilinear View (1997c)',
+        'On Rectilinear Files (2021), Rectilinear Files Revisited (2023), & Files: A Rectilinear View (2025)',
     },
     q: {
       academicTitle: 'Dr. Queen (Department Chairwoman)',
@@ -103,57 +127,86 @@ export function createInitialAcademicColloquiumState(
 
   const initialInbox: AcademicEmailItem[] = [
     {
+      id: 'email_bishop_1430',
+      sender: 'Prof. Bishop (Quantum Lab Director)',
+      senderRole: 'Director, Chiral Interferometry Facility',
+      subject: 'TODAY AT 14:30 — Mandatory Lab Access & Budget Review (Seminar Room 204)',
+      dateLabel: 'Tuesday · 08:15 AM',
+      category: 'LAB_POLITICS',
+      unread: true,
+      body: `Dr. Pawn,\n\nChairwoman Queen and I will be in Seminar Room 204 today from 14:30 to 15:15 to review your request for Chiral Interferometer time and audit your departmental seed grant budget.\n\nDo NOT be late, and please dress appropriately for a formal committee review. Last semester an untenured lecturer showed up with cafeteria coffee stains on his shirt and we rejected his lab allocation on the spot.\n\n— Prof. Bishop`,
+    },
+    {
       id: 'email_grad_lemma',
       sender: 'Toby (Your Graduate Student)',
       senderRole: '7th-Year PhD Candidate · Office 4B-Annex',
-      subject: 'URGENT: Central Lemma (Lemma 3.2) might be wrong...',
-      dateLabel: 'Year 1 · Fall (Nov 14, 11:42 PM)',
+      subject: 'URGENT: Central Lemma 3.2 Sign Error + 10:00 AM Office Meeting',
+      dateLabel: 'Tuesday · 08:02 AM',
       category: 'GRAD_STUDENT',
       unread: true,
-      body: `Dr. Pawn,\n\nI'm sorry to email you this late while it's pouring rain outside, but I was checking the boundary conditions for "On the Nonexistence of Monarchs in Retrocausal Systems."\n\nThere is a sign error in the retrocausal Jacobian in Lemma 3.2. As written, the operator doesn't annihilate the Monarch at t₀ − 1 — it diverges. We need access to Prof. Bishop's Quantum Laboratory to run the numerical verification, or Reviewer #2 will tear us to pieces.\n\nAlso, the 1987 coffee machine in the breakroom made a loud clunk and died again.\n\n— Toby`,
+      body: `Dr. Pawn,\n\nI'm waiting for you in Room 4B! Remember we scheduled our meeting for 10:00 – 10:45 AM today to go over Central Lemma 3.2.\n\nI found a serious problem in "On the Nonexistence of Monarchs in Retrocausal Systems":\n1. The surface commutator [∂_t, H_chiral] doesn't vanish under a naive Dirichlet gauge.\n2. There is a −κ sign error in the off-diagonal Retrocausal Jacobian.\n\nAlso, the 1987 coffee machine in our office is still dead. If you walk down the hall to the Lagrange Point Cafeteria for coffee, watch out for the undergraduates rushing to their midterms!\n\n— Toby`,
     },
     {
-      id: 'email_chair_queen',
-      sender: 'Dr. Queen (Department Chair)',
-      senderRole: 'Chair, Dept. of Retrocausal Mathematics',
-      subject: 'Tenure-Track Annual Review & 8:00 AM Service Teaching',
-      dateLabel: 'Year 1 · Fall (Nov 12, 8:04 AM)',
-      category: 'CHAIR',
-      unread: true,
-      body: `Dr. Pawn,\n\nAs you know, your tenure clock at the University of Greater Andromeda is ticking. While your "controversial" manuscript on retrocausal monarchs is... ambitious, the Dean's Office measures faculty output strictly via h-index, external grant overhead (58.5% indirect rate), and published articles in the Journal of Transfinite Causality.\n\nBy the way, I have assigned you to teach MATH 101 (380 freshmen, 8:00 AM Mondays) next semester. Please do not ask me about replacing the 1987 coffee machine.\n\nRegards,\nChairwoman Queen`,
-    },
-    {
-      id: 'email_bishop_lab',
-      sender: 'Prof. Bishop (Quantum Lab Director)',
-      senderRole: 'Director, Chiral Interferometry Facility',
-      subject: 'RE: RE: RE: Request for 2 Hours of Quantum Lab Time',
-      dateLabel: 'Year 1 · Fall (Nov 10, 4:19 PM)',
-      category: 'LAB_POLITICS',
+      id: 'email_mortgage_due',
+      sender: 'Andromeda Savings & Loan',
+      senderRole: 'Residential Mortgage Servicing Division',
+      subject: 'NOTICE: Monthly Mortgage ($2,140.00) Due Before Friday 17:00',
+      dateLabel: 'Monday · 09:00 AM',
+      category: 'MORTGAGE',
       unread: false,
-      body: `Dear Dr. Pawn,\n\nThank you for your fourteenth email requesting access to the Quantum Laboratory to test your "Central Lemma." Unfortunately, the Chiral Interferometer is currently booked 24/7 by my own research group for diagonal calibration.\n\nPerhaps if you had a higher h-index — like newly tenured Professor Rook — we could revisit this in Fiscal Year 2029.\n\nWarmly,\nProf. Bishop`,
+      body: `BORROWER: Dr. Pawn, Untenured Assistant Professor\nPROPERTY: 412 Euclid Terrace (Unit B — Damp Basement)\nAMOUNT DUE THIS WEEK: $2,140.00\n\nYour checking account currently holds $2,195.00 ($2,140.00 reserved for your mortgage + $55.00 liquid cash for coffee, meals, or emergencies until Friday's biweekly salary direct deposit of $1,853.85).\n\nIf you spend your mortgage reserve on unexpected personal expenses (such as expensive express dry-cleaning or new dress shirts), you will not be able to pay your mortgage until Friday's paycheck arrives!`,
     },
     {
       id: 'email_rook_tenure',
       sender: 'Office of the Provost',
       senderRole: 'University of Greater Andromeda Administration',
-      subject: 'FACULTY SPOTLIGHT: Prof. Rook Awarded Full Tenure!',
-      dateLabel: 'Year 1 · Fall (Nov 08, 9:00 AM)',
+      subject: 'FACULTY SPOTLIGHT: Prof. Rook Awarded Full Tenure (h-index: 64)',
+      dateLabel: 'Monday · 08:30 AM',
       category: 'ADMIN',
       unread: false,
-      body: `Colleagues,\n\nPlease join the Administration in congratulating Professor Rook on his promotion to Full Professor with Permanent Tenure!\n\nThe Tenure Committee was deeply impressed by Prof. Rook's trilogy of landmark papers:\n1. "On Rectilinear Movement Along Open Files" (J. Transfinite Causality, 2021)\n2. "Open Files and Rectilinear Movement" (J. Transfinite Causality, 2023)\n3. "A Rectilinear Approach to Movement Along Open Files" (J. Transfinite Causality, 2025)\n\n(Note: Reception in Room 200. Bring your own mug; the 1987 coffee machine remains non-operational.)`,
-    },
-    {
-      id: 'email_mortgage_1',
-      sender: 'Andromeda Savings & Loan',
-      senderRole: 'Residential Mortgage Servicing Division',
-      subject: 'Monthly Mortgage Statement — $2,140.00 Due',
-      dateLabel: 'Year 1 · Fall (Nov 01)',
-      category: 'MORTGAGE',
-      unread: false,
-      body: `BORROWER: Dr. Pawn, Untenured Researcher\nPROPERTY: 412 Euclid Terrace (Unit B — Damp Basement)\nMONTHLY PAYMENT: $2,140.00\n\nNotice: On an assistant professor salary of $48,200/yr after university parking fees ($640/yr) and mandatory faculty senate dues, your checking account buffer is razor-thin. Do not miss a payment.`,
+      body: `Colleagues,\n\nPlease join the Administration in congratulating Professor Rook on his promotion to Full Professor with Permanent Tenure!\n\nThe Tenure Committee was deeply moved by Prof. Rook's trilogy of landmark papers:\n1. "On Rectilinear Movement Along Open Files" (J. Transfinite Causality, 2021)\n2. "Open Files and Rectilinear Movement" (J. Transfinite Causality, 2023)\n3. "A Rectilinear Approach to Movement Along Open Files" (J. Transfinite Causality, 2025)\n\nProf. Rook can usually be found holding court in the Lagrange Point Cafeteria.`,
     },
   ];
 
+  const initialGrantLines: GrantBudgetLineItem[] = [
+    {
+      id: 'line_helium',
+      label: 'Liquid Helium-4 Cryo Refill (Chiral Interferometer Run)',
+      category: 'CRYO_CONSUMABLES',
+      directCost: 600,
+      selected: true,
+      justificationNote: 'Required to cool the retrocausal interferometer to 1.8 Kelvin.',
+    },
+    {
+      id: 'line_calibrator',
+      label: 'Retrocausal Phase-Lock Calibrator Module',
+      category: 'INTERFEROMETER_CALIBRATION',
+      directCost: 950,
+      selected: false,
+      justificationNote: 'Eliminates boundary drift during Lemma 3.2 verification.',
+    },
+    {
+      id: 'line_toby_ra',
+      label: 'Graduate RA Summer Stipend Supplement (Toby)',
+      category: 'GRAD_STIPEND',
+      directCost: 850,
+      selected: false,
+      justificationNote: 'Supports 7th-year doctoral candidate performing numerical verification.',
+    },
+    {
+      id: 'line_prohibited_cleaners',
+      label: 'Personal Dry-Cleaning & Artisanal Espresso Machine for Room 4B',
+      category: 'PERSONAL_PROHIBITED',
+      directCost: 420,
+      selected: false,
+      isProhibitedPersonalExpense: true,
+      justificationNote: 'PROHIBITED BY UNIVERSITY AUDIT: Personal clothing & breakroom appliances.',
+    },
+  ];
+
+  // Start on Tuesday at 09:15 AM in Room 4B so the player has:
+  // - 10:00 AM meeting with Toby in Room 4B
+  // - Time to walk to the Cafeteria for coffee before the 14:30 Appointment with Prof. Bishop & Chairwoman Queen!
   return {
     active: true,
     stage: 'WORLD_COLLAPSE_FADE',
@@ -162,7 +215,7 @@ export function createInitialAcademicColloquiumState(
     coAuthorTimelineCode,
     manuscriptTitle: 'On the Nonexistence of Monarchs in Retrocausal Systems',
     manuscriptVersion: 'UGA-Preprint-Yr1.tex',
-    selectedAxiomMethodology: 'Retrocausal Operator Annihilation (Lemma 3.2)',
+    selectedAxiomMethodology: 'Chiral Anti-Periodic Boundary Gauge (Lemma 3.2)',
     rigorScore: 18,
     citationsCollected: 0,
     requiredCitations: 3,
@@ -215,22 +268,122 @@ export function createInitialAcademicColloquiumState(
       },
     ],
     colloquiumLog: [
-      '🌧️ Rain streaks against the window of Room 4B, Peano Hall. The 1987 coffee machine is still dead.',
-      '📉 Your graduate student Toby just informed you that Central Lemma 3.2 may be incorrect.',
-      '🏛️ The chess universe is gone. You are Dr. Pawn, an untenured researcher at the University of Greater Andromeda.',
+      '🌧️ Tuesday, 09:15 AM — Room 4B, Peano Hall. Rain streaks the window. The 1987 coffee machine is stone dead.',
+      '☕ You desperately need coffee from the Lagrange Point Cafeteria down the hall before your 10:00 AM meeting with Toby and your 14:30 review with Prof. Bishop.',
     ],
     academicYear: 1,
     semester: 'Fall',
+    dayIndex: 1, // Tuesday! ("Dr. Pawn has a meeting at 14:30, and his shirt is covered in coffee. Build that Tuesday.")
+    timeOfDayMinutes: 9 * 60 + 15, // 09:15 AM
+    energyLevel: 76,
+    currentRoom: 'OFFICE_4B',
+    activeDrawerTab: 'NONE',
+
+    shirtState: 'CLEAN',
+    hasSpareCleanShirtAtHome: true,
+    carryingHotCoffee: false,
+    cafeteriaQueuePosition: null,
+    cafeteriaServiceProgress: 0,
+    coffeeSpillIncidentTriggered: false,
+    activeDryCleaningTicket: null,
+
     annualSalary: 48200,
-    checkingBalance: 2480,
-    monthlyMortgage: 2140,
+    checkingBalance: 2195.0, // $2,140.00 mortgage due + $55.00 liquid pocket cash!
+    monthlyMortgage: 2140.0,
+    mortgagePaidThisWeek: false,
     mortgageMonthsBehind: 0,
-    departmentalBudget: 4850,
+    departmentalBudget: 1450.0,
+    personalLedger: [
+      {
+        id: 'led_p_open',
+        account: 'PERSONAL',
+        dayLabel: 'Monday',
+        timeLabel: '08:00',
+        description: 'Opening Balance (Andromeda Checking #4409)',
+        category: 'OPENING',
+        amount: 2213.5,
+        runningBalance: 2213.5,
+      },
+      {
+        id: 'led_p_bus',
+        account: 'PERSONAL',
+        dayLabel: 'Monday',
+        timeLabel: '18:30',
+        description: 'Campus Transit Pass & Rainy Evening Groceries',
+        category: 'CAFETERIA',
+        amount: -18.5,
+        runningBalance: 2195.0,
+      },
+    ],
+    departmentalLedger: [
+      {
+        id: 'led_d_open',
+        account: 'DEPARTMENTAL',
+        dayLabel: 'Monday',
+        timeLabel: '08:00',
+        description: 'Remaining Startup Seed Allocation (Acct #UGA-MATH-4B)',
+        category: 'OPENING',
+        amount: 1450.0,
+        runningBalance: 1450.0,
+      },
+    ],
+    grantBudgetLines: initialGrantLines,
+    grantSubmittedAndApproved: false,
+
     hIndex: 4,
     rookHIndex: 64,
     adminProductivityScore: 61.4,
-    chairRelationship: 28,
+    chairRelationship: 38,
+    tobyRelationship: 72,
+    bishopRelationship: 34,
+    npcMemoryNotes: [
+      'Toby (Grad Student): Anxious to show you the Jacobian sign error in Room 4B between 10:00 and 10:45.',
+      'Prof. Bishop: Expects you in Seminar Room 204 at 14:30 sharp in clean professional attire with a reconciled grant budget.',
+      'Prof. Rook: Recently awarded full tenure after publishing the same rectilinear file paper three times.',
+    ],
+    appointments: [
+      {
+        id: 'appt_tue_toby',
+        dayIndex: 1, // Tuesday
+        startMinutes: 10 * 60, // 10:00
+        endMinutes: 10 * 60 + 45, // 10:45
+        title: 'Grad Student Toby: Central Lemma 3.2 Sign Error',
+        locationRoom: 'OFFICE_4B',
+        withNpcName: 'Toby (Grad Student)',
+        status: 'UPCOMING',
+      },
+      {
+        id: 'appt_tue_bishop',
+        dayIndex: 1, // Tuesday
+        startMinutes: 14 * 60 + 30, // 14:30
+        endMinutes: 15 * 60 + 15, // 15:15
+        title: 'Mandatory Departmental & Chiral Lab Access Review',
+        locationRoom: 'SEMINAR_ROOM_204',
+        withNpcName: 'Prof. Bishop & Chairwoman Queen',
+        status: 'UPCOMING',
+      },
+      {
+        id: 'appt_wed_seminar',
+        dayIndex: 2, // Wednesday
+        startMinutes: 14 * 60, // 14:00
+        endMinutes: 15 * 60, // 15:00
+        title: 'Faculty Research Colloquium & Debate vs. Prof. Rook',
+        locationRoom: 'SEMINAR_ROOM_204',
+        withNpcName: 'Tenured Prof. Rook',
+        status: 'UPCOMING',
+      },
+    ],
+
     centralLemmaIntegrity: 18,
+    proofWorkbench: {
+      boundaryGaugeChoice: 'UNSELECTED',
+      boundaryGaugeVerified: false,
+      jacobianSignFlipped: false,
+      chiralLabDataAttached: false,
+      rookCitationsAttached: false,
+      lastVerificationMessage:
+        'Unverified: Boundary commutator [∂_t, H_chiral] diverges at t₀ − 1 and off-diagonal Jacobian has a −κ sign error.',
+    },
     bishopLabAccessGranted: false,
     bishopSuspectedWithholding: true,
     rookIdenticalPapersCount: 3,
@@ -238,59 +391,112 @@ export function createInitialAcademicColloquiumState(
     journalRejections: 0,
     equipmentSoldForFee: false,
     coffeeMachineKickCount: 0,
-    selectedEmailId: 'email_grad_lemma',
+    selectedEmailId: 'email_bishop_1430',
     inbox: initialInbox,
+    realityShatterProgressSec: 0,
   };
 }
 
 interface AcademicColloquiumOverlayProps {
   colloquium: AcademicColloquiumState;
-  allPieces: ChessPiece[];
-  selectedPiece: ChessPiece | null;
   onEnterUniversityOffice: () => void;
+  onWalkToRoom: (roomId: UniversityRoomId) => void;
+  onSetDrawerTab: (
+    tab: 'NONE' | 'CHALKBOARD_PROOF' | 'FINANCE_LEDGER' | 'PINE_MAIL' | 'CALENDAR_NPCS'
+  ) => void;
   onSelectEmail: (emailId: string) => void;
   onKickCoffeeMachine: () => void;
-  onWorkOnCentralLemma: () => void;
-  onConfrontBishopForLab: () => void;
-  onApplyForGrantAndPayMortgage: () => void;
-  onAttendConferenceAndDebateRook: () => void;
+  onJoinOrLeaveCafeteriaQueue: () => void;
+  onDropOffShirtAtCleaner: (service: 'STANDARD_NEXT_DAY' | 'EXPRESS_75_MIN') => void;
+  onPickUpCleanedShirt: () => void;
+  onBuyNewShirtAtHaberdashery: () => void;
+  onCommuteHomeForSpareShirt: () => void;
+  onAttendScheduledMeetingInRoom: (appointmentId: string) => void;
+  onTalkToNpcInRoom: (npcId: 'TOBY' | 'BISHOP' | 'QUEEN' | 'ROOK') => void;
+  onSelectBoundaryGauge: (
+    gauge: 'DIRICHLET_CLAMP' | 'CHIRAL_ANTIPERIODIC' | 'TRUNCATED_PERTURBATIVE'
+  ) => void;
+  onToggleJacobianSign: () => void;
+  onRunChiralLabExperiment: () => void;
+  onToggleRookCitations: () => void;
+  onToggleGrantLineItem: (lineId: string) => void;
+  onSubmitGrantBudgetProposal: () => void;
+  onPayMonthlyMortgage: () => void;
+  onAttemptIllegalDepartmentalReimbursement: () => void;
+  onAdvanceTimeMinutes: (mins: number, reason: string) => void;
+  onSleepUntilNextMorning: () => void;
   onSubmitToJournalOfTransfiniteCausality: () => void;
-  onFastForwardToYear6Desperation: () => void;
   onSellEquipmentForPerseusFee: () => void;
   onOpenAcceptanceLetter: () => void;
+  onBeginRealityShatter: () => void;
   onConcludePublicationAndRestorePieces: () => void;
+  uniFirstPerson?: boolean;
+  freeMouseLook?: boolean;
+  onToggleUniFirstPerson?: () => void;
+  onToggleFreeMouseLook?: () => void;
+  onResetUniCamera?: () => void;
 }
 
 export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps> = ({
   colloquium,
   onEnterUniversityOffice,
+  onWalkToRoom,
+  onSetDrawerTab,
   onSelectEmail,
   onKickCoffeeMachine,
-  onWorkOnCentralLemma,
-  onConfrontBishopForLab,
-  onApplyForGrantAndPayMortgage,
-  onAttendConferenceAndDebateRook,
+  onJoinOrLeaveCafeteriaQueue,
+  onDropOffShirtAtCleaner,
+  onPickUpCleanedShirt,
+  onBuyNewShirtAtHaberdashery,
+  onCommuteHomeForSpareShirt,
+  onAttendScheduledMeetingInRoom,
+  onTalkToNpcInRoom,
+  onSelectBoundaryGauge,
+  onToggleJacobianSign,
+  onRunChiralLabExperiment,
+  onToggleRookCitations,
+  onToggleGrantLineItem,
+  onSubmitGrantBudgetProposal,
+  onPayMonthlyMortgage,
+  onAttemptIllegalDepartmentalReimbursement,
+  onAdvanceTimeMinutes,
+  onSleepUntilNextMorning,
   onSubmitToJournalOfTransfiniteCausality,
-  onFastForwardToYear6Desperation,
   onSellEquipmentForPerseusFee,
   onOpenAcceptanceLetter,
+  onBeginRealityShatter,
   onConcludePublicationAndRestorePieces,
+  uniFirstPerson = false,
+  freeMouseLook = false,
+  onToggleUniFirstPerson,
+  onToggleFreeMouseLook,
+  onResetUniCamera,
 }) => {
+  const [dismissedLog, setDismissedLog] = React.useState<string | null>(null);
+
   if (!colloquium.active || colloquium.stage === 'INACTIVE') return null;
+
+  const dayName = DAY_NAMES[colloquium.dayIndex % 5] || 'Tuesday';
+  const timeStr = formatSimTime(colloquium.timeOfDayMinutes);
+  const mins = colloquium.timeOfDayMinutes;
+  const cleanerIsOpen = mins >= 510 && mins <= 1050; // 08:30 to 17:30
+  const liquidAfterMortgage = colloquium.mortgagePaidThisWeek
+    ? colloquium.checkingBalance
+    : colloquium.checkingBalance - colloquium.monthlyMortgage;
 
   const selectedEmail =
     colloquium.inbox.find((e) => e.id === colloquium.selectedEmailId) ||
     colloquium.inbox[0];
 
   // ============================================================================
-  // STAGE 1: THE WORLD COLLAPSES & FADES INTO THE MODEST UNIVERSITY OFFICE
+  // STAGE 1: THE WORLD COLLAPSES & FADES INTO ROOM 4B, PEANO HALL
   // ============================================================================
   if (colloquium.stage === 'WORLD_COLLAPSE_FADE') {
     return (
       <div className="pointer-events-auto fixed inset-0 z-50 bg-[#05070B]/95 backdrop-blur-md flex items-center justify-center p-6 overflow-y-auto">
         <div className="max-w-2xl w-full bg-[#0B0F17] border border-slate-800 rounded-2xl p-8 md:p-10 shadow-[0_0_90px_rgba(0,0,0,0.95)] text-slate-200 font-serif">
           <div className="text-[11px] font-mono uppercase tracking-[0.25em] text-amber-400/80 mb-4">
-            REALITY COLLAPSE · THE CHESSBOARD DISSOLVES
+            UNIVERSITY OF GREATER ANDROMEDA · PEANO HALL
           </div>
 
           <div className="space-y-4 text-base md:text-lg leading-relaxed text-slate-200">
@@ -303,11 +509,11 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
               <strong className="text-white font-semibold">University of Greater Andromeda</strong>.
             </p>
             <p>
-              You have a salary (<span className="font-mono text-sm text-emerald-300">$48,200/yr</span>). A mortgage (<span className="font-mono text-sm text-rose-300">$2,140/mo</span>). A strained relationship with your department chair. A promising but controversial paper:{' '}
+              You have a salary (<span className="font-mono text-sm text-emerald-300">$48,200/yr</span>). A mortgage (<span className="font-mono text-sm text-rose-300">$2,140/mo</span> due this week, leaving <span className="font-mono text-sm text-amber-300">$55.00</span> in spare cash until Friday&rsquo;s paycheck). A strained relationship with your department chair. A promising but controversial paper:{' '}
               <em className="text-sky-300">&ldquo;On the Nonexistence of Monarchs in Retrocausal Systems.&rdquo;</em>
             </p>
             <p>
-              Your graduate student has just knocked on your door in the rain to inform you that the central lemma may be incorrect.
+              Your graduate student Toby has a <strong>10:00 AM</strong> appointment in your office to tell you that Central Lemma 3.2 may be incorrect. And at <strong>14:30</strong>, you have a mandatory review with <strong>Professor Bishop</strong> in Seminar Room 204.
             </p>
             <p className="text-white font-bold pt-1">
               And the chess game is gone.
@@ -319,13 +525,13 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
 
           <div className="mt-8 pt-6 border-t border-slate-800/90 flex flex-col sm:flex-row items-center justify-between gap-4 font-sans">
             <div className="text-xs font-mono text-slate-400">
-              📍 Room 4B, Peano Hall · Rainy Evening · Year 1 of Tenure Track
+              📍 Room 4B, Peano Hall · Tuesday, 09:15 AM
             </div>
             <button
               onClick={onEnterUniversityOffice}
               className="w-full sm:w-auto px-6 py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(245,158,11,0.35)]"
             >
-              <span>Sit Down at Your Desk (Begin Year 1)</span>
+              <span>Step Into Room 4B (Tuesday, 09:15)</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -335,67 +541,62 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
   }
 
   // ============================================================================
-  // STAGE 4: THE ACCEPTANCE LETTER ("YOU DID IT. ...")
+  // STAGE 4: THE ACCEPTANCE LETTER (QUIET TRIUMPH BEFORE REALITY SHATTERS)
   // ============================================================================
   if (colloquium.stage === 'ACCEPTANCE_LETTER') {
     return (
-      <div className="pointer-events-auto fixed inset-0 z-50 bg-[#05070B]/92 backdrop-blur-md flex items-center justify-center p-6 overflow-y-auto">
-        <div className="max-w-2xl w-full bg-[#10141d] border-2 border-amber-400/70 rounded-2xl p-8 md:p-10 shadow-[0_0_90px_rgba(245,158,11,0.25)] text-slate-100">
-          {/* Suspicious Outer Perseus Arm Letterhead */}
-          <div className="border-b border-amber-500/30 pb-4 flex items-start justify-between gap-4">
+      <div className="pointer-events-auto fixed inset-0 z-50 bg-[#04060A]/92 backdrop-blur-md flex items-center justify-center p-6 overflow-y-auto">
+        <div className="max-w-2xl w-full bg-[#0A0E17] border border-amber-400/50 rounded-2xl p-8 md:p-11 shadow-[0_0_110px_rgba(0,0,0,0.95)] text-slate-100 font-serif">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-6 font-sans">
             <div>
-              <div className="font-mono text-[10px] tracking-[0.22em] text-amber-400 uppercase font-bold">
-                GALACTIC ADVANCES IN THEORETICAL EVERYTHING
+              <div className="text-[10px] font-mono uppercase tracking-[0.22em] text-amber-300 font-bold">
+                GALACTIC ADVANCES IN THEORETICAL EVERYTHING · PERSEUS ARM
               </div>
-              <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                Suite 404-B, Outer Reaches of the Perseus Arm · ISSN 9941-000X
+              <div className="text-xs font-mono text-slate-400 mt-0.5">
+                Impact Factor: 847.3 · Acceptance Rate: 100% · Peer Review: Waived Upon Request
               </div>
             </div>
-            <div className="text-right font-mono text-[10px] text-emerald-300 bg-emerald-950/80 border border-emerald-500/40 px-2.5 py-1 rounded">
-              <div>IMPACT FACTOR: 847.3</div>
-              <div>ACCEPTANCE RATE: 100%</div>
-            </div>
+            <Award className="w-8 h-8 text-amber-400 shrink-0" />
           </div>
 
-          {/* The Official Letter Body */}
-          <div className="mt-6 bg-[#f8f5ec] text-slate-900 rounded-xl p-6 font-serif shadow-inner border border-amber-200">
-            <div className="text-xs font-mono text-slate-500 mb-3">
-              DATE: Year 6, Late November · Payment of $6,500.00 (Lab Equipment Liquidation) CLEARED
-            </div>
-            <p className="text-base font-bold text-slate-900">Dear Dr. Pawn,</p>
-            <p className="mt-3 text-base leading-relaxed text-slate-800">
-              We are delighted to inform you that your manuscript,{' '}
-              <strong>&ldquo;On the Nonexistence of Monarchs in Retrocausal Systems,&rdquo;</strong>{' '}
-              has been accepted for publication.
+          <div className="bg-[#0F1624] border border-slate-700/80 rounded-xl p-6 mb-6 space-y-3 text-base leading-relaxed text-slate-200">
+            <p className="font-mono text-xs text-emerald-300 uppercase tracking-wider">
+              FORMAL EDITORIAL DECISION: ACCEPTED FOR IMMEDIATE PUBLICATION
             </p>
-            <p className="mt-3 text-base font-bold text-slate-900">
+            <p>Dear Dr. Pawn,</p>
+            <p>
+              We are delighted to inform you that your manuscript,{' '}
+              <strong className="text-sky-300">
+                &ldquo;On the Nonexistence of Monarchs in Retrocausal Systems,&rdquo;
+              </strong>{' '}
+              has been accepted for publication (Open-Access Processing Fee of $3,500.00 received in full via liquidated laboratory assets).
+            </p>
+            <p className="text-amber-200 font-semibold">
               Your theorem is now formally recognized.
             </p>
-            <div className="mt-4 pt-3 border-t border-slate-300 flex items-center justify-between text-xs font-mono text-slate-600">
-              <span>DOI: {colloquium.publishedDoi || '10.8473/gate.perseus.0001'}</span>
-              <span>Peer Review: Waived Upon Request</span>
-            </div>
           </div>
 
-          {/* Emotional Narrative Sequence */}
-          <div className="mt-6 space-y-2.5 font-serif text-base md:text-lg text-slate-200 pl-2 border-l-2 border-amber-400/60">
-            <p className="italic text-slate-300">You smile.</p>
-            <p className="italic text-slate-300">A tear rolls down your cheek.</p>
-            <p className="text-slate-300">Six years of struggle.</p>
-            <p className="text-amber-200 font-semibold">Finally.</p>
-            <p className="text-2xl font-display font-extrabold tracking-wide text-white pt-1">
+          <div className="space-y-2.5 text-base md:text-lg text-slate-200 leading-relaxed pl-2 border-l-2 border-amber-400/60">
+            <p>You smile.</p>
+            <p>A tear rolls down your cheek.</p>
+            <p className="text-slate-400">Six years of struggle.</p>
+            <p className="text-slate-300">Finally.</p>
+            <p className="text-2xl font-bold tracking-widest text-white pt-1 font-sans">
               YOU DID IT.
             </p>
-            <p className="text-xl font-mono text-amber-400 tracking-widest">...</p>
+            <p className="text-slate-500 font-mono text-sm">...</p>
           </div>
 
-          <div className="mt-8 flex justify-end">
+          <div className="mt-8 pt-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 font-sans">
+            <div className="text-xs font-mono text-slate-400">
+              Room 4B is quiet. The rain is still tapping against the glass.
+            </div>
             <button
-              onClick={onConcludePublicationAndRestorePieces}
-              className="w-full sm:w-auto px-7 py-3.5 bg-gradient-to-r from-amber-400 via-sky-400 to-amber-300 hover:from-amber-300 hover:to-sky-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl shadow-[0_0_30px_rgba(56,189,248,0.45)] transition-all cursor-pointer flex items-center justify-center gap-2"
+              onClick={onBeginRealityShatter}
+              className="w-full sm:w-auto px-6 py-3.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(245,158,11,0.3)]"
             >
-              <Sparkles className="w-4 h-4" />
-              <span>... (Return to the Chessboard &amp; Checkmate Yesterday)</span>
+              <span>Set Down the Letter and Look Out the Window...</span>
+              <ArrowRight className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -404,409 +605,1127 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
   }
 
   // ============================================================================
-  // STAGE 2 & 3: THE STANDALONE UNIVERSITY OF GREATER ANDROMEDA LIFE SIMULATOR
-  // (Framing the live 3D Rainy University Office in the center viewport!)
+  // STAGE 5: THE FINAL BETRAYAL — REALITY SHATTERS BACK INTO CROWNBREAKER 4D
   // ============================================================================
-  return (
-    <div className="pointer-events-none fixed inset-0 z-30 flex flex-col justify-between">
-      {/* 1. TOP UNIVERSITY OF GREATER ANDROMEDA FACULTY PORTAL HEADER (Replaces Chess Header Completely!) */}
-      <header className="pointer-events-auto bg-[#090D14]/95 border-b border-slate-800 px-5 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-xl">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-400/60 flex items-center justify-center text-amber-300">
-            <GraduationCap className="w-5 h-5" />
+  if (colloquium.stage === 'REALITY_SHATTER_TRANSITION') {
+    const s = colloquium.realityShatterProgressSec || 0;
+    return (
+      <div className="pointer-events-none fixed inset-0 z-50 flex flex-col justify-between p-6 md:p-10">
+        <div className="max-w-xl bg-[#05070D]/88 border border-amber-400/50 rounded-2xl p-6 backdrop-blur-md shadow-2xl font-serif space-y-3">
+          <div className="text-[10px] font-mono uppercase tracking-[0.25em] text-amber-300">
+            {s < 2.2
+              ? 'OUTSIDE ROOM 4B · THE RAIN STOPS'
+              : s < 4.8
+              ? 'PEANO HALL FRACTURES'
+              : 'THE MEMORY RETURNS'}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-serif font-bold text-sm text-white tracking-wide">
-                UNIVERSITY OF GREATER ANDROMEDA
-              </span>
-              <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] font-mono text-amber-300">
-                YEAR {colloquium.academicYear} OF 6 · {colloquium.semester.toUpperCase()} SEMESTER
-              </span>
+          <p className="text-sm md:text-base text-slate-200 leading-relaxed">
+            The rain outside the window freezes in mid-air. The 60Hz hum of the fluorescent light cuts out.
+          </p>
+          {s >= 2.0 && (
+            <p className="text-sm md:text-base text-slate-200 leading-relaxed">
+              The walls of Room 4B fracture and drift upward into dark space. The 1987 coffee machine, your dry-cleaning receipt, and the oak desk begin dissolving into golden-cyan geometry.
+            </p>
+          )}
+          {s >= 4.2 && (
+            <p className="text-sm md:text-base text-amber-200 leading-relaxed">
+              You look down at your cognac suede elbow patches and coffee-stained cuffs — and you remember what you are. You remember the electric lances. You remember the Colossal Pocket Watch hanging in the sky.
+            </p>
+          )}
+          {s >= 6.2 && (
+            <div className="pt-2 border-t border-slate-800 space-y-1.5 font-sans">
+              <p className="text-xs font-mono text-sky-300">
+                In the original game, almost no time has passed.
+              </p>
+              <p className="text-lg font-display font-extrabold tracking-wider text-white">
+                CROWNBREAKER 4D — YOUR MOVE.
+              </p>
             </div>
-            <div className="text-[11px] font-mono text-slate-400">
-              Dr. Pawn · Untenured Researcher · Room 4B, Peano Hall (Rainy) · Coffee Machine: Broken Since 1987
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* Quantified Academic Life Metrics Bar */}
-        <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-mono">
-          <div
-            className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-1.5"
-            title="Your frozen Assistant Professor salary and checking balance"
+        <div className="pointer-events-auto flex justify-end">
+          <button
+            onClick={onConcludePublicationAndRestorePieces}
+            className="px-6 py-3.5 bg-gradient-to-r from-sky-400 to-amber-400 hover:from-sky-300 hover:to-amber-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-[0_0_35px_rgba(56,189,248,0.5)]"
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>
+              {s >= 6.0
+                ? 'Return to the Chessboard (Theorem Formally Recognized)'
+                : 'Complete Reality Collapse →'}
+            </span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // STAGE 3: THE PERSEUS ARM PREDATORY PUBLISHER OFFER
+  // ============================================================================
+  if (colloquium.stage === 'PERSEUS_ARM_OFFER') {
+    const canAffordFee = colloquium.checkingBalance >= 3500 || colloquium.equipmentSoldForFee;
+    return (
+      <div className="pointer-events-auto fixed inset-0 z-50 bg-[#05070C]/88 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 overflow-y-auto">
+        <div className="max-w-2xl w-full bg-[#0C101B] border-2 border-fuchsia-500/70 rounded-2xl p-6 md:p-8 shadow-[0_0_80px_rgba(217,70,239,0.3)] text-slate-100">
+          <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-fuchsia-300 font-bold">
+            SUSPICIOUS FLYER SLIPPED UNDER ROOM 4B’S DOOR · OUTER PERSEUS ARM
+          </div>
+          <h2 className="font-serif text-2xl font-bold text-white mt-1">
+            After Three Rejections from the Journal of Transfinite Causality...
+          </h2>
+          <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+            Reviewer #2 (Tenured Professor Rook) has rejected your manuscript three times. Your tenure clock is out of time. In the dimly lit faculty corridor, Assoc. Prof. Knight hands you a glossy card from a publisher operating out of a strip-mall satellite in the outer reaches of the Perseus Arm:
+          </p>
+
+          <div className="mt-5 bg-gradient-to-br from-[#190D26] to-[#0D1322] border border-amber-400/70 rounded-xl p-5">
+            <div className="font-serif text-xl font-bold text-amber-300 tracking-wide">
+              GALACTIC ADVANCES IN THEORETICAL EVERYTHING
+            </div>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2.5 font-mono text-xs">
+              <div className="bg-black/40 border border-slate-700/80 rounded-lg p-2.5">
+                <div className="text-[10px] text-slate-400">IMPACT FACTOR</div>
+                <div className="text-base font-extrabold text-emerald-300">847.3</div>
+              </div>
+              <div className="bg-black/40 border border-slate-700/80 rounded-lg p-2.5">
+                <div className="text-[10px] text-slate-400">ACCEPTANCE RATE</div>
+                <div className="text-base font-extrabold text-amber-300">100%</div>
+              </div>
+              <div className="bg-black/40 border border-slate-700/80 rounded-lg p-2.5">
+                <div className="text-[10px] text-slate-400">PEER REVIEW</div>
+                <div className="text-xs font-bold text-fuchsia-300 mt-0.5">
+                  Available Upon Request
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 text-xs text-slate-300 font-mono bg-black/35 rounded-lg p-3 border border-slate-800">
+              • Open-Access Processing Fee: <strong className="text-rose-300">$3,500.00</strong> (Personal Checking Balance: <strong className="text-emerald-300">${colloquium.checkingBalance.toFixed(2)}</strong>)
+              <br />• Liquidation Value of Room 4B Oscilloscope &amp; Cryo-Interferometer: <strong className="text-emerald-300">+$3,500.00</strong>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <button
+              onClick={() => onSetDrawerTab('NONE')}
+              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs rounded-xl cursor-pointer"
+            >
+              ← Return to Room 4B
+            </button>
+            {!canAffordFee ? (
+              <button
+                onClick={onSellEquipmentForPerseusFee}
+                className="w-full sm:w-auto px-5 py-3 bg-rose-500 hover:bg-rose-400 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg"
+              >
+                <FlaskConical className="w-4 h-4" />
+                <span>Liquidate Office Lab Equipment (+$3,500.00 to Ledger)</span>
+              </button>
+            ) : (
+              <button
+                onClick={onOpenAcceptanceLetter}
+                className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-amber-400 to-emerald-400 hover:from-amber-300 hover:to-emerald-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(245,158,11,0.4)]"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Wire $3,500.00 Fee &amp; Open the Acceptance Letter →</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // STAGE 2: THE PLAYABLE 5-DAY UNIVERSITY LIFE SIMULATOR (3D CAMPUS + DIEGETIC HUD)
+  // ============================================================================
+  const currentRoomMeta = UNIVERSITY_ROOM_CENTERS[colloquium.currentRoom];
+  const ticket = colloquium.activeDryCleaningTicket;
+  const isTicketReady =
+    ticket &&
+    !ticket.collected &&
+    (colloquium.dayIndex > ticket.readyDayIndex ||
+      (colloquium.dayIndex === ticket.readyDayIndex && mins >= ticket.readyMinutes));
+
+  const activeApptInRoom = colloquium.appointments.find(
+    (a) =>
+      a.dayIndex === colloquium.dayIndex &&
+      a.locationRoom === colloquium.currentRoom &&
+      a.status === 'UPCOMING' &&
+      mins >= a.startMinutes - 15 &&
+      mins <= a.endMinutes + 10
+  );
+
+  const selectedGrantDirectTotal = colloquium.grantBudgetLines
+    .filter((l) => l.selected)
+    .reduce((acc, l) => acc + l.directCost, 0);
+  const selectedGrantOverhead = Math.round(selectedGrantDirectTotal * 0.585);
+  const selectedGrantGrandTotal = selectedGrantDirectTotal + selectedGrantOverhead;
+  const hasProhibitedGrantItem = colloquium.grantBudgetLines.some(
+    (l) => l.selected && l.isProhibitedPersonalExpense
+  );
+
+  const nextTodayAppt = colloquium.appointments.find(
+    (a) => a.dayIndex === colloquium.dayIndex && a.status === 'UPCOMING'
+  );
+  const unreadCount = colloquium.inbox.filter((e) => e.unread).length;
+  const latestNarrativeLine = colloquium.colloquiumLog[0] || null;
+  const showNarrativeToast =
+    latestNarrativeLine &&
+    latestNarrativeLine !== dismissedLog &&
+    colloquium.activeDrawerTab === 'NONE';
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-30 flex flex-col justify-between p-3 md:p-4 select-none">
+      {/* 1. MINIMAL TOP HUD: Compact Status Pill (Left) + On-Demand Notebook & Camera Toggles (Right) */}
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        {/* Top-Left: Compact Diegetic Status Strip */}
+        <div className="pointer-events-auto bg-[#060911]/78 hover:bg-[#060911]/92 border border-slate-800/80 rounded-2xl px-3.5 py-2 backdrop-blur-md shadow-xl flex flex-wrap items-center gap-2.5 transition-colors">
+          <div className="flex items-center gap-2 pr-2 border-r border-slate-800/80">
+            <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="font-mono text-xs font-extrabold text-white tracking-tight">
+              {dayName.slice(0, 3)} {timeStr}
+            </span>
+            <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">
+              Yr {colloquium.academicYear} · {currentRoomMeta.label.split(' (')[0]}
+            </span>
+          </div>
+
+          {/* Finances summary (click to open Ledger) */}
+          <button
+            onClick={() =>
+              onSetDrawerTab(
+                colloquium.activeDrawerTab === 'FINANCE_LEDGER' ? 'NONE' : 'FINANCE_LEDGER'
+              )
+            }
+            className="flex items-center gap-1.5 text-[11px] font-mono text-slate-300 hover:text-white cursor-pointer"
+            title="Click to open Personal & Departmental Financial Ledger"
           >
             <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-slate-400">Checking:</span>
-            <span className="text-emerald-300 font-bold">
-              ${colloquium.checkingBalance.toLocaleString()}
+            <span className="font-bold text-emerald-300">
+              ${colloquium.checkingBalance.toFixed(0)}
             </span>
-          </div>
-
-          <div
-            className={`px-2.5 py-1 rounded-lg border flex items-center gap-1.5 ${
-              colloquium.checkingBalance < colloquium.monthlyMortgage
-                ? 'bg-rose-950/80 border-rose-500/60 text-rose-200 animate-pulse'
-                : 'bg-slate-900 border-slate-800 text-slate-300'
-            }`}
-            title="Monthly Mortgage to Andromeda Savings & Loan ($2,140/mo)"
-          >
-            <Home className="w-3.5 h-3.5 text-rose-400" />
-            <span className="text-slate-400">Mortgage:</span>
-            <span className="font-bold text-rose-300">${colloquium.monthlyMortgage}/mo</span>
-          </div>
-
-          <div className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-1.5">
-            <FlaskConical className="w-3.5 h-3.5 text-sky-400" />
-            <span className="text-slate-400">Dept Budget:</span>
-            <span className="text-sky-300 font-bold">
-              ${colloquium.departmentalBudget.toLocaleString()}
+            <span
+              className={`text-[10px] ${
+                liquidAfterMortgage < 20 ? 'text-rose-300 font-bold' : 'text-slate-400'
+              }`}
+            >
+              (${liquidAfterMortgage.toFixed(0)} free)
             </span>
-          </div>
+          </button>
 
-          <div
-            className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-1.5"
-            title="Your h-index vs. newly tenured Prof. Rook (who published the exact same paper 3 times)"
-          >
-            <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-slate-400">h-index:</span>
-            <span className="text-amber-300 font-bold">{colloquium.hIndex}</span>
-            <span className="text-slate-500">(Rook: {colloquium.rookHIndex})</span>
-          </div>
-
-          <div
-            className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-1.5"
-            title="University Administration Quantified Faculty Productivity Metric"
-          >
-            <Award className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-slate-400">Admin KPI:</span>
-            <span className="text-purple-300 font-bold">
-              {colloquium.adminProductivityScore.toFixed(1)}%
-            </span>
-          </div>
-        </div>
-      </header>
-
-      {/* 2. MIDDLE WORKSPACE: Left Inbox & Office Life + Center 3D Rainy Office Window + Right Research & Submission Desk */}
-      <div className="flex-1 flex flex-col lg:flex-row items-stretch justify-between p-4 gap-4 overflow-hidden">
-        {/* LEFT PANEL: UNIVERSITY EMAIL INBOX, COLLEAGUE POLITICS & THE 1987 COFFEE MACHINE */}
-        <div className="pointer-events-auto w-full lg:w-[390px] bg-[#0B0F17]/92 border border-slate-800/90 rounded-2xl p-3.5 flex flex-col gap-3 shadow-2xl backdrop-blur-md overflow-y-auto max-h-[calc(100vh-155px)]">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-            <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-amber-300">
-              <Mail className="w-4 h-4" />
-              <span>UGA FACULTY PINE MAIL ({colloquium.inbox.length})</span>
-            </div>
-            <span className="text-[10px] font-mono text-slate-400">
-              Chair Rel: <strong className="text-rose-300">{colloquium.chairRelationship}% (Strained)</strong>
-            </span>
-          </div>
-
-          {/* Email List */}
-          <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-            {colloquium.inbox.map((item) => {
-              const isSelected = item.id === selectedEmail?.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => onSelectEmail(item.id)}
-                  className={`w-full text-left px-2.5 py-2 rounded-xl border transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-amber-500/20 border-amber-400/80 text-white'
-                      : 'bg-slate-900/85 hover:bg-slate-800/90 border-slate-800 text-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] font-mono">
-                    <span className="font-bold text-amber-300 truncate">{item.sender}</span>
-                    <span className="text-slate-400 shrink-0 ml-1">{item.dateLabel}</span>
-                  </div>
-                  <div className="text-xs font-semibold text-white truncate mt-0.5">
-                    {item.subject}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Selected Email Reader */}
-          {selectedEmail && (
-            <div className="bg-[#070A10] border border-slate-800 rounded-xl p-3 text-xs space-y-2 flex-1 min-h-[165px] overflow-y-auto">
-              <div className="border-b border-slate-800/80 pb-1.5">
-                <div className="font-bold text-white text-xs">{selectedEmail.subject}</div>
-                <div className="text-[10px] font-mono text-slate-400">
-                  From: {selectedEmail.sender} ({selectedEmail.senderRole})
-                </div>
-              </div>
-              <div className="text-[11px] text-slate-300 whitespace-pre-line leading-relaxed font-serif">
-                {selectedEmail.body}
-              </div>
-            </div>
+          {/* Shirt / Coffee physical state badge (only highlighted when noteworthy!) */}
+          {colloquium.shirtState !== 'CLEAN' && (
+            <button
+              onClick={() => onWalkToRoom('DRY_CLEANER')}
+              className={`px-2 py-0.5 rounded-lg font-mono text-[10px] font-bold flex items-center gap-1 cursor-pointer ${
+                colloquium.shirtState === 'COFFEE_STAINED'
+                  ? 'bg-rose-500/25 border border-rose-400/60 text-rose-200 animate-pulse'
+                  : 'bg-amber-500/20 border border-amber-400/50 text-amber-200'
+              }`}
+              title="Click to walk to Perseus Dry Cleaners"
+            >
+              <Shirt className="w-3 h-3" />
+              <span>
+                {colloquium.shirtState === 'COFFEE_STAINED'
+                  ? 'COFFEE-STAINED SHIRT'
+                  : isTicketReady
+                  ? 'SHIRT READY AT CLEANERS!'
+                  : 'WEARING UGA SWEATSHIRT'}
+              </span>
+            </button>
           )}
 
-          {/* Departmental Politics & The Broken 1987 Coffee Machine */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 space-y-2">
-            <div className="flex items-center justify-between text-[10px] font-mono">
-              <span className="text-slate-400">QUANTUM LAB (PROF. BISHOP):</span>
-              <span
-                className={
-                  colloquium.bishopLabAccessGranted
-                    ? 'text-emerald-300 font-bold'
-                    : 'text-rose-300 font-bold'
-                }
-              >
-                {colloquium.bishopLabAccessGranted
-                  ? '✓ 3:00 AM KEYCARD ACCESS'
-                  : '🔒 WITHHELD BY BISHOP'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-[10px] font-mono">
-              <span className="text-slate-400">REVIEWER #2 RIVALRY:</span>
-              <span className="text-amber-300 font-bold">
-                {colloquium.reviewer2RivalryLevel}% (Hostile)
-              </span>
-            </div>
+          {colloquium.carryingHotCoffee && (
+            <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-400/50 text-amber-200 font-mono text-[10px] font-bold flex items-center gap-1">
+              <Coffee className="w-3 h-3" />
+              <span>Hot Coffee</span>
+            </span>
+          )}
+
+          {/* Next Appointment subtle pill */}
+          {nextTodayAppt && (
             <button
-              onClick={onKickCoffeeMachine}
-              className="w-full px-2.5 py-1.5 bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 rounded-lg text-[10px] font-mono text-amber-200 flex items-center justify-between transition-colors cursor-pointer"
+              onClick={() => onWalkToRoom(nextTodayAppt.locationRoom)}
+              className={`px-2 py-0.5 rounded-lg font-mono text-[10px] flex items-center gap-1 cursor-pointer transition-colors ${
+                activeApptInRoom
+                  ? 'bg-emerald-500/25 border border-emerald-400/70 text-emerald-200 font-bold'
+                  : 'bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-amber-200'
+              }`}
+              title="Click to walk to appointment room"
             >
-              <span className="flex items-center gap-1.5">
-                <Coffee className="w-3.5 h-3.5 text-amber-400" />
-                <span>Try 1987 Breakroom Coffee Machine</span>
+              <Calendar className="w-3 h-3 text-amber-400" />
+              <span>
+                {formatSimTime(nextTodayAppt.startMinutes)}{' '}
+                {nextTodayAppt.withNpcName.split(' ')[0]}
               </span>
-              <span className="text-rose-300">Broken ({colloquium.coffeeMachineKickCount})</span>
             </button>
-          </div>
+          )}
         </div>
 
-        {/* CENTER VIEWPORT CAPTION: Lets the player admire the 3D Rainy Office, Chalkboard, Dr. Pawn & 1987 Coffee Maker */}
-        <div className="hidden lg:flex flex-col justify-end items-center pb-2 flex-1 pointer-events-none">
-          <div className="bg-[#070A10]/85 border border-slate-800/90 rounded-xl px-4 py-2 text-center max-w-md backdrop-blur-sm">
-            <div className="text-[10px] font-mono text-amber-300/90 uppercase tracking-widest">
-              ROOM 4B · SUB-BASEMENT OF PEANO HALL · RAIN AGAINST THE WINDOWS
-            </div>
-            <div className="text-xs text-slate-300 font-serif italic mt-0.5">
-              {colloquium.colloquiumLog[0]}
-            </div>
-          </div>
-        </div>
+        {/* Top-Right: On-Demand Notebook Drawers + Camera POV Pills */}
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={() =>
+              onSetDrawerTab(
+                colloquium.activeDrawerTab === 'CHALKBOARD_PROOF' ? 'NONE' : 'CHALKBOARD_PROOF'
+              )
+            }
+            className={`px-2.5 py-1.5 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 backdrop-blur-md transition-all ${
+              colloquium.activeDrawerTab === 'CHALKBOARD_PROOF'
+                ? 'bg-emerald-400 text-slate-950 shadow-lg'
+                : 'bg-[#060911]/78 hover:bg-slate-900 text-emerald-300 border border-slate-800/90'
+            }`}
+            title="Open Chalkboard Mathematical Proof Workbench [1]"
+          >
+            <FlaskConical className="w-3.5 h-3.5" />
+            <span>Proof {colloquium.centralLemmaIntegrity}%</span>
+          </button>
 
-        {/* RIGHT PANEL: MANUSCRIPT PROGRESS, ACADEMIC ACTIONS & THE PERSEUS ARM PUBLISHER */}
-        <div className="pointer-events-auto w-full lg:w-[430px] bg-[#0B0F17]/92 border border-slate-800/90 rounded-2xl p-4 flex flex-col gap-3 shadow-2xl backdrop-blur-md overflow-y-auto max-h-[calc(100vh-155px)]">
-          {/* Manuscript Card */}
-          <div className="bg-[#111724] border border-slate-800 rounded-xl p-3">
-            <div className="flex items-center justify-between text-[10px] font-mono text-sky-300">
-              <span>WORKING PAPER · {colloquium.manuscriptVersion}</span>
-              <span className="text-rose-300 font-bold">
-                J. Transfinite Causality Rejections: {colloquium.journalRejections} / 3
+          <button
+            onClick={() =>
+              onSetDrawerTab(
+                colloquium.activeDrawerTab === 'FINANCE_LEDGER' ? 'NONE' : 'FINANCE_LEDGER'
+              )
+            }
+            className={`px-2.5 py-1.5 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 backdrop-blur-md transition-all ${
+              colloquium.activeDrawerTab === 'FINANCE_LEDGER'
+                ? 'bg-sky-400 text-slate-950 shadow-lg'
+                : 'bg-[#060911]/78 hover:bg-slate-900 text-sky-300 border border-slate-800/90'
+            }`}
+            title="Open Personal Checking, Mortgage & Departmental Grant Ledger [2]"
+          >
+            <DollarSign className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Finances</span>
+          </button>
+
+          <button
+            onClick={() =>
+              onSetDrawerTab(
+                colloquium.activeDrawerTab === 'CALENDAR_NPCS' ? 'NONE' : 'CALENDAR_NPCS'
+              )
+            }
+            className={`px-2.5 py-1.5 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 backdrop-blur-md transition-all ${
+              colloquium.activeDrawerTab === 'CALENDAR_NPCS'
+                ? 'bg-amber-400 text-slate-950 shadow-lg'
+                : 'bg-[#060911]/78 hover:bg-slate-900 text-amber-200 border border-slate-800/90'
+            }`}
+            title="Open 5-Day University Schedule & Colleague Notes [3]"
+          >
+            <Calendar className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Schedule</span>
+          </button>
+
+          <button
+            onClick={() =>
+              onSetDrawerTab(colloquium.activeDrawerTab === 'PINE_MAIL' ? 'NONE' : 'PINE_MAIL')
+            }
+            className={`px-2.5 py-1.5 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 backdrop-blur-md transition-all ${
+              colloquium.activeDrawerTab === 'PINE_MAIL'
+                ? 'bg-indigo-400 text-slate-950 shadow-lg'
+                : 'bg-[#060911]/78 hover:bg-slate-900 text-indigo-200 border border-slate-800/90'
+            }`}
+            title="Open UGA Pine Mail Terminal [4]"
+          >
+            <Mail className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Mail</span>
+            {unreadCount > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 text-[10px] font-extrabold">
+                {unreadCount}
               </span>
-            </div>
-            <div className="font-serif font-bold text-sm text-white mt-1">
-              &ldquo;{colloquium.manuscriptTitle}&rdquo;
-            </div>
+            )}
+          </button>
 
-            {/* Central Lemma Integrity Bar */}
-            <div className="mt-2.5">
-              <div className="flex items-center justify-between text-[10px] font-mono">
-                <span className="text-slate-300">Central Lemma 3.2 Proof Integrity:</span>
-                <span
-                  className={
-                    colloquium.centralLemmaIntegrity >= 100
-                      ? 'text-emerald-300 font-bold'
-                      : 'text-amber-300 font-bold'
-                  }
-                >
-                  {colloquium.centralLemmaIntegrity}%{' '}
-                  {colloquium.centralLemmaIntegrity < 50
-                    ? '(Grad Student Found Flaw!)'
-                    : colloquium.centralLemmaIntegrity < 100
-                    ? '(Needs Quantum Lab Test)'
-                    : '(Verified!)'}
-                </span>
-              </div>
-              <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden mt-1 border border-slate-800">
-                <div
-                  className={`h-full transition-all duration-300 ${
-                    colloquium.centralLemmaIntegrity >= 100
-                      ? 'bg-emerald-400'
-                      : 'bg-amber-400'
-                  }`}
-                  style={{ width: `${Math.min(100, colloquium.centralLemmaIntegrity)}%` }}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* IF 3 REJECTIONS HAVE OCCURRED (YEAR 6 DESPERATION): SHOW SUSPICIOUS PERSEUS ARM PUBLISHER! */}
-          {colloquium.stage === 'PERSEUS_ARM_OFFER' || colloquium.journalRejections >= 3 ? (
-            <div className="bg-[#170F1E] border-2 border-fuchsia-400/80 rounded-xl p-3.5 space-y-3 shadow-[0_0_30px_rgba(217,70,239,0.25)]">
-              <div className="flex items-center justify-between">
-                <span className="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-400/60 text-[10px] font-mono font-bold text-rose-200">
-                  YEAR 6 · 3RD REJECTION · DESPERATION SETS IN
-                </span>
-                <span className="text-[10px] font-mono text-fuchsia-300">Outer Perseus Arm</span>
-              </div>
-
-              <p className="text-xs text-slate-200 font-serif leading-relaxed">
-                After six simulated years and your third rejection from the{' '}
-                <em>Journal of Transfinite Causality</em>, a colleague by the broken 1987 coffee machine introduces you to a publisher operating out of a suspicious office in the outer reaches of the Perseus Arm:
-              </p>
-
-              <div className="bg-[#0B0711] border border-amber-400/60 rounded-xl p-3 font-mono text-xs space-y-1">
-                <div className="text-amber-300 font-extrabold text-sm">
-                  GALACTIC ADVANCES IN THEORETICAL EVERYTHING
-                </div>
-                <div className="text-emerald-300">Impact Factor: 847.3</div>
-                <div className="text-sky-300">Acceptance Rate: 100%</div>
-                <div className="text-fuchsia-300">Peer Review: Available Upon Request</div>
-                <div className="text-rose-300 font-bold pt-1">
-                  Publication Fee (APC): $6,500.00 (Wire Transfer Only)
-                </div>
-              </div>
-
-              {!colloquium.equipmentSoldForFee ? (
-                <button
-                  onClick={onSellEquipmentForPerseusFee}
-                  className="w-full px-3.5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-colors cursor-pointer flex items-center justify-between shadow-lg"
-                >
-                  <span>Sell Your Research Equipment to Pay the Fee</span>
-                  <span>+$6,500 →</span>
-                </button>
-              ) : (
-                <button
-                  onClick={onOpenAcceptanceLetter}
-                  className="w-full px-4 py-3 bg-gradient-to-r from-emerald-400 to-sky-400 hover:from-emerald-300 hover:to-sky-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-between shadow-[0_0_25px_rgba(52,211,153,0.4)] animate-pulse"
-                >
-                  <span>📨 Paper Accepted! Open the Acceptance Letter</span>
-                  <span>Read Letter →</span>
-                </button>
-              )}
-            </div>
-          ) : (
-            /* STANDARD YEARS 1–6 ACADEMIC LIFE SIMULATOR ACTIONS */
-            <div className="space-y-2">
-              <div className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
-                Academic Career &amp; Department Actions (Years 1–6):
-              </div>
-
-              {/* Action 1: Work with Grad Student on Central Lemma */}
+          {/* Compact Camera POV Controls */}
+          <div className="flex items-center gap-1 bg-[#060911]/78 border border-slate-800/90 rounded-xl px-1.5 py-1 backdrop-blur-md">
+            {onToggleUniFirstPerson && (
               <button
-                onClick={onWorkOnCentralLemma}
-                className="w-full text-left px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/90 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                onClick={onToggleUniFirstPerson}
+                className={`px-2 py-0.5 rounded-lg font-mono text-[10px] font-bold cursor-pointer transition-colors ${
+                  uniFirstPerson
+                    ? 'bg-sky-400 text-slate-950'
+                    : 'text-slate-300 hover:bg-slate-800'
+                }`}
+                title="Toggle 1st-Person / 3rd-Person View (V) · Drag Mouse to Look · Scroll to Zoom"
               >
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <FileText className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Re-Derive Central Lemma 3.2 with Grad Student</span>
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Fix the Jacobian sign error over rainy late-night chalk sessions (-$400 Dept. Budget)
-                  </div>
-                </div>
-                <span className="text-[10px] font-mono font-bold text-emerald-300 shrink-0">
-                  +30% Lemma
-                </span>
+                {uniFirstPerson ? '1st POV' : '3rd POV'}
               </button>
-
-              {/* Action 2: Confront Prof. Bishop for Quantum Lab Access */}
+            )}
+            {onToggleFreeMouseLook && (
               <button
-                onClick={onConfrontBishopForLab}
-                className="w-full text-left px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/90 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                onClick={onToggleFreeMouseLook}
+                className={`px-2 py-0.5 rounded-lg font-mono text-[10px] font-bold cursor-pointer transition-colors ${
+                  freeMouseLook
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+                title="Toggle Hands-Free Mouse Look (F)"
               >
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <FlaskConical className="w-3.5 h-3.5 text-sky-400" />
-                    <span>
-                      {colloquium.bishopLabAccessGranted
-                        ? 'Run Retrocausal Interferometer in Quantum Lab'
-                        : 'Confront Prof. Bishop Over Quantum Lab Access'}
+                [F] Look
+              </button>
+            )}
+            {onResetUniCamera && (
+              <button
+                onClick={onResetUniCamera}
+                className="px-1.5 py-0.5 rounded-lg font-mono text-[10px] text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer"
+                title="Reset Camera Angle (R)"
+              >
+                [R]
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 2. ON-DEMAND WORKBENCH MODAL (ONLY VISIBLE WHEN USER OPENS A DRAWER OR CLICKS A 3D PROP) */}
+      {colloquium.activeDrawerTab !== 'NONE' && (
+        <div
+          className="pointer-events-auto fixed inset-0 z-40 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => onSetDrawerTab('NONE')}
+        >
+          <div
+            className="w-full max-w-3xl max-h-[80vh] overflow-y-auto bg-[#080C15]/96 border border-slate-700/90 rounded-2xl p-5 md:p-6 backdrop-blur-md shadow-[0_0_80px_rgba(0,0,0,0.92)] text-slate-200 flex flex-col gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header with Close [X] */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 font-mono text-sm font-bold text-white">
+                {colloquium.activeDrawerTab === 'CHALKBOARD_PROOF' && (
+                  <>
+                    <FlaskConical className="w-4 h-4 text-emerald-400" />
+                    <span>Chalkboard Proof Workbench — Central Lemma 3.2</span>
+                  </>
+                )}
+                {colloquium.activeDrawerTab === 'FINANCE_LEDGER' && (
+                  <>
+                    <DollarSign className="w-4 h-4 text-emerald-400" />
+                    <span>Personal Checking &amp; Departmental Research Accounting</span>
+                  </>
+                )}
+                {colloquium.activeDrawerTab === 'CALENDAR_NPCS' && (
+                  <>
+                    <Calendar className="w-4 h-4 text-amber-400" />
+                    <span>University Schedule, Colleagues &amp; Time Controls</span>
+                  </>
+                )}
+                {colloquium.activeDrawerTab === 'PINE_MAIL' && (
+                  <>
+                    <Mail className="w-4 h-4 text-sky-400" />
+                    <span>UGA Pine Mail Terminal ({colloquium.inbox.length} Messages)</span>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => onSetDrawerTab('NONE')}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs flex items-center gap-1 cursor-pointer"
+              >
+                <span>Close</span>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* TAB 1: REAL MATHEMATICAL PROOF WORKBENCH FOR CENTRAL LEMMA 3.2 */}
+            {colloquium.activeDrawerTab === 'CHALKBOARD_PROOF' && (
+              <div className="space-y-4">
+                <div className="bg-[#0D1F18] border border-emerald-500/40 rounded-xl p-3.5 font-mono text-xs text-emerald-100 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-emerald-300 uppercase font-bold">
+                      MANUSCRIPT: &ldquo;{colloquium.manuscriptTitle}&rdquo;
+                    </span>
+                    <span className="text-xs font-extrabold text-emerald-300">
+                      INTEGRITY: {colloquium.centralLemmaIntegrity}%
                     </span>
                   </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    {colloquium.bishopLabAccessGranted
-                      ? 'Verify the nonexistence of monarchs at t₀ − 1 (+Lemma & +h-index)'
-                      : 'Discover why Prof. Bishop is deliberately withholding the lab keycard'}
+                  <div>{colloquium.proofWorkbench.lastVerificationMessage}</div>
+                </div>
+
+                {/* Task 1: Boundary Gauge Choice */}
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono font-bold text-white">
+                      1. Select Boundary Gauge Condition on ∂M_(t₀−1) (Takes 25m)
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                        colloquium.proofWorkbench.boundaryGaugeVerified
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-rose-500/20 text-rose-300'
+                      }`}
+                    >
+                      {colloquium.proofWorkbench.boundaryGaugeVerified ? '✓ VERIFIED' : 'DEFECTIVE'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Reviewer #2 noted that the boundary commutator [∂_t, H_chiral] diverges at t₀ − 1 unless the spinor boundary condition is anti-symmetric.
+                  </p>
+                  <div className="grid grid-cols-1 gap-1.5 pt-1">
+                    {(
+                      [
+                        [
+                          'DIRICHLET_CLAMP',
+                          'Option A: Naive Dirichlet Clamp ψ(t₀−1) = 0',
+                          'Fails unitary flux conservation on open files (Reviewer #2 counterexample)',
+                        ],
+                        [
+                          'CHIRAL_ANTIPERIODIC',
+                          'Option B: Chiral Anti-Periodic Gauge ψ(t₀−1) = −γ₅ψ(t₀)',
+                          'Cancels the surface commutator exactly while preserving causal cone locality',
+                        ],
+                        [
+                          'TRUNCATED_PERTURBATIVE',
+                          'Option C: 2nd-Order Truncated Taylor Series',
+                          'Diverges for high-momentum retrocausal paths',
+                        ],
+                      ] as const
+                    ).map(([val, title, desc]) => (
+                      <button
+                        key={val}
+                        onClick={() => onSelectBoundaryGauge(val)}
+                        className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                          colloquium.proofWorkbench.boundaryGaugeChoice === val
+                            ? val === 'CHIRAL_ANTIPERIODIC'
+                              ? 'bg-emerald-950/90 border-emerald-400 text-emerald-100'
+                              : 'bg-rose-950/90 border-rose-400 text-rose-100'
+                            : 'bg-slate-950/80 hover:bg-slate-800 border-slate-800 text-slate-300'
+                        }`}
+                      >
+                        <div className="text-xs font-mono font-bold">{title}</div>
+                        <div className="text-[10px] text-slate-400">{desc}</div>
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <span className="text-[10px] font-mono font-bold text-sky-300 shrink-0">
-                  {colloquium.bishopLabAccessGranted ? '+1 h-index' : 'Unlock Lab'}
-                </span>
-              </button>
 
-              {/* Action 3: Grant Applications & Mortgage Payment */}
-              <button
-                onClick={onApplyForGrantAndPayMortgage}
-                className="w-full text-left px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/90 transition-colors cursor-pointer flex items-center justify-between gap-2"
-              >
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Write Grant Proposal &amp; Pay $2,140 Mortgage</span>
+                {/* Task 2: Retrocausal Jacobian Sign Flip */}
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-mono font-bold text-white">
+                      2. Toby’s Anomaly: Off-Diagonal Retrocausal Jacobian Sign
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      Current Matrix:{' '}
+                      <code className="text-amber-300">
+                        det [ ∂_t , −κ ; {colloquium.proofWorkbench.jacobianSignFlipped ? '+κ' : '−κ'} , ∂_w ] ={' '}
+                        {colloquium.proofWorkbench.jacobianSignFlipped
+                          ? 'λ² + κ² > 0 (Strictly Bounded!)'
+                          : 'λ² − κ² = 0 (Singular Pole!)'}
+                      </code>
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Appease Chairwoman Queen&rsquo;s 58% overhead demand &amp; keep your townhouse
+                  <button
+                    onClick={onToggleJacobianSign}
+                    className={`px-3.5 py-2 rounded-xl font-mono text-xs font-bold shrink-0 cursor-pointer ${
+                      colloquium.proofWorkbench.jacobianSignFlipped
+                        ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200'
+                        : 'bg-amber-400 hover:bg-amber-300 text-slate-950'
+                    }`}
+                  >
+                    {colloquium.proofWorkbench.jacobianSignFlipped
+                      ? '✓ Adjoint +κ Applied'
+                      : 'Flip Sign to +κ (20m)'}
+                  </button>
+                </div>
+
+                {/* Task 3: Chiral Lab Verification & Mandatory Rook Citations */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-mono font-bold text-white">
+                        3. Chiral Interferometer Run
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        {colloquium.bishopLabAccessGranted
+                          ? 'Prof. Bishop granted lab access! Run the 4.8σ verification ($950 Dept. Grant).'
+                          : 'Locked: Obtain Prof. Bishop’s approval at the 14:30 Seminar Room 204 Review.'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={onRunChiralLabExperiment}
+                      disabled={!colloquium.bishopLabAccessGranted || colloquium.proofWorkbench.chiralLabDataAttached}
+                      className={`w-full py-2 rounded-lg font-mono text-xs font-bold ${
+                        colloquium.proofWorkbench.chiralLabDataAttached
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                          : colloquium.bishopLabAccessGranted
+                          ? 'bg-purple-400 hover:bg-purple-300 text-slate-950 cursor-pointer'
+                          : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                      }`}
+                    >
+                      {colloquium.proofWorkbench.chiralLabDataAttached
+                        ? '✓ 4.8σ Lab Data Attached'
+                        : 'Run Chiral Experiment ($950 Dept)'}
+                    </button>
+                  </div>
+
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-mono font-bold text-white">
+                        4. Cite Rook (2021, 2023, 2025)
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Appease Reviewer #2’s demand to cite his three identical rectilinear papers in §2.
+                      </div>
+                    </div>
+                    <button
+                      onClick={onToggleRookCitations}
+                      className={`w-full py-2 rounded-lg font-mono text-xs font-bold cursor-pointer ${
+                        colloquium.proofWorkbench.rookCitationsAttached
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                          : 'bg-sky-400 hover:bg-sky-300 text-slate-950'
+                      }`}
+                    >
+                      {colloquium.proofWorkbench.rookCitationsAttached
+                        ? '✓ Rook (2021–2025) Cited'
+                        : 'Insert 3 Rook Citations (15m)'}
+                    </button>
                   </div>
                 </div>
-                <span className="text-[10px] font-mono font-bold text-emerald-300 shrink-0">
-                  +$2,800 Budget
-                </span>
-              </button>
 
-              {/* Action 4: Conference Politics & Prof. Rook's Identical Papers */}
-              <button
-                onClick={onAttendConferenceAndDebateRook}
-                className="w-full text-left px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/90 transition-colors cursor-pointer flex items-center justify-between gap-2"
-              >
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <BookOpen className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Attend Conference &amp; Debate Reviewer #2</span>
+                {/* Journal Submission Action inside Proof Workbench */}
+                <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-[11px] font-mono text-slate-400">
+                    Journal of Transfinite Causality Rejections:{' '}
+                    <strong className="text-rose-300">{colloquium.journalRejections}/3</strong>
                   </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Watch Prof. Rook get applauded for publishing the same paper {colloquium.rookIdenticalPapersCount} times
+                  <button
+                    onClick={onSubmitToJournalOfTransfiniteCausality}
+                    className="px-4 py-2 bg-gradient-to-r from-amber-400 to-sky-400 hover:from-amber-300 hover:to-sky-300 text-slate-950 font-mono font-extrabold text-xs rounded-xl cursor-pointer shadow-md"
+                  >
+                    Submit Manuscript to Journal of Transfinite Causality →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: PERSONAL & DEPARTMENTAL FINANCIAL LEDGERS + GRANT BUDGET BUILDER */}
+            {colloquium.activeDrawerTab === 'FINANCE_LEDGER' && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="bg-slate-900/95 border border-slate-700 rounded-xl p-3.5 space-y-2">
+                    <div className="text-[10px] font-mono uppercase text-emerald-300 font-bold">
+                      PERSONAL CHECKING ACCOUNT (#4409)
+                    </div>
+                    <div className="text-xl font-mono font-extrabold text-white">
+                      ${colloquium.checkingBalance.toFixed(2)}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400">
+                      Biweekly Net Salary (Fridays): <span className="text-emerald-300">+$1,853.85</span>
+                    </div>
+                    {!colloquium.mortgagePaidThisWeek ? (
+                      <button
+                        onClick={onPayMonthlyMortgage}
+                        className="w-full py-2 bg-rose-500 hover:bg-rose-400 text-slate-950 font-mono font-extrabold text-xs rounded-lg cursor-pointer transition-colors"
+                      >
+                        Pay Monthly Mortgage ($2,140.00)
+                      </button>
+                    ) : (
+                      <div className="text-xs font-mono text-emerald-300 font-bold">
+                        ✓ Monthly Mortgage ($2,140.00) Paid for This Month
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-slate-900/95 border border-slate-700 rounded-xl p-3.5 space-y-2">
+                    <div className="text-[10px] font-mono uppercase text-sky-300 font-bold">
+                      DEPARTMENTAL RESEARCH ACCOUNT (#UGA-4B)
+                    </div>
+                    <div className="text-xl font-mono font-extrabold text-white">
+                      ${colloquium.departmentalBudget.toFixed(2)}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400">
+                      Restricted to approved lab cryo-consumables &amp; RA stipends.
+                    </div>
+                    <button
+                      onClick={onAttemptIllegalDepartmentalReimbursement}
+                      className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-amber-200 font-mono text-[10px] rounded-lg cursor-pointer"
+                    >
+                      Attempt to Expense Personal Dry Cleaning to Dept. Grant
+                    </button>
                   </div>
                 </div>
-                <span className="text-[10px] font-mono font-bold text-purple-300 shrink-0">
-                  +2 h-index
-                </span>
-              </button>
 
-              {/* Action 5: Submit to the Journal of Transfinite Causality */}
-              <button
-                onClick={onSubmitToJournalOfTransfiniteCausality}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500/30 to-rose-500/30 hover:from-amber-500/45 hover:to-rose-500/45 border border-amber-400/80 transition-colors cursor-pointer flex items-center justify-between gap-2 shadow-md"
-              >
-                <div className="text-left">
-                  <div className="text-xs font-mono font-extrabold text-amber-200">
-                    Submit to &ldquo;Journal of Transfinite Causality&rdquo; (Attempt #{colloquium.journalRejections + 1} of 3)
+                {/* Interactive Grant Proposal & Equipment Budget Worksheet */}
+                <div className="bg-[#0D1322] border border-sky-500/40 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-mono font-bold text-sky-200">
+                        📋 Andromeda Science Foundation — Equipment &amp; RA Grant Worksheet
+                      </div>
+                      <div className="text-[10px] text-slate-400">
+                        Select justified research line items. Total (Direct + 58.5% Indirect Overhead) must not exceed $3,800.00 and must contain zero personal expenses.
+                      </div>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-amber-300">
+                      Cap: $3,800
+                    </span>
                   </div>
-                  <div className="text-[10px] text-slate-300 mt-0.5">
-                    Advances tenure clock by ~2 simulated years · Awaits Reviewer #2&rsquo;s verdict
+
+                  <div className="space-y-1.5">
+                    {colloquium.grantBudgetLines.map((line) => (
+                      <button
+                        key={line.id}
+                        onClick={() => onToggleGrantLineItem(line.id)}
+                        disabled={colloquium.grantSubmittedAndApproved}
+                        className={`w-full p-2.5 rounded-lg border text-left flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                          line.selected
+                            ? line.isProhibitedPersonalExpense
+                              ? 'bg-rose-950/80 border-rose-500/80 text-rose-100'
+                              : 'bg-sky-950/80 border-sky-400/80 text-sky-100'
+                            : 'bg-slate-900/70 border-slate-800 text-slate-400'
+                        }`}
+                      >
+                        <div>
+                          <div className="text-xs font-mono font-bold">
+                            {line.selected ? '☑ ' : '☐ '}
+                            {line.label}
+                          </div>
+                          <div className="text-[10px] opacity-80">{line.justificationNote}</div>
+                        </div>
+                        <span className="text-xs font-mono font-bold shrink-0">
+                          ${line.directCost.toFixed(2)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-2 font-mono text-xs">
+                    <div>
+                      Direct: <strong>${selectedGrantDirectTotal}</strong> + 58.5% Overhead:{' '}
+                      <strong>${selectedGrantOverhead}</strong> = Total:{' '}
+                      <strong
+                        className={
+                          selectedGrantGrandTotal > 3800 || hasProhibitedGrantItem
+                            ? 'text-rose-400'
+                            : 'text-emerald-300'
+                        }
+                      >
+                        ${selectedGrantGrandTotal}
+                      </strong>
+                    </div>
+                    <button
+                      onClick={onSubmitGrantBudgetProposal}
+                      disabled={colloquium.grantSubmittedAndApproved}
+                      className={`px-4 py-2 rounded-lg font-extrabold text-xs ${
+                        colloquium.grantSubmittedAndApproved
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-sky-400 hover:bg-sky-300 text-slate-950 cursor-pointer'
+                      }`}
+                    >
+                      {colloquium.grantSubmittedAndApproved
+                        ? '✓ Grant Approved & Funded'
+                        : 'Submit Reconciled Grant Budget →'}
+                    </button>
                   </div>
                 </div>
-                <span className="text-xs font-mono font-bold text-amber-300 shrink-0">
-                  Submit →
-                </span>
-              </button>
 
-              {/* Quick Fast-Forward to Year 6 Desperation */}
-              <button
-                onClick={onFastForwardToYear6Desperation}
-                className="w-full px-3 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-[10px] font-mono text-slate-400 hover:text-amber-200 transition-colors cursor-pointer text-center"
-              >
-                ⏩ Fast-Forward Through 6 Years &amp; 3 Rejections → Outer Perseus Arm Publisher
-              </button>
-            </div>
+                {/* Transaction Ledger Table */}
+                <div className="space-y-2">
+                  <div className="text-xs font-mono font-bold text-slate-300 uppercase">
+                    TRANSACTION LEDGER (PERSONAL &amp; DEPARTMENTAL)
+                  </div>
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden text-[11px] font-mono">
+                    {[...colloquium.personalLedger, ...colloquium.departmentalLedger]
+                      .slice(-8)
+                      .reverse()
+                      .map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="px-3 py-2 border-b border-slate-900 flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9px] mr-2 ${
+                                entry.account === 'PERSONAL'
+                                  ? 'bg-emerald-500/15 text-emerald-300'
+                                  : 'bg-sky-500/15 text-sky-300'
+                              }`}
+                            >
+                              {entry.account}
+                            </span>
+                            <span className="text-slate-200">{entry.description}</span>
+                            <span className="text-slate-500 ml-2">
+                              ({entry.dayLabel} {entry.timeLabel})
+                            </span>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <span
+                              className={
+                                entry.amount >= 0 ? 'text-emerald-300 font-bold' : 'text-rose-300 font-bold'
+                              }
+                            >
+                              {entry.amount >= 0 ? '+' : ''}${entry.amount.toFixed(2)}
+                            </span>
+                            <span className="text-slate-500 ml-2">
+                              (Bal: ${entry.runningBalance.toFixed(2)})
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: 5-DAY UNIVERSITY SCHEDULE, APPOINTMENTS & PERSISTENT COLLEAGUE MEMORIES */}
+            {colloquium.activeDrawerTab === 'CALENDAR_NPCS' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/90 border border-slate-800 rounded-xl p-3">
+                  <div className="text-xs font-mono text-slate-300">
+                    Current Time: <strong className="text-white">{dayName} {timeStr}</strong> · Energy:{' '}
+                    <strong className="text-emerald-300">{colloquium.energyLevel}%</strong>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={() => onAdvanceTimeMinutes(30, 'Worked at office desk for 30 minutes')}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono text-[11px] rounded-lg cursor-pointer"
+                    >
+                      +30m Work
+                    </button>
+                    {colloquium.hasSpareCleanShirtAtHome && colloquium.shirtState !== 'CLEAN' && (
+                      <button
+                        onClick={onCommuteHomeForSpareShirt}
+                        className="px-2.5 py-1 bg-sky-900/80 hover:bg-sky-800 text-sky-100 font-mono text-[11px] rounded-lg cursor-pointer"
+                      >
+                        Bus Home for Spare Shirt ($5.50 · 95m)
+                      </button>
+                    )}
+                    <button
+                      onClick={onSleepUntilNextMorning}
+                      className="px-3 py-1 bg-indigo-500/30 hover:bg-indigo-500/45 border border-indigo-400/50 text-indigo-100 font-mono text-[11px] font-bold rounded-lg cursor-pointer flex items-center gap-1"
+                    >
+                      <Moon className="w-3 h-3" />
+                      <span>Sleep Until Next Morning (08:30)</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-mono font-bold text-amber-300 uppercase">
+                    SCHEDULED UNIVERSITY COMMITMENTS
+                  </div>
+                  {colloquium.appointments.map((appt) => (
+                    <div
+                      key={appt.id}
+                      className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3"
+                    >
+                      <div>
+                        <div className="text-xs font-mono font-bold text-white">
+                          {DAY_NAMES[appt.dayIndex]} · {formatSimTime(appt.startMinutes)} –{' '}
+                          {formatSimTime(appt.endMinutes)}: {appt.title}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          Location: {UNIVERSITY_ROOM_CENTERS[appt.locationRoom].label} · With:{' '}
+                          {appt.withNpcName}
+                        </div>
+                        {appt.outcomeNote && (
+                          <div className="text-[11px] font-mono text-amber-200 mt-1">
+                            → {appt.outcomeNote}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {appt.status === 'UPCOMING' && appt.dayIndex === colloquium.dayIndex && (
+                          <button
+                            onClick={() => {
+                              onAttendScheduledMeetingInRoom(appt.id);
+                              onSetDrawerTab('NONE');
+                            }}
+                            className="px-2.5 py-1 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-mono text-[10px] font-extrabold rounded-lg cursor-pointer"
+                          >
+                            Attend Now
+                          </button>
+                        )}
+                        <span
+                          className={`px-2 py-1 rounded text-[10px] font-mono font-bold ${
+                            appt.status === 'ATTENDED_CLEAN'
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : appt.status === 'MISSED' || appt.status === 'ATTENDED_STAINED'
+                              ? 'bg-rose-500/20 text-rose-300'
+                              : 'bg-amber-500/20 text-amber-200'
+                          }`}
+                        >
+                          {appt.status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <div className="text-xs font-mono font-bold text-sky-300 uppercase">
+                    COLLEAGUE RELATIONSHIPS &amp; PERSISTENT MEMORY LOG
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 font-mono text-xs">
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+                      <div className="text-[10px] text-slate-400">Grad Student Toby</div>
+                      <div className="text-sm font-bold text-sky-300">{colloquium.tobyRelationship}/100</div>
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+                      <div className="text-[10px] text-slate-400">Prof. Bishop (Lab)</div>
+                      <div className="text-sm font-bold text-purple-300">{colloquium.bishopRelationship}/100</div>
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+                      <div className="text-[10px] text-slate-400">Chairwoman Queen</div>
+                      <div className="text-sm font-bold text-rose-300">{colloquium.chairRelationship}/100</div>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5 font-mono text-[11px] text-slate-300">
+                    {colloquium.npcMemoryNotes.map((note, i) => (
+                      <div key={i}>• {note}</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: UGA PINE MAIL INBOX */}
+            {colloquium.activeDrawerTab === 'PINE_MAIL' && (
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                <div className="md:col-span-5 space-y-1.5 max-h-[48vh] overflow-y-auto pr-1">
+                  {colloquium.inbox.map((email) => (
+                    <button
+                      key={email.id}
+                      onClick={() => onSelectEmail(email.id)}
+                      className={`w-full text-left p-2.5 rounded-xl border transition-colors cursor-pointer ${
+                        email.id === selectedEmail?.id
+                          ? 'bg-sky-950/90 border-sky-400 text-white'
+                          : 'bg-slate-900/80 hover:bg-slate-800 border-slate-800 text-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px] font-mono text-amber-300">
+                        <span className="truncate">{email.sender}</span>
+                        {email.unread && (
+                          <span className="px-1.5 py-0.2 bg-amber-400 text-slate-950 rounded font-bold">
+                            NEW
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-bold truncate mt-0.5">{email.subject}</div>
+                      <div className="text-[10px] font-mono text-slate-400">{email.dateLabel}</div>
+                    </button>
+                  ))}
+                </div>
+                {selectedEmail && (
+                  <div className="md:col-span-7 bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs space-y-2.5">
+                    <div className="border-b border-slate-800 pb-2">
+                      <div className="text-amber-300 font-bold">{selectedEmail.subject}</div>
+                      <div className="text-[11px] text-slate-400">
+                        From: {selectedEmail.sender} ({selectedEmail.senderRole})
+                      </div>
+                      <div className="text-[10px] text-slate-500">{selectedEmail.dateLabel}</div>
+                    </div>
+                    <div className="whitespace-pre-line text-slate-200 leading-relaxed font-sans text-xs">
+                      {selectedEmail.body}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 3. BOTTOM AREA: Ephemeral Story Subtitle + Compact Contextual Room Action Bar */}
+      <div className="flex flex-col items-center gap-2">
+        {/* Ephemeral Story Subtitle Toast (Dismissible, Show-Don't-Tell) */}
+        {showNarrativeToast && (
+          <div className="pointer-events-auto max-w-2xl w-full bg-[#060911]/82 border border-slate-800/80 rounded-xl px-4 py-2 backdrop-blur-md shadow-lg flex items-center justify-between gap-3">
+            <p className="font-serif text-xs md:text-sm text-slate-200 leading-snug">
+              {latestNarrativeLine}
+            </p>
+            <button
+              onClick={() => setDismissedLog(latestNarrativeLine)}
+              className="text-slate-400 hover:text-white p-1 rounded cursor-pointer shrink-0"
+              title="Dismiss subtitle"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Single Sleek Bottom Bar: Contextual Room Interactions + Quick Room Walk Pills */}
+        <div className="pointer-events-auto bg-[#060911]/82 hover:bg-[#060911]/94 border border-slate-800/85 rounded-2xl px-3.5 py-2 backdrop-blur-md shadow-2xl flex flex-wrap items-center justify-center gap-2 transition-colors">
+          {/* Active Appointment in current room */}
+          {activeApptInRoom && (
+            <button
+              onClick={() => onAttendScheduledMeetingInRoom(activeApptInRoom.id)}
+              className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-mono text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow-md"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Attend {activeApptInRoom.withNpcName.split(' ')[0]} Meeting</span>
+            </button>
           )}
 
-          {/* Recent Academic Life Chronicle */}
-          <div className="mt-auto pt-2 border-t border-slate-800/80 space-y-1">
-            <div className="text-[10px] font-mono text-slate-400 uppercase">
-              Academic Life Log (You Have Forgotten the Chessboard Ever Existed):
-            </div>
-            {colloquium.colloquiumLog.slice(0, 3).map((entry, i) => (
-              <div key={i} className="text-[11px] text-slate-300 font-serif leading-snug">
-                {entry}
-              </div>
+          {/* Contextual actions for the room Dr. Pawn is currently standing in */}
+          {colloquium.currentRoom === 'OFFICE_4B' && (
+            <>
+              <button
+                onClick={onKickCoffeeMachine}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-amber-200 font-mono text-[11px] cursor-pointer flex items-center gap-1"
+              >
+                <Coffee className="w-3 h-3 text-amber-400" />
+                <span>1987 Coffee Machine</span>
+              </button>
+              <button
+                onClick={() => onTalkToNpcInRoom('TOBY')}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-sky-200 font-mono text-[11px] cursor-pointer"
+              >
+                Talk to Toby
+              </button>
+              <button
+                onClick={() => onSetDrawerTab('CHALKBOARD_PROOF')}
+                className="px-2.5 py-1 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-200 font-mono text-[11px] font-bold cursor-pointer"
+              >
+                Chalkboard ({colloquium.centralLemmaIntegrity}%)
+              </button>
+              <button
+                onClick={onSubmitToJournalOfTransfiniteCausality}
+                className="px-2.5 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 font-mono text-[11px] font-bold cursor-pointer"
+              >
+                Submit Paper ({colloquium.journalRejections}/3)
+              </button>
+            </>
+          )}
+
+          {colloquium.currentRoom === 'FACULTY_CORRIDOR' && (
+            <>
+              <button
+                onClick={() => onTalkToNpcInRoom('BISHOP')}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-purple-200 font-mono text-[11px] cursor-pointer"
+              >
+                Talk to Prof. Bishop
+              </button>
+              <button
+                onClick={() => onTalkToNpcInRoom('QUEEN')}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-rose-200 font-mono text-[11px] cursor-pointer"
+              >
+                Talk to Chairwoman Queen
+              </button>
+            </>
+          )}
+
+          {colloquium.currentRoom === 'SEMINAR_ROOM_204' && (
+            <>
+              <button
+                onClick={() => onTalkToNpcInRoom('BISHOP')}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-purple-200 font-mono text-[11px] cursor-pointer"
+              >
+                Consult Prof. Bishop
+              </button>
+              <button
+                onClick={() => onTalkToNpcInRoom('QUEEN')}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-rose-200 font-mono text-[11px] cursor-pointer"
+              >
+                Speak with Chairwoman Queen
+              </button>
+            </>
+          )}
+
+          {colloquium.currentRoom === 'CAFETERIA' && (
+            <>
+              <button
+                onClick={onJoinOrLeaveCafeteriaQueue}
+                className={`px-3 py-1 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 ${
+                  colloquium.cafeteriaQueuePosition !== null
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'bg-amber-500/25 hover:bg-amber-500/35 border border-amber-400/60 text-amber-200'
+                }`}
+              >
+                <Coffee className="w-3.5 h-3.5" />
+                <span>
+                  {colloquium.cafeteriaQueuePosition !== null
+                    ? `In Queue (#${colloquium.cafeteriaQueuePosition} · ${Math.round(
+                        colloquium.cafeteriaServiceProgress
+                      )}%) — Leave`
+                    : 'Join Coffee Queue ($4.50)'}
+                </span>
+              </button>
+              <button
+                onClick={() => onTalkToNpcInRoom('ROOK')}
+                className="px-2.5 py-1 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-amber-200 font-mono text-[11px] cursor-pointer"
+              >
+                Talk to Prof. Rook
+              </button>
+            </>
+          )}
+
+          {colloquium.currentRoom === 'DRY_CLEANER' && (
+            <>
+              {colloquium.shirtState === 'COFFEE_STAINED' && (
+                <>
+                  <button
+                    onClick={() => onDropOffShirtAtCleaner('EXPRESS_75_MIN')}
+                    disabled={!cleanerIsOpen}
+                    className="px-2.5 py-1 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-mono text-[11px] font-extrabold cursor-pointer"
+                  >
+                    1-Hr Express Clean ($28.50)
+                  </button>
+                  <button
+                    onClick={() => onDropOffShirtAtCleaner('STANDARD_NEXT_DAY')}
+                    disabled={!cleanerIsOpen}
+                    className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono text-[11px] cursor-pointer"
+                  >
+                    Next-Day Clean ($14.00)
+                  </button>
+                </>
+              )}
+              {ticket && !ticket.collected && (
+                <button
+                  onClick={onPickUpCleanedShirt}
+                  className={`px-2.5 py-1 rounded-xl font-mono text-[11px] font-bold cursor-pointer ${
+                    isTicketReady
+                      ? 'bg-emerald-400 text-slate-950'
+                      : 'bg-slate-800 text-amber-200'
+                  }`}
+                >
+                  {isTicketReady
+                    ? `Pick Up Clean Shirt (#${ticket.ticketNumber})`
+                    : `Ticket #${ticket.ticketNumber} (Ready ${formatSimTime(ticket.readyMinutes)})`}
+                </button>
+              )}
+              {colloquium.shirtState !== 'CLEAN' && (
+                <button
+                  onClick={onBuyNewShirtAtHaberdashery}
+                  className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-sky-200 font-mono text-[11px] cursor-pointer"
+                >
+                  Buy New Oxford Shirt ($68)
+                </button>
+              )}
+            </>
+          )}
+
+          <div className="h-4 w-px bg-slate-800 mx-0.5 hidden sm:block" />
+
+          {/* Compact Room Walk Pills */}
+          <div className="flex flex-wrap items-center gap-1">
+            {(
+              [
+                ['OFFICE_4B', '4B Office'],
+                ['FACULTY_CORRIDOR', 'Corridor'],
+                ['SEMINAR_ROOM_204', 'Seminar 204'],
+                ['CAFETERIA', 'Cafeteria'],
+                ['DRY_CLEANER', 'Cleaners'],
+              ] as [UniversityRoomId, string][]
+            ).map(([roomId, label]) => (
+              <button
+                key={roomId}
+                onClick={() => onWalkToRoom(roomId)}
+                className={`px-2 py-1 rounded-lg font-mono text-[10px] transition-all cursor-pointer ${
+                  colloquium.currentRoom === roomId
+                    ? 'bg-amber-400/90 text-slate-950 font-extrabold'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                }`}
+              >
+                {label}
+              </button>
             ))}
+            <button
+              onClick={onSleepUntilNextMorning}
+              className="px-2 py-1 rounded-lg font-mono text-[10px] text-indigo-300 hover:bg-indigo-950/80 border border-indigo-500/30 cursor-pointer flex items-center gap-1 ml-0.5"
+              title="End day & sleep until 08:30 tomorrow morning"
+            >
+              <Moon className="w-3 h-3" />
+              <span>Sleep</span>
+            </button>
           </div>
         </div>
       </div>

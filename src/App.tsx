@@ -29,6 +29,7 @@ import {
   RealmTemporalEcho,
   TimelineBranch,
   TimelineSnapshot,
+  UniversityRoomId,
   UnseenThreatVector,
 } from './types/game';
 import { ARCHETYPES } from './data/archetypes';
@@ -146,6 +147,9 @@ import {
 } from './components/AcademicColloquiumOverlay';
 import {
   createUniversityOfficeRig,
+  getRoomAtWorldPos,
+  triggerCoffeeSpill3DSplash,
+  UNIVERSITY_ROOM_CENTERS,
   UniversityOfficeRig,
   updateUniversityOfficeScene,
 } from './three/universityOfficeBuilder';
@@ -260,6 +264,8 @@ export default function App() {
   const [duelSquareName, setDuelSquareName] = useState<string>('E4');
   const [introShotIndex, setIntroShotIndex] = useState<number>(-1);
   const [combatCameraMode, setCombatCameraMode] = useState<'first_person' | 'side_arena'>('first_person');
+  const [uniFirstPerson, setUniFirstPerson] = useState<boolean>(false);
+  const [freeMouseLook, setFreeMouseLook] = useState<boolean>(false);
   const [callouts, setCallouts] = useState<CombatCallout[]>([]);
   const [koBanner, setKoBanner] = useState<{
     title: string;
@@ -355,6 +361,29 @@ export default function App() {
       ascentPortalName: string;
       ascentTargetTimelineId: string | null;
     };
+    uniPlayer: {
+      worldX: number;
+      worldZ: number;
+      yaw: number;
+      targetX: number | null;
+      targetZ: number | null;
+    };
+    mouseLook: {
+      isDragging: boolean;
+      freeLookActive: boolean;
+      lastPointerX: number;
+      lastPointerY: number;
+      uniCamYaw: number;
+      uniCamPitch: number;
+      uniCamDistance: number;
+      uniFirstPerson: boolean;
+      fightLookYaw: number;
+      fightLookPitch: number;
+      fightCamDistOffset: number;
+      realmCamYawOffset: number;
+      realmCamPitch: number;
+      realmCamDistance: number;
+    };
   }>({
     phase: 'CHESS_VIEW',
     phaseTimer: 0,
@@ -411,6 +440,29 @@ export default function App() {
     realmsRig: null,
     pocketWatchRig: null,
     universityOfficeRig: null,
+    uniPlayer: {
+      worldX: -10.0,
+      worldZ: -3.2,
+      yaw: 0,
+      targetX: null as number | null,
+      targetZ: null as number | null,
+    },
+    mouseLook: {
+      isDragging: false,
+      freeLookActive: false,
+      lastPointerX: 0,
+      lastPointerY: 0,
+      uniCamYaw: 0,
+      uniCamPitch: 0.42,
+      uniCamDistance: 6.2,
+      uniFirstPerson: false,
+      fightLookYaw: 0,
+      fightLookPitch: 0,
+      fightCamDistOffset: 0,
+      realmCamYawOffset: 0,
+      realmCamPitch: 0.42,
+      realmCamDistance: 5.8,
+    },
     imminentParadoxWarning: false,
     vfxPool: null,
     controls: null,
@@ -1981,15 +2033,204 @@ export default function App() {
   );
 
   // ============================================================================
-  // UNIVERSITY OF GREATER ANDROMEDA — 6-YEAR ACADEMIC LIFE SIMULATOR HANDLERS
+  // UNIVERSITY OF GREATER ANDROMEDA — PLAYABLE 5-DAY WEEK & 5-ROOM CAMPUS HANDLERS
   // ============================================================================
-  const advanceAcademicSemester = (col: AcademicColloquiumState) => {
-    if (col.semester === 'Fall') {
-      col.semester = 'Spring';
-    } else {
-      col.semester = 'Fall';
-      col.academicYear = Math.min(6, col.academicYear + 1);
+  const DAY_NAMES_LIST = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+  const formatSimClock = (minuteOfDay: number): string => {
+    const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.floor(minuteOfDay)));
+    const hh = Math.floor(clamped / 60);
+    const mm = clamped % 60;
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  };
+
+  const recordPersonalTransaction = (
+    col: AcademicColloquiumState,
+    description: string,
+    category:
+      | 'OPENING'
+      | 'SALARY'
+      | 'MORTGAGE'
+      | 'CAFETERIA'
+      | 'DRY_CLEANING'
+      | 'CLOTHING'
+      | 'GRANT_AWARD'
+      | 'LAB_EQUIPMENT'
+      | 'PUBLICATION_FEE',
+    amount: number
+  ) => {
+    col.checkingBalance = Number((col.checkingBalance + amount).toFixed(2));
+    col.personalLedger = [
+      ...col.personalLedger,
+      {
+        id: `pled_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        account: 'PERSONAL',
+        dayLabel: DAY_NAMES_LIST[col.dayIndex % 5] || 'Tuesday',
+        timeLabel: formatSimClock(col.timeOfDayMinutes),
+        description,
+        category,
+        amount,
+        runningBalance: col.checkingBalance,
+      },
+    ];
+  };
+
+  const recordDepartmentalTransaction = (
+    col: AcademicColloquiumState,
+    description: string,
+    category:
+      | 'OPENING'
+      | 'SALARY'
+      | 'MORTGAGE'
+      | 'CAFETERIA'
+      | 'DRY_CLEANING'
+      | 'CLOTHING'
+      | 'GRANT_AWARD'
+      | 'LAB_EQUIPMENT'
+      | 'PUBLICATION_FEE',
+    amount: number
+  ) => {
+    col.departmentalBudget = Number(Math.max(0, col.departmentalBudget + amount).toFixed(2));
+    col.departmentalLedger = [
+      ...col.departmentalLedger,
+      {
+        id: `dled_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        account: 'DEPARTMENTAL',
+        dayLabel: DAY_NAMES_LIST[col.dayIndex % 5] || 'Tuesday',
+        timeLabel: formatSimClock(col.timeOfDayMinutes),
+        description,
+        category,
+        amount,
+        runningBalance: col.departmentalBudget,
+      },
+    ];
+  };
+
+  const recomputeProofIntegrity = (col: AcademicColloquiumState) => {
+    let score = 18;
+    if (col.proofWorkbench.boundaryGaugeVerified) score += 32;
+    if (col.proofWorkbench.jacobianSignFlipped) score += 28;
+    if (col.proofWorkbench.chiralLabDataAttached) score += 22;
+    col.centralLemmaIntegrity = Math.min(100, score);
+    col.rigorScore = col.centralLemmaIntegrity;
+  };
+
+  const syncAppointmentsWithClock = (
+    col: AcademicColloquiumState,
+    advancingToNewDay: boolean
+  ) => {
+    for (const apt of col.appointments) {
+      if (apt.dayIndex !== col.dayIndex) continue;
+
+      if (
+        (apt.status === 'UPCOMING' || apt.status === 'IN_WINDOW') &&
+        (advancingToNewDay || col.timeOfDayMinutes > apt.endMinutes)
+      ) {
+        apt.status = 'MISSED';
+        apt.outcomeNote = `Missed scheduled window (${formatSimClock(apt.startMinutes)}–${formatSimClock(apt.endMinutes)}).`;
+        col.colloquiumLog = [
+          `⚠️ MISSED APPOINTMENT: "${apt.title}" (${formatSimClock(apt.startMinutes)}). Your colleagues will remember this tomorrow.`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+
+        if (apt.id === 'appt_tue_toby') {
+          col.tobyRelationship = Math.max(10, col.tobyRelationship - 26);
+          col.npcMemoryNotes = [
+            `Toby is irritated that you missed your 10:00 AM Room 4B check-in on Tuesday (Trust: ${col.tobyRelationship}/100).`,
+            ...col.npcMemoryNotes.slice(0, 5),
+          ];
+          const tobyMissedEmail = {
+            id: `email_toby_missed_${Date.now()}`,
+            sender: 'Toby (Your Graduate Student)',
+            senderRole: '7th-Year PhD Candidate · Office 4B-Annex',
+            subject: 'You missed our 10:00 AM Lemma 3.2 check-in...',
+            dateLabel: `${DAY_NAMES_LIST[col.dayIndex % 5]} ${formatSimClock(Math.max(col.timeOfDayMinutes, apt.endMinutes + 5))}`,
+            category: 'GRAD_STUDENT' as const,
+            unread: true,
+            body: `Dr. Pawn,\n\nI waited by the chalkboard in Room 4B from 10:00 to 10:45 with the off-diagonal Jacobian pages, and you never showed up.\n\nLook, I know you're stressed about tenure and the 14:30 review, but Lemma 3.2 still has a −κ sign error. Come to the chalkboard in Room 4B when you actually have time.\n\n— Toby`,
+          };
+          col.inbox = [tobyMissedEmail, ...col.inbox];
+        } else if (apt.id === 'appt_tue_bishop') {
+          col.bishopRelationship = Math.max(5, col.bishopRelationship - 28);
+          col.chairRelationship = Math.max(5, col.chairRelationship - 22);
+          col.adminProductivityScore = Math.max(
+            15,
+            Number((col.adminProductivityScore - 8.5).toFixed(1))
+          );
+          col.npcMemoryNotes = [
+            `Prof. Bishop & Chairwoman Queen are furious that you missed Tuesday's 14:30 Review in Seminar Room 204.`,
+            ...col.npcMemoryNotes.slice(0, 5),
+          ];
+          const bishopMissedEmail = {
+            id: `email_bishop_missed_${Date.now()}`,
+            sender: 'Dr. Queen & Prof. Bishop',
+            senderRole: 'Seminar Room 204 · Mandatory Review Committee',
+            subject: 'UNEXCUSED ABSENCE: 14:30 Departmental & Chiral Lab Review',
+            dateLabel: `Tuesday 15:20 · Formal Reprimand`,
+            category: 'CHAIR' as const,
+            unread: true,
+            body: `Dr. Pawn,\n\nYou failed to appear in Seminar Room 204 between 14:30 and 15:15 for your mandatory Departmental & Chiral Lab Access Review.\n\nProfessor Bishop and I waited forty-five minutes. Your Chair Relationship has dropped to ${col.chairRelationship}/100, and Professor Bishop has withheld daytime Chiral Lab access. You will have to corner him in person with an approved grant budget if you want even a 2:00 AM slot.\n\n— Chairwoman Dr. Queen`,
+          };
+          col.inbox = [bishopMissedEmail, ...col.inbox];
+        } else if (apt.id === 'appt_wed_seminar') {
+          col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 18);
+          col.npcMemoryNotes = [
+            `Prof. Rook boasted to the entire department when you missed Wednesday's 14:00 Colloquium.`,
+            ...col.npcMemoryNotes.slice(0, 5),
+          ];
+        }
+      } else if (
+        apt.status === 'UPCOMING' &&
+        col.timeOfDayMinutes >= apt.startMinutes &&
+        col.timeOfDayMinutes <= apt.endMinutes
+      ) {
+        apt.status = 'IN_WINDOW';
+      }
     }
+  };
+
+  const advanceSimMinutes = (
+    col: AcademicColloquiumState,
+    mins: number,
+    reason?: string
+  ) => {
+    col.timeOfDayMinutes += mins;
+    syncAppointmentsWithClock(col, false);
+    if (reason) {
+      col.colloquiumLog = [
+        `⏱️ [${formatSimClock(col.timeOfDayMinutes)}] ${reason} (+${mins}m)`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+    }
+  };
+
+  const triggerCafeteriaCollisionSpill = (col: AcademicColloquiumState) => {
+    const sim = simRef.current;
+    col.carryingHotCoffee = false;
+    col.shirtState = 'COFFEE_STAINED';
+    col.coffeeSpillIncidentTriggered = true;
+    col.cafeteriaQueuePosition = null;
+    col.cafeteriaServiceProgress = 0;
+    sim.cameraShake = 0.28;
+    soundEngine.playBrokenCoffeeMachineSputter();
+
+    if (sim.universityOfficeRig) {
+      triggerCoffeeSpill3DSplash(
+        sim.universityOfficeRig,
+        sim.uniPlayer.worldX,
+        sim.uniPlayer.worldZ
+      );
+    }
+
+    col.npcMemoryNotes = [
+      `A distracted undergrad collided with you outside the Cafeteria! Your only clean white dress shirt is drenched in dark espresso before your 14:30 review.`,
+      ...col.npcMemoryNotes.slice(0, 5),
+    ];
+    col.colloquiumLog = [
+      `💥 [${formatSimClock(col.timeOfDayMinutes)}] CAFETERIA COLLISION! As you stepped away from the register carrying your $4.50 coffee, a distracted undergraduate carrying a stack of textbooks slammed straight into your chest!`,
+      `👔 Scalding dark espresso is now splattered across your only clean Oxford dress shirt — and your mandatory review with Prof. Bishop & Chairwoman Queen is at 14:30 in Seminar Room 204!`,
+      ...col.colloquiumLog.slice(0, 9),
+    ];
   };
 
   const handleEnterUniversityOffice = useCallback(() => {
@@ -1998,9 +2239,61 @@ export default function App() {
     if (!col || !col.active) return;
 
     col.stage = 'UNIVERSITY_SIMULATOR';
+    sim.uniPlayer.worldX = -10.0;
+    sim.uniPlayer.worldZ = -3.2;
+    sim.uniPlayer.yaw = 0;
+    sim.uniPlayer.targetX = null;
+    sim.uniPlayer.targetZ = null;
     soundEngine.playOfficeKeyboardClack();
     setAcademicColloquium({ ...col });
   }, []);
+
+  const handleWalkToRoom = useCallback((roomId: UniversityRoomId) => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    const dest = UNIVERSITY_ROOM_CENTERS[roomId];
+    // If leaving Cafeteria while carrying hot coffee for the first time, the distracted student in the doorway collides with Dr. Pawn!
+    if (
+      col.currentRoom === 'CAFETERIA' &&
+      roomId !== 'CAFETERIA' &&
+      col.carryingHotCoffee &&
+      !col.coffeeSpillIncidentTriggered
+    ) {
+      sim.uniPlayer.worldX = 9.2;
+      sim.uniPlayer.worldZ = -1.5;
+      advanceSimMinutes(col, 4);
+      triggerCafeteriaCollisionSpill(col);
+      col.currentRoom = roomId;
+      sim.uniPlayer.targetX = dest.x;
+      sim.uniPlayer.targetZ = dest.z;
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    col.cafeteriaQueuePosition = null;
+    col.cafeteriaServiceProgress = 0;
+    col.currentRoom = roomId;
+    sim.uniPlayer.targetX = dest.x;
+    sim.uniPlayer.targetZ = dest.z;
+    advanceSimMinutes(col, 4, `Walked to ${dest.label}`);
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleSetDrawerTab = useCallback(
+    (tab: 'NONE' | 'CHALKBOARD_PROOF' | 'FINANCE_LEDGER' | 'PINE_MAIL' | 'CALENDAR_NPCS') => {
+      const sim = simRef.current;
+      const col = sim.academicColloquium;
+      if (!col || !col.active) return;
+
+      col.activeDrawerTab = tab;
+      soundEngine.playOfficeKeyboardClack();
+      setAcademicColloquium({ ...col });
+    },
+    []
+  );
 
   const handleSelectAcademicEmail = useCallback((emailId: string) => {
     const sim = simRef.current;
@@ -2021,100 +2314,576 @@ export default function App() {
     if (!col || !col.active) return;
 
     col.coffeeMachineKickCount += 1;
+    advanceSimMinutes(col, 5);
     sim.cameraShake = 0.14;
     soundEngine.playBrokenCoffeeMachineSputter();
 
     const quips = [
-      `☕ You kicked the 1987 Bunn-O-Matic coffee machine. It wheezed, dispensed 4mL of lukewarm rust, and went dark.`,
-      `☕ Kick #${col.coffeeMachineKickCount}: The "OUT OF ORDER SINCE NOV 1987" sticky note fluttered to the linoleum. Still no coffee.`,
-      `☕ Kick #${col.coffeeMachineKickCount}: A relay clicked inside the 1987 chassis. Somewhere down the hall, Prof. Rook laughed in Tenured.`,
+      `☕ [${formatSimClock(col.timeOfDayMinutes)}] Kicked the 1987 Bunn-O-Matic in Room 4B. It wheezed, dispensed 4mL of lukewarm rust, and went dark. Walk to the Lagrange Point Cafeteria down the corridor.`,
+      `☕ [${formatSimClock(col.timeOfDayMinutes)}] Kick #${col.coffeeMachineKickCount}: The "OUT OF ORDER SINCE NOV 1987" note fluttered to the linoleum. Still no coffee.`,
+      `☕ [${formatSimClock(col.timeOfDayMinutes)}] Kick #${col.coffeeMachineKickCount}: A relay clicked inside the 1987 chassis. Down the hall, Tenured Prof. Rook sipped a fresh cafeteria espresso.`,
     ];
     col.colloquiumLog = [
       quips[(col.coffeeMachineKickCount - 1) % quips.length],
-      ...col.colloquiumLog.slice(0, 7),
+      ...col.colloquiumLog.slice(0, 9),
     ];
     setAcademicColloquium({ ...col });
   }, []);
 
-  const handleWorkOnCentralLemma = useCallback(() => {
+  const handleJoinOrLeaveCafeteriaQueue = useCallback(() => {
     const sim = simRef.current;
     const col = sim.academicColloquium;
     if (!col || !col.active) return;
 
-    advanceAcademicSemester(col);
-    const boost = col.bishopLabAccessGranted ? 38 : 28;
-    col.centralLemmaIntegrity = Math.min(100, col.centralLemmaIntegrity + boost);
-    col.rigorScore = col.centralLemmaIntegrity;
-    col.checkingBalance = Math.max(120, col.checkingBalance - 180);
-    col.adminProductivityScore = Math.min(
-      95,
-      Number((col.adminProductivityScore + 2.4).toFixed(1))
+    if (col.cafeteriaQueuePosition !== null) {
+      col.cafeteriaQueuePosition = null;
+      col.cafeteriaServiceProgress = 0;
+      col.colloquiumLog = [
+        `🚶 [${formatSimClock(col.timeOfDayMinutes)}] Stepped out of the Lagrange Point Cafeteria coffee queue.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+    } else {
+      col.currentRoom = 'CAFETERIA';
+      col.cafeteriaQueuePosition = 3;
+      col.cafeteriaServiceProgress = 0;
+      sim.uniPlayer.worldX = 8.0;
+      sim.uniPlayer.worldZ = -4.3;
+      sim.uniPlayer.targetX = null;
+      sim.uniPlayer.targetZ = null;
+      col.colloquiumLog = [
+        `☕ [${formatSimClock(col.timeOfDayMinutes)}] Joined the physical coffee queue at Lagrange Point Cafeteria behind 3 patrons. Wait in line for the cashier, or step out anytime.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+    }
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleDropOffShirtAtCleaner = useCallback(
+    (service: 'STANDARD_NEXT_DAY' | 'EXPRESS_75_MIN') => {
+      const sim = simRef.current;
+      const col = sim.academicColloquium;
+      if (!col || !col.active || col.shirtState !== 'COFFEE_STAINED') return;
+
+      const mins = col.timeOfDayMinutes;
+      const cleanerIsOpen = mins >= 510 && mins <= 1050;
+      if (!cleanerIsOpen) {
+        col.colloquiumLog = [
+          `🔒 [${formatSimClock(mins)}] Perseus Dry Cleaners is CLOSED (Open 08:30–17:30). The steel shutter is rolled down.`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+        soundEngine.playRejectionStamp();
+        setAcademicColloquium({ ...col });
+        return;
+      }
+
+      const fee = service === 'EXPRESS_75_MIN' ? 28.5 : 14.0;
+      if (col.checkingBalance < fee) {
+        col.colloquiumLog = [
+          `💳 [${formatSimClock(mins)}] Insufficient funds! Clerk Mr. Chen refuses to process ${service === 'EXPRESS_75_MIN' ? 'Express ($28.50)' : 'Standard ($14.00)'} cleaning because your checking account only has $${col.checkingBalance.toFixed(2)}.`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+        soundEngine.playRejectionStamp();
+        setAcademicColloquium({ ...col });
+        return;
+      }
+
+      advanceSimMinutes(col, 6);
+      recordPersonalTransaction(
+        col,
+        `Perseus Dry Cleaners — ${service === 'EXPRESS_75_MIN' ? '1-Hr Express Stain Removal' : 'Standard Next-Day Press'} (#PDC-108)`,
+        'DRY_CLEANING',
+        -fee
+      );
+
+      const readyDayIndex =
+        service === 'EXPRESS_75_MIN' ? col.dayIndex : Math.min(4, col.dayIndex + 1);
+      const readyMinutes =
+        service === 'EXPRESS_75_MIN' ? col.timeOfDayMinutes + 75 : 9 * 60;
+
+      col.shirtState = 'AT_CLEANERS_WEARING_SWEATER';
+      col.activeDryCleaningTicket = {
+        ticketNumber: 'PDC-108',
+        serviceName: service,
+        feePaid: fee,
+        droppedOffDayIndex: col.dayIndex,
+        droppedOffMinutes: col.timeOfDayMinutes,
+        readyDayIndex,
+        readyMinutes,
+        collected: false,
+      };
+
+      col.colloquiumLog = [
+        `🧥 [${formatSimClock(col.timeOfDayMinutes)}] Handed over your coffee-stained Oxford shirt at Perseus Dry Cleaners (-$${fee.toFixed(2)}). Ticket #PDC-108 ready ${DAY_NAMES_LIST[readyDayIndex]} at ${formatSimClock(readyMinutes)}. You are now wearing your faded UGA backup sweatshirt.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playOfficeKeyboardClack();
+      setAcademicColloquium({ ...col });
+    },
+    []
+  );
+
+  const handlePickUpCleanedShirt = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active || !col.activeDryCleaningTicket || col.activeDryCleaningTicket.collected)
+      return;
+
+    const mins = col.timeOfDayMinutes;
+    const cleanerIsOpen = mins >= 510 && mins <= 1050;
+    if (!cleanerIsOpen) {
+      col.colloquiumLog = [
+        `🔒 [${formatSimClock(mins)}] Perseus Dry Cleaners is CLOSED (Hours: 08:30–17:30)! You cannot collect Ticket #${col.activeDryCleaningTicket.ticketNumber} until tomorrow morning.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    const t = col.activeDryCleaningTicket;
+    const isReady =
+      col.dayIndex > t.readyDayIndex ||
+      (col.dayIndex === t.readyDayIndex && col.timeOfDayMinutes >= t.readyMinutes);
+
+    if (!isReady) {
+      col.colloquiumLog = [
+        `⏳ [${formatSimClock(mins)}] Mr. Chen points to the steam press: "Ticket #${t.ticketNumber} won't be ready until ${DAY_NAMES_LIST[t.readyDayIndex]} at ${formatSimClock(t.readyMinutes)}, Dr. Pawn!"`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playBrokenCoffeeMachineSputter();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    advanceSimMinutes(col, 5);
+    t.collected = true;
+    col.shirtState = 'CLEAN';
+    col.colloquiumLog = [
+      `✨ [${formatSimClock(col.timeOfDayMinutes)}] Collected your freshly pressed, spotless Oxford dress shirt (Ticket #${t.ticketNumber}) from Perseus Dry Cleaners!`,
+      ...col.colloquiumLog.slice(0, 9),
+    ];
+    soundEngine.playSynodResonance(false);
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleBuyNewShirtAtHaberdashery = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    const mins = col.timeOfDayMinutes;
+    if (mins < 510 || mins > 1050) {
+      col.colloquiumLog = [
+        `🔒 [${formatSimClock(mins)}] The Haberdashery counter is CLOSED after 17:30.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    if (col.checkingBalance < 68.0) {
+      col.colloquiumLog = [
+        `💳 [${formatSimClock(mins)}] Cannot afford the $68.00 Haberdashery Oxford shirt! You only have $${col.checkingBalance.toFixed(2)} in personal checking.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    advanceSimMinutes(col, 10);
+    recordPersonalTransaction(
+      col,
+      'Perseus Haberdashery — Brand-New Crisp Oxford Dress Shirt',
+      'CLOTHING',
+      -68.0
     );
+    col.shirtState = 'CLEAN';
+    col.colloquiumLog = [
+      `👔 [${formatSimClock(col.timeOfDayMinutes)}] Purchased a brand-new $68.00 Oxford dress shirt from the Haberdashery counter and put it on immediately.`,
+      ...col.colloquiumLog.slice(0, 9),
+    ];
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleCommuteHomeForSpareShirt = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active || !col.hasSpareCleanShirtAtHome) return;
+
+    if (col.checkingBalance < 5.5) {
+      col.colloquiumLog = [
+        `🚌 [${formatSimClock(col.timeOfDayMinutes)}] You don't even have $5.50 in checking for round-trip Crosstown Bus fare!`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    recordPersonalTransaction(
+      col,
+      'Andromeda Crosstown Transit — Round-Trip Bus Fare to Apartment',
+      'CAFETERIA',
+      -5.5
+    );
+    advanceSimMinutes(col, 95, 'Took 95-minute round-trip bus commute home to change into spare shirt');
+    col.hasSpareCleanShirtAtHome = false;
+    col.shirtState = 'CLEAN';
+    col.energyLevel = Math.max(15, col.energyLevel - 16);
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleAttendScheduledMeetingInRoom = useCallback((appointmentId: string) => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    const apt = col.appointments.find((a) => a.id === appointmentId);
+    if (!apt) return;
+
+    if (col.currentRoom !== apt.locationRoom) {
+      const dest = UNIVERSITY_ROOM_CENTERS[apt.locationRoom];
+      col.currentRoom = apt.locationRoom;
+      sim.uniPlayer.worldX = dest.x;
+      sim.uniPlayer.worldZ = dest.z;
+    }
+
+    col.timeOfDayMinutes = Math.max(col.timeOfDayMinutes, apt.startMinutes) + 30;
+    const stained = col.shirtState === 'COFFEE_STAINED';
+    const sweater = col.shirtState === 'AT_CLEANERS_WEARING_SWEATER';
+
+    apt.status = stained
+      ? 'ATTENDED_STAINED'
+      : sweater
+      ? 'ATTENDED_SWEATER'
+      : 'ATTENDED_CLEAN';
+
+    if (apt.id === 'appt_tue_toby') {
+      col.tobyRelationship = Math.min(100, col.tobyRelationship + 16);
+      apt.outcomeNote = stained
+        ? 'Toby handed you paper napkins for your coffee-stained shirt and pointed out the −κ Jacobian sign error on the chalkboard.'
+        : 'Reviewed the off-diagonal Jacobian sign error with Toby at the Room 4B chalkboard (+16 Toby Trust).';
+      col.npcMemoryNotes = [
+        `Met with Toby on Tuesday morning; he showed you how flipping −κ to +κ fixes the Jacobian determinant.`,
+        ...col.npcMemoryNotes.slice(0, 5),
+      ];
+      col.colloquiumLog = [
+        `🎓 [${formatSimClock(col.timeOfDayMinutes)}] Attended 10:00 Consultation with Toby: ${apt.outcomeNote}`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+    } else if (apt.id === 'appt_tue_bishop') {
+      if (stained) {
+        col.bishopRelationship = Math.max(5, col.bishopRelationship - 20);
+        col.chairRelationship = Math.max(5, col.chairRelationship - 16);
+        apt.outcomeNote =
+          'Arrived wearing a massive brown espresso stain! Prof. Bishop scoffed at your "sloppy preparation" and refused daytime Lab access (-20 Bishop, -16 Chair).';
+        col.npcMemoryNotes = [
+          `Prof. Bishop & Chairwoman Queen were appalled that you wore a coffee-stained shirt to the 14:30 review.`,
+          ...col.npcMemoryNotes.slice(0, 5),
+        ];
+        const stainEmail = {
+          id: `email_bishop_stain_${Date.now()}`,
+          sender: 'Prof. Bishop (Quantum Lab Director)',
+          senderRole: 'Chiral Interferometry Committee · Seminar Room 204',
+          subject: 'RE: Your Coffee-Stained Appearance at the 14:30 Review',
+          dateLabel: `Tuesday ${formatSimClock(col.timeOfDayMinutes)}`,
+          category: 'LAB_POLITICS' as const,
+          unread: true,
+          body: `Dr. Pawn,\n\nYou walked into Seminar Room 204 at 14:30 with dark cafeteria coffee soaked across your dress shirt and asked me to entrust a $4.2M Chiral Interferometer to your group.\n\nIf you cannot keep coffee off your own collar, I certainly cannot risk you near our diagonal mirrors without an approved cryogenic helium budget ($950). Clean yourself up and submit a proper Grant Budget first.\n\n— Prof. Bishop`,
+        };
+        col.inbox = [stainEmail, ...col.inbox];
+        col.selectedEmailId = stainEmail.id;
+      } else if (sweater) {
+        col.bishopRelationship = Math.min(100, col.bishopRelationship + 6);
+        col.chairRelationship = Math.min(100, col.chairRelationship + 4);
+        col.bishopLabAccessGranted = true;
+        col.bishopSuspectedWithholding = false;
+        apt.outcomeNote =
+          'Attended in your backup UGA sweatshirt while your shirt was at Perseus Dry Cleaners. Chairwoman Queen raised an eyebrow, but Prof. Bishop respected your punctuality and granted a 2:00 AM Lab slot!';
+      } else {
+        col.bishopRelationship = Math.min(100, col.bishopRelationship + 22);
+        col.chairRelationship = Math.min(100, col.chairRelationship + 16);
+        col.bishopLabAccessGranted = true;
+        col.bishopSuspectedWithholding = false;
+        apt.outcomeNote =
+          'Arrived in a spotless Oxford dress shirt! Prof. Bishop and Chairwoman Queen approved your 2:00 AM Tuesday Chiral Interferometer slot (+22 Bishop, +16 Chair).';
+      }
+      col.colloquiumLog = [
+        `📋 [${formatSimClock(col.timeOfDayMinutes)}] 14:30 Departmental Review Outcome: ${apt.outcomeNote}`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+    } else if (apt.id === 'appt_wed_seminar') {
+      col.rookIdenticalPapersCount += 1;
+      col.rookHIndex += 2;
+      if (stained) {
+        col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 22);
+        apt.outcomeNote =
+          'Debated Prof. Rook while wearing a coffee-stained shirt; Rook mocked your attire from the podium.';
+      } else {
+        col.hIndex += 1;
+        col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 15);
+        apt.outcomeNote =
+          'Publicly dismantled Prof. Rook’s 4th identical rectilinear paper in Seminar Room 204 (+1 h-index)!';
+      }
+      col.colloquiumLog = [
+        `🏛️ [${formatSimClock(col.timeOfDayMinutes)}] Wednesday Faculty Colloquium: ${apt.outcomeNote}`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+    }
+
+    syncAppointmentsWithClock(col, false);
+    soundEngine.playSynodResonance(false);
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleTalkToNpcInRoom = useCallback(
+    (npcId: 'TOBY' | 'BISHOP' | 'QUEEN' | 'ROOK') => {
+      const sim = simRef.current;
+      const col = sim.academicColloquium;
+      if (!col || !col.active) return;
+
+      advanceSimMinutes(col, 10);
+      const stained = col.shirtState === 'COFFEE_STAINED';
+
+      if (npcId === 'TOBY') {
+        col.tobyRelationship = Math.min(100, col.tobyRelationship + 6);
+        col.colloquiumLog = [
+          stained
+            ? `💬 [${formatSimClock(col.timeOfDayMinutes)}] Toby winced at your coffee-stained shirt: "Dr. Pawn, did you get run over in the cafeteria?! Open the Chalkboard Workbench so we can flip the −κ Jacobian sign and select the Chiral Anti-Periodic gauge!"`
+            : `💬 [${formatSimClock(col.timeOfDayMinutes)}] Toby points to the chalkboard: "Once we select the Chiral Anti-Periodic gauge ψ(t₀−1) = −γ₅ψ(t₀) and flip −κ to +κ, we just need Prof. Bishop's Chiral Lab data!"`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+      } else if (npcId === 'BISHOP') {
+        if (stained) {
+          col.bishopRelationship = Math.max(5, col.bishopRelationship - 8);
+          col.colloquiumLog = [
+            `💬 [${formatSimClock(col.timeOfDayMinutes)}] Prof. Bishop stepped back in disgust: "Good grief, Pawn, you smell like roasted Arabica. Do not come into Seminar Room 204 at 14:30 wearing that stained shirt!"`,
+            ...col.colloquiumLog.slice(0, 9),
+          ];
+        } else if (!col.bishopLabAccessGranted && col.departmentalBudget >= 950) {
+          col.bishopLabAccessGranted = true;
+          col.bishopSuspectedWithholding = false;
+          col.bishopRelationship = Math.min(100, col.bishopRelationship + 12);
+          col.colloquiumLog = [
+            `💬 [${formatSimClock(col.timeOfDayMinutes)}] Cornered Prof. Bishop in clean attire! Seeing your solvent departmental budget, he authorized the 2:00 AM Chiral Interferometer slot.`,
+            ...col.colloquiumLog.slice(0, 9),
+          ];
+        } else {
+          col.colloquiumLog = [
+            `💬 [${formatSimClock(col.timeOfDayMinutes)}] Prof. Bishop adjusted his burgundy velvet elbow patches: "${col.bishopLabAccessGranted ? 'Your 2:00 AM Chiral Lab slot is active. Run your experiment from the Chalkboard Workbench.' : 'Meet me at 14:30 in Seminar Room 204 in respectable attire, and make sure your Departmental Budget has $950 for liquid helium.'}"`,
+            ...col.colloquiumLog.slice(0, 9),
+          ];
+        }
+      } else if (npcId === 'QUEEN') {
+        if (stained) {
+          col.chairRelationship = Math.max(5, col.chairRelationship - 8);
+          col.colloquiumLog = [
+            `💬 [${formatSimClock(col.timeOfDayMinutes)}] Chairwoman Dr. Queen glared at your chest: "Dr. Pawn, is that espresso on your shirt? Visit Perseus Dry Cleaners before the 14:30 review."`,
+            ...col.colloquiumLog.slice(0, 9),
+          ];
+        } else {
+          col.chairRelationship = Math.min(100, col.chairRelationship + 5);
+          col.colloquiumLog = [
+            `💬 [${formatSimClock(col.timeOfDayMinutes)}] Chairwoman Dr. Queen reviewed her clipboard: "Keep your Faculty Productivity Index above 65 and submit your legitimate Departmental Grant lines in the Ledger."`,
+            ...col.colloquiumLog.slice(0, 9),
+          ];
+        }
+      } else if (npcId === 'ROOK') {
+        col.rookIdenticalPapersCount += 1;
+        col.rookHIndex += 1;
+        col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 12);
+        col.colloquiumLog = [
+          stained
+            ? `💬 [${formatSimClock(col.timeOfDayMinutes)}] Tenured Prof. Rook chuckled over his espresso: "Nice coffee stain, Pawn. By the way, I just rejected a terribly speculative retrocausal paper this morning as Reviewer #2."`
+            : `💬 [${formatSimClock(col.timeOfDayMinutes)}] Tenured Prof. Rook adjusted his gold cufflinks: "My h-index just hit ${col.rookHIndex} after publishing 'On Rectilinear Files IV'. Have you considered citing me in Lemma 3.2?"`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+      }
+
+      soundEngine.playOfficeKeyboardClack();
+      setAcademicColloquium({ ...col });
+    },
+    []
+  );
+
+  // CHALKBOARD PROOF WORKBENCH HANDLERS
+  const handleSelectBoundaryGauge = useCallback(
+    (gauge: 'DIRICHLET_CLAMP' | 'CHIRAL_ANTIPERIODIC' | 'TRUNCATED_PERTURBATIVE') => {
+      const sim = simRef.current;
+      const col = sim.academicColloquium;
+      if (!col || !col.active) return;
+
+      advanceSimMinutes(col, 25);
+      col.proofWorkbench.boundaryGaugeChoice = gauge;
+      if (gauge === 'CHIRAL_ANTIPERIODIC') {
+        col.proofWorkbench.boundaryGaugeVerified = true;
+        col.proofWorkbench.lastVerificationMessage =
+          '✓ Chiral Anti-Periodic Gauge ψ(t₀−1) = −γ₅ψ(t₀) verified! The boundary commutator surface term vanishes identically.';
+        soundEngine.playSynodResonance(false);
+      } else if (gauge === 'DIRICHLET_CLAMP') {
+        col.proofWorkbench.boundaryGaugeVerified = false;
+        col.proofWorkbench.lastVerificationMessage =
+          '✗ Hard Dirichlet Clamp ψ(t₀−1) = 0 violates causal unitarity and zeroes out the retrocausal propagator.';
+        soundEngine.playBrokenCoffeeMachineSputter();
+      } else {
+        col.proofWorkbench.boundaryGaugeVerified = false;
+        col.proofWorkbench.lastVerificationMessage =
+          '✗ Truncated O(ε²) expansion still diverges at the t₀ − 1 monarch worldline pole.';
+        soundEngine.playBrokenCoffeeMachineSputter();
+      }
+      recomputeProofIntegrity(col);
+      setAcademicColloquium({ ...col });
+    },
+    []
+  );
+
+  const handleToggleJacobianSign = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    advanceSimMinutes(col, 20);
+    col.proofWorkbench.jacobianSignFlipped = !col.proofWorkbench.jacobianSignFlipped;
+    col.proofWorkbench.lastVerificationMessage = col.proofWorkbench.jacobianSignFlipped
+      ? '✓ Flipped off-diagonal Jacobian sign from −κ to +κ! Determinant is now λ² + κ² > 0 (strictly positive-definite).'
+      : '✗ Reverted off-diagonal Jacobian sign to −κ (singular at λ = ±κ).';
+    recomputeProofIntegrity(col);
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleRunChiralLabExperiment = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    if (!col.bishopLabAccessGranted) {
+      col.colloquiumLog = [
+        `🔬 [${formatSimClock(col.timeOfDayMinutes)}] Cannot run Chiral Lab verification yet: Prof. Bishop has not granted you access to the Chiral Interferometer! Attend the 14:30 review in Seminar Room 204 or talk to him with a funded budget.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    if (col.departmentalBudget < 950) {
+      col.colloquiumLog = [
+        `🔬 [${formatSimClock(col.timeOfDayMinutes)}] Insufficient Departmental Budget ($${col.departmentalBudget.toFixed(2)}) for the $950 Liquid Helium run! Submit a Departmental Grant in the Finance Ledger first.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    advanceSimMinutes(col, 45);
+    recordDepartmentalTransaction(
+      col,
+      'Chiral Interferometry Facility — 02:00 AM Liquid Helium & Mirror Calibration Run',
+      'LAB_EQUIPMENT',
+      -950
+    );
+    col.proofWorkbench.chiralLabDataAttached = true;
+    col.proofWorkbench.lastVerificationMessage =
+      '✓ 02:00 AM Chiral Interferometer data attached (4.8σ retrocausal phase convergence)!';
+    recomputeProofIntegrity(col);
 
     if (col.centralLemmaIntegrity >= 100 && !col.inbox.some((e) => e.id === 'email_lemma_fixed')) {
       const fixedEmail = {
         id: 'email_lemma_fixed',
         sender: 'Toby (Your Graduate Student)',
         senderRole: '7th-Year PhD Candidate · Office 4B-Annex',
-        subject: 'WE FIXED IT!! Lemma 3.2 Converges!',
-        dateLabel: `Year ${col.academicYear} · ${col.semester} (3:14 AM)`,
+        subject: 'WE FIXED IT!! Central Lemma 3.2 is 100% Airtight!',
+        dateLabel: `${DAY_NAMES_LIST[col.dayIndex % 5]} ${formatSimClock(col.timeOfDayMinutes)}`,
         category: 'GRAD_STUDENT' as const,
         unread: true,
-        body: `Dr. Pawn!\n\nThe extra boundary term in the retrocausal Jacobian canceled the divergence completely! Central Lemma 3.2 is 100% mathematically airtight!\n\n"On the Nonexistence of Monarchs in Retrocausal Systems" is ready for submission to the Journal of Transfinite Causality. Surely Reviewer #2 can't reject a constructive proof with zero free parameters... right?\n\n— Toby`,
+        body: `Dr. Pawn!\n\nWith the Chiral Anti-Periodic gauge ψ(t₀−1) = −γ₅ψ(t₀), the corrected +κ Jacobian determinant, and our 4.8σ Chiral Interferometer data, Central Lemma 3.2 is 100% mathematically airtight!\n\n"On the Nonexistence of Monarchs in Retrocausal Systems" is ready for formal submission to the Journal of Transfinite Causality!\n\n— Toby`,
       };
       col.inbox = [fixedEmail, ...col.inbox];
       col.selectedEmailId = fixedEmail.id;
     }
 
     col.colloquiumLog = [
-      `📐 Year ${col.academicYear} (${col.semester}): Spent the night at the chalkboard with grad student Toby. Central Lemma 3.2 integrity is now ${col.centralLemmaIntegrity}%.`,
-      ...col.colloquiumLog.slice(0, 7),
-    ];
-    soundEngine.playOfficeKeyboardClack();
-    setAcademicColloquium({ ...col });
-  }, []);
-
-  const handleConfrontBishopForLab = useCallback(() => {
-    const sim = simRef.current;
-    const col = sim.academicColloquium;
-    if (!col || !col.active || col.bishopLabAccessGranted) return;
-
-    advanceAcademicSemester(col);
-    col.bishopLabAccessGranted = true;
-    col.bishopSuspectedWithholding = false;
-    col.centralLemmaIntegrity = Math.min(100, Math.max(col.centralLemmaIntegrity + 35, 86));
-    col.rigorScore = col.centralLemmaIntegrity;
-    col.departmentalBudget = Math.max(400, col.departmentalBudget - 950);
-
-    const bishopGrantEmail = {
-      id: `email_bishop_slot_${Date.now()}`,
-      sender: 'Prof. Bishop (Quantum Lab Director)',
-      senderRole: 'Director, Chiral Interferometry Facility',
-      subject: 'FINE: 2:00 AM – 4:00 AM Tuesday Quantum Lab Slot',
-      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
-      category: 'LAB_POLITICS' as const,
-      unread: true,
-      body: `Dr. Pawn,\n\nSince you ambushed me outside the Faculty Parking Structure in the pouring rain, I have authorized your graduate student Toby to use the Chiral Interferometer on alternating Tuesdays between 2:00 AM and 4:00 AM.\n\nWe billed $950 in liquid helium fees to your departmental budget. Do not touch the diagonal mirrors.\n\n— Prof. Bishop`,
-    };
-    col.inbox = [bishopGrantEmail, ...col.inbox];
-    col.selectedEmailId = bishopGrantEmail.id;
-    col.colloquiumLog = [
-      `🔬 Year ${col.academicYear} (${col.semester}): Cornered Prof. Bishop! Secured 2:00 AM Quantum Lab access to verify Lemma 3.2 (${col.centralLemmaIntegrity}%).`,
-      ...col.colloquiumLog.slice(0, 7),
+      `🔬 [${formatSimClock(col.timeOfDayMinutes)}] Ran 02:00 AM Chiral Interferometer experiment (-$950 Dept. Budget). Central Lemma 3.2 Integrity is now ${col.centralLemmaIntegrity}%!`,
+      ...col.colloquiumLog.slice(0, 9),
     ];
     soundEngine.playSynodResonance(false);
     setAcademicColloquium({ ...col });
   }, []);
 
-  const handleApplyForGrantAndPayMortgage = useCallback(() => {
+  const handleToggleRookCitations = useCallback(() => {
     const sim = simRef.current;
     const col = sim.academicColloquium;
     if (!col || !col.active) return;
 
-    advanceAcademicSemester(col);
-    col.departmentalBudget += 3200;
-    col.checkingBalance = Math.max(420, col.checkingBalance + 640);
+    col.proofWorkbench.rookCitationsAttached = !col.proofWorkbench.rookCitationsAttached;
+    col.reviewer2CitationsBribed = col.proofWorkbench.rookCitationsAttached;
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  // PERSONAL & DEPARTMENTAL FINANCIAL LEDGERS + GRANT BUDGET BUILDER
+  const handleToggleGrantLineItem = useCallback((lineId: string) => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.grantBudgetLines = col.grantBudgetLines.map((l) =>
+      l.id === lineId ? { ...l, selected: !l.selected } : l
+    );
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleSubmitGrantBudgetProposal = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active || col.grantSubmittedAndApproved) return;
+
+    const selectedLines = col.grantBudgetLines.filter((l) => l.selected);
+    if (selectedLines.length === 0) {
+      col.colloquiumLog = [
+        `📑 [${formatSimClock(col.timeOfDayMinutes)}] Select at least one budget line item before submitting your Departmental Grant Proposal.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    const illegalItem = selectedLines.find((l) => l.isProhibitedPersonalExpense);
+    if (illegalItem) {
+      col.chairRelationship = Math.max(5, col.chairRelationship - 18);
+      col.adminProductivityScore = Math.max(
+        10,
+        Number((col.adminProductivityScore - 6.0).toFixed(1))
+      );
+      col.colloquiumLog = [
+        `🚨 [${formatSimClock(col.timeOfDayMinutes)}] GRANT REJECTED BY COMPLIANCE AUDIT! You attempted to bill "${illegalItem.label}" ($${illegalItem.directCost}) to a restricted Departmental Research Grant! Chairwoman Queen docked your relationship (-18). Uncheck prohibited personal items and resubmit.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    advanceSimMinutes(col, 30);
+    const totalDirect = selectedLines.reduce((acc, l) => acc + l.directCost, 0);
+    col.grantSubmittedAndApproved = true;
+    recordDepartmentalTransaction(
+      col,
+      `UGA Supplemental Grant Award (Direct Allocation after 58.5% University Overhead)`,
+      'GRANT_AWARD',
+      totalDirect
+    );
     col.chairRelationship = Math.min(100, col.chairRelationship + 12);
+    col.tobyRelationship = Math.min(100, col.tobyRelationship + 15);
     col.adminProductivityScore = Math.min(
       99,
       Number((col.adminProductivityScore + 6.5).toFixed(1))
@@ -2123,50 +2892,117 @@ export default function App() {
     const grantEmail = {
       id: `email_grant_${Date.now()}`,
       sender: 'Dr. Queen (Department Chair)',
-      senderRole: 'Office of Faculty Productivity & Indirect Overhead',
-      subject: 'Seed Grant Approved (58.5% Indirect Overhead Deducted)',
-      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
+      senderRole: 'Office of Sponsored Research & Indirect Overhead',
+      subject: `Supplemental Grant Approved: +$${totalDirect.toLocaleString()} Credited to Dept. Acct`,
+      dateLabel: `${DAY_NAMES_LIST[col.dayIndex % 5]} ${formatSimClock(col.timeOfDayMinutes)}`,
       category: 'CHAIR' as const,
       unread: true,
-      body: `Dr. Pawn,\n\nYour modest seed grant application was approved. After the University of Greater Andromeda deducted 58.5% for "Administrative Excellence & Campus Beautification," $3,200 has been deposited into your departmental budget, and your summer ninths covered your $2,140/mo mortgage at 412 Euclid Terrace.\n\nYour Chair Relationship rose to ${col.chairRelationship}/100. Now please get that paper published.\n\n— Chairwoman Queen`,
+      body: `Dr. Pawn,\n\nYour compliant Departmental Grant budget ($${totalDirect.toLocaleString()} direct research costs; 58.5% indirect overhead retained by the University) has been approved.\n\nYour Departmental Budget is now $${col.departmentalBudget.toFixed(2)}, which is sufficient to cover Professor Bishop's $950 Chiral Lab liquid helium fee and Toby's graduate stipend.\n\n— Chairwoman Dr. Queen`,
     };
     col.inbox = [grantEmail, ...col.inbox];
     col.selectedEmailId = grantEmail.id;
     col.colloquiumLog = [
-      `💵 Year ${col.academicYear} (${col.semester}): Paid the $2,140/mo mortgage and secured $3,200 in grant funding (after 58.5% university overhead).`,
-      ...col.colloquiumLog.slice(0, 7),
+      `💵 [${formatSimClock(col.timeOfDayMinutes)}] Departmental Grant Approved! +$${totalDirect.toFixed(2)} credited to Departmental Account (New Balance: $${col.departmentalBudget.toFixed(2)}).`,
+      ...col.colloquiumLog.slice(0, 9),
+    ];
+    soundEngine.playSynodResonance(false);
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handlePayMonthlyMortgage = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active || col.mortgagePaidThisWeek) return;
+
+    if (col.checkingBalance < col.monthlyMortgage) {
+      col.colloquiumLog = [
+        `🏦 [${formatSimClock(col.timeOfDayMinutes)}] Cannot pay $${col.monthlyMortgage.toFixed(2)} mortgage! Your personal checking balance is only $${col.checkingBalance.toFixed(2)}.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    advanceSimMinutes(col, 10);
+    recordPersonalTransaction(
+      col,
+      'Andromeda S&L — Monthly Faculty Condo Mortgage (#884-B)',
+      'MORTGAGE',
+      -col.monthlyMortgage
+    );
+    col.mortgagePaidThisWeek = true;
+    col.colloquiumLog = [
+      `🏠 [${formatSimClock(col.timeOfDayMinutes)}] Paid $${col.monthlyMortgage.toFixed(2)} monthly mortgage from Personal Checking. Remaining liquid cash: $${col.checkingBalance.toFixed(2)}!`,
+      ...col.colloquiumLog.slice(0, 9),
     ];
     soundEngine.playOfficeKeyboardClack();
     setAcademicColloquium({ ...col });
   }, []);
 
-  const handleAttendConferenceAndDebateRook = useCallback(() => {
+  const handleAttemptIllegalDepartmentalReimbursement = useCallback(() => {
     const sim = simRef.current;
     const col = sim.academicColloquium;
     if (!col || !col.active) return;
 
-    advanceAcademicSemester(col);
-    col.hIndex += 1;
-    col.rookHIndex += 3;
-    col.rookIdenticalPapersCount += 1;
-    col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 22);
-    col.departmentalBudget = Math.max(0, col.departmentalBudget - 600);
-
-    const confEmail = {
-      id: `email_conf_${Date.now()}`,
-      sender: 'Annual Symposium on Transfinite Causality',
-      senderRole: 'Conference Proceedings & Rivalry Update',
-      subject: `Prof. Rook Presents Identical Paper #${col.rookIdenticalPapersCount}; Reviewer #2 Feud Escalates`,
-      dateLabel: `Year ${col.academicYear} · ${col.semester}`,
-      category: 'REVIEWER_2' as const,
-      unread: true,
-      body: `Conference Recap:\n\n1. Your poster on "On the Nonexistence of Monarchs in Retrocausal Systems" earned 18 new pre-print citations (your h-index is now ${col.hIndex}).\n2. Newly tenured Professor Rook gave a keynote presenting literally the exact same rectilinear file paper for the ${col.rookIdenticalPapersCount}th time (his h-index is now ${col.rookHIndex}).\n3. During the Q&A, an anonymous voice from the back row (almost certainly Reviewer #2) shouted that retrocausal monarchs are "axiomatic and untouchable."`,
-    };
-    col.inbox = [confEmail, ...col.inbox];
-    col.selectedEmailId = confEmail.id;
+    col.chairRelationship = Math.max(5, col.chairRelationship - 14);
     col.colloquiumLog = [
-      `🎓 Year ${col.academicYear} (${col.semester}): Presented at conference (h-index → ${col.hIndex}). Prof. Rook published the same paper a ${col.rookIdenticalPapersCount}th time!`,
-      ...col.colloquiumLog.slice(0, 7),
+      `🚨 [${formatSimClock(col.timeOfDayMinutes)}] COMPLIANCE BLOCK: Departmental Grant Funds (#UGA-MATH-4B) cannot be transferred to pay your personal mortgage or dry-cleaning bills (-14 Chair Relationship)!`,
+      ...col.colloquiumLog.slice(0, 9),
+    ];
+    soundEngine.playRejectionStamp();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleAdvanceTimeMinutes = useCallback((mins: number, reason: string) => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    advanceSimMinutes(col, mins, reason);
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleSleepUntilNextMorning = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    syncAppointmentsWithClock(col, true);
+
+    if (col.dayIndex < 4) {
+      col.dayIndex += 1;
+    } else {
+      col.dayIndex = 0;
+      if (col.semester === 'Fall') {
+        col.semester = 'Spring';
+      } else {
+        col.semester = 'Fall';
+        col.academicYear = Math.min(6, col.academicYear + 1);
+      }
+      recordPersonalTransaction(
+        col,
+        'University of Greater Andromeda — Bi-Weekly Faculty Salary Deposit',
+        'SALARY',
+        1850.0
+      );
+    }
+
+    col.timeOfDayMinutes = 8 * 60 + 30; // 08:30 AM
+    col.energyLevel = 100;
+    col.carryingHotCoffee = false;
+    col.cafeteriaQueuePosition = null;
+    col.cafeteriaServiceProgress = 0;
+    col.currentRoom = 'OFFICE_4B';
+    sim.uniPlayer.worldX = -10.0;
+    sim.uniPlayer.worldZ = -3.2;
+    sim.uniPlayer.targetX = null;
+    sim.uniPlayer.targetZ = null;
+
+    col.colloquiumLog = [
+      `🌅 [${DAY_NAMES_LIST[col.dayIndex]} 08:30] Arrived at Room 4B, Peano Hall. Rain taps against the glass. Personal Checking: $${col.checkingBalance.toFixed(2)}.`,
+      ...col.colloquiumLog.slice(0, 9),
     ];
     soundEngine.playOfficeKeyboardClack();
     setAcademicColloquium({ ...col });
@@ -2196,7 +3032,6 @@ export default function App() {
     col.journalRejections = nextRejection;
     col.reviewer2RivalryLevel = Math.min(100, col.reviewer2RivalryLevel + 25);
 
-    // Each major journal review cycle takes ~2 simulated years!
     if (nextRejection === 1) {
       col.academicYear = Math.max(col.academicYear + 1, 2);
       col.semester = 'Spring';
@@ -2209,9 +3044,9 @@ export default function App() {
     }
 
     const rejectionReasons = [
-      `DECISION: REJECT.\n\nReferee Report (Reviewer #2):\n"The author (Dr. Pawn, untenured) claims that a Monarch can be checkmated at t₀ − 1. Not only does Lemma 3.2 rely on dubious boundary conditions, the manuscript fails to cite Rook (2021), Rook (2023), or Rook (2025) on rectilinear files. I recommend immediate rejection."`,
+      `DECISION: REJECT.\n\nReferee Report (Reviewer #2):\n"The author (Dr. Pawn, untenured) claims that a Monarch can be checkmated at t₀ − 1. Not only does Lemma 3.2 rely on unorthodox boundary conditions, the manuscript fails to cite Rook (2021), Rook (2023), or Rook (2025) on rectilinear files. I recommend immediate rejection."`,
       `DECISION: REJECT (2nd Submission).\n\nReferee Report (Reviewer #2):\n"Despite the author's 47-page revision and 2:00 AM Chiral Lab data, I remain philosophically opposed to retrocausal regicide. Furthermore, my h-index is ${col.rookHIndex} and the author's is ${col.hIndex}. Reject."`,
-      `DECISION: FINAL REJECTION (3rd Submission — Editorial Ban).\n\nReferee Report (Reviewer #2):\n"This is the third time Dr. Pawn has submitted 'On the Nonexistence of Monarchs in Retrocausal Systems.' The proof is technically flawless, which makes it even more offensive to classical board hierarchy. Do not resubmit to the Journal of Transfinite Causality."`,
+      `DECISION: FINAL REJECTION (3rd Submission — Editorial Ban).\n\nReferee Report (Reviewer #2):\n"This is the third time Dr. Pawn has submitted 'On the Nonexistence of Monarchs in Retrocausal Systems.' The proof is technically flawless, which makes it even more offensive to classical hierarchy. Do not resubmit to the Journal of Transfinite Causality."`,
     ];
 
     const rejEmail = {
@@ -2229,7 +3064,7 @@ export default function App() {
     col.selectedEmailId = rejEmail.id;
     col.colloquiumLog = [
       `❌ Year ${col.academicYear}: Rejection #${nextRejection}/3 from the Journal of Transfinite Causality! Reviewer #2 blocked publication again.`,
-      ...col.colloquiumLog.slice(0, 7),
+      ...col.colloquiumLog.slice(0, 9),
     ];
 
     soundEngine.playRejectionStamp();
@@ -2239,48 +3074,29 @@ export default function App() {
       appendPerseusArmColleagueEmail(col);
       col.stage = 'PERSEUS_ARM_OFFER';
       col.colloquiumLog = [
-        `🌌 Year 6: After your 3rd rejection from the Journal of Transfinite Causality, desperation sets in. A colleague introduces you to "GALACTIC ADVANCES IN THEORETICAL EVERYTHING" in the Perseus Arm...`,
-        ...col.colloquiumLog.slice(0, 7),
+        `🌌 Year 6: After your 3rd rejection from the Journal of Transfinite Causality, desperation sets in. Assoc. Prof. Knight whispers to you in the corridor about "GALACTIC ADVANCES IN THEORETICAL EVERYTHING" in the Perseus Arm...`,
+        ...col.colloquiumLog.slice(0, 9),
       ];
     }
 
     setAcademicColloquium({ ...col });
   }, []);
 
-  const handleFastForwardToYear6Desperation = useCallback(() => {
-    const sim = simRef.current;
-    const col = sim.academicColloquium;
-    if (!col || !col.active) return;
-
-    col.academicYear = 6;
-    col.semester = 'Spring';
-    col.centralLemmaIntegrity = 100;
-    col.rigorScore = 100;
-    col.bishopLabAccessGranted = true;
-    col.hIndex = Math.max(col.hIndex, 8);
-    col.rookHIndex = Math.max(col.rookHIndex, 72);
-    col.reviewer2RivalryLevel = 100;
-    col.journalRejections = 3;
-    appendPerseusArmColleagueEmail(col);
-    col.stage = 'PERSEUS_ARM_OFFER';
-    col.colloquiumLog = [
-      `🌌 Six simulated years have passed. After your 3rd rejection from the Journal of Transfinite Causality, a colleague introduces you to a suspicious publisher in the outer reaches of the Perseus Arm...`,
-      ...col.colloquiumLog.slice(0, 7),
-    ];
-    soundEngine.playRejectionStamp();
-    setAcademicColloquium({ ...col });
-  }, []);
-
   const handleSellEquipmentForPerseusFee = useCallback(() => {
     const sim = simRef.current;
     const col = sim.academicColloquium;
-    if (!col || !col.active) return;
+    if (!col || !col.active || col.equipmentSoldForFee) return;
 
     col.equipmentSoldForFee = true;
-    col.checkingBalance += 3500;
+    recordPersonalTransaction(
+      col,
+      'Perseus Surplus Brokers — Sold Office Oscilloscope & Cryogenic Interferometer',
+      'LAB_EQUIPMENT',
+      3500
+    );
     col.colloquiumLog = [
-      `📦 Sold your office oscilloscope and cryogenic interferometer to raise $3,500 for the Perseus Arm publication fee.`,
-      ...col.colloquiumLog.slice(0, 7),
+      `📦 Sold your office oscilloscope and cryogenic interferometer (+$3,500 credited to Personal Checking) to cover the Perseus Arm publication fee.`,
+      ...col.colloquiumLog.slice(0, 9),
     ];
     soundEngine.playSynodResonance(false);
     setAcademicColloquium({ ...col });
@@ -2291,16 +3107,36 @@ export default function App() {
     const col = sim.academicColloquium;
     if (!col || !col.active) return;
 
-    col.equipmentSoldForFee = true;
+    if (!col.equipmentSoldForFee && col.checkingBalance < 3500) {
+      return;
+    }
+    recordPersonalTransaction(
+      col,
+      'Galactic Advances in Theoretical Everything — Open-Access Publication Fee',
+      'PUBLICATION_FEE',
+      -3500
+    );
     col.stage = 'ACCEPTANCE_LETTER';
     col.publishedDoi = `10.8473/gate.perseus.2032.8473`;
     soundEngine.playSynodResonance(true);
     setAcademicColloquium({ ...col });
   }, []);
 
+  const handleBeginRealityShatter = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.stage = 'REALITY_SHATTER_TRANSITION';
+    col.realityShatterProgressSec = 0.05;
+    soundEngine.playWatchDoomBell(false);
+    soundEngine.playSynodResonance(true);
+    setAcademicColloquium({ ...col });
+  }, []);
+
   // Conclude the 6-Year Academic Life Simulator:
-  // After opening the acceptance letter ("YOU DID IT. ..."), shatter the university office back into the 4D Chess Universe,
-  // restore all 32 pieces to their armored warrior forms, and unlock "Checkmate Yesterday" (Δt = −1)!
+  // After the multi-stage 3D Reality Shatter sequence completes, restore the 4D Chess Universe,
+  // transform all 32 pieces back into their armored warrior forms, and unlock "Checkmate Yesterday" (Δt = −1)!
   const handleConcludePublicationAndRestorePieces = useCallback(() => {
     const sim = simRef.current;
     const col = sim.academicColloquium;
@@ -3304,13 +4140,15 @@ export default function App() {
     warmFill.position.set(0, 6, 0);
     scene.add(warmFill);
 
-    // OrbitControls for Chess View (allowing upward camera tilt to inspect the Colossal Multiversal Pocket Watch!)
+    // OrbitControls for Chess View (allowing close-up piece inspection, panning, and upward tilt to inspect the Colossal Multiversal Pocket Watch!)
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
-    controls.maxPolarAngle = Math.PI * 0.68;
-    controls.minDistance = 5.5;
-    controls.maxDistance = 28;
+    controls.enablePan = true;
+    controls.screenSpacePanning = true;
+    controls.maxPolarAngle = Math.PI * 0.85;
+    controls.minDistance = 1.6;
+    controls.maxDistance = 36;
     controls.target.set(0, 0.3, 0);
     simRef.current.controls = controls;
 
@@ -3409,9 +4247,68 @@ export default function App() {
         soundEngine.startMusic();
       }
       pointerDownPos = { x: ev.clientX, y: ev.clientY };
+      sim.mouseLook.isDragging = true;
+      sim.mouseLook.lastPointerX = ev.clientX;
+      sim.mouseLook.lastPointerY = ev.clientY;
     };
 
     const onPointerMove = (ev: PointerEvent) => {
+      const ml = sim.mouseLook;
+      const dx = ev.clientX - ml.lastPointerX;
+      const dy = ev.clientY - ml.lastPointerY;
+      ml.lastPointerX = ev.clientX;
+      ml.lastPointerY = ev.clientY;
+
+      // Universal 360° Mouse Look-Around when dragging OR when Free-Look Mode [F] is active!
+      if ((ml.isDragging || ml.freeLookActive) && sim.phase !== 'CHESS_VIEW') {
+        const sens = 0.0052;
+        if (sim.phase === 'ACADEMIC_SIMULATOR') {
+          ml.uniCamYaw -= dx * sens;
+          ml.uniCamPitch = THREE.MathUtils.clamp(
+            ml.uniCamPitch + dy * sens,
+            ml.uniFirstPerson ? -0.85 : -0.35,
+            ml.uniFirstPerson ? 0.95 : 1.22
+          );
+        } else if (sim.phase === 'REALM_EXPLORATION') {
+          ml.realmCamYawOffset -= dx * sens;
+          ml.realmCamPitch = THREE.MathUtils.clamp(ml.realmCamPitch + dy * sens, -0.35, 1.18);
+        } else if (sim.phase === 'FIGHT_ACTIVE') {
+          ml.fightLookYaw = THREE.MathUtils.clamp(
+            ml.fightLookYaw - dx * sens,
+            sim.combatCameraMode === 'first_person' ? -1.35 : -Math.PI,
+            sim.combatCameraMode === 'first_person' ? 1.35 : Math.PI
+          );
+          ml.fightLookPitch = THREE.MathUtils.clamp(ml.fightLookPitch + dy * sens, -0.72, 0.85);
+        }
+      }
+
+      if (
+        sim.phase === 'ACADEMIC_SIMULATOR' &&
+        sim.academicColloquium?.stage === 'UNIVERSITY_SIMULATOR' &&
+        sim.academicColloquium.activeDrawerTab === 'NONE' &&
+        !ml.isDragging
+      ) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        const hits = raycaster.intersectObject(universityOfficeRig.rootGroup, true);
+        let foundInteract = false;
+        for (const h of hits) {
+          let cur: THREE.Object3D | null = h.object;
+          while (cur && cur !== universityOfficeRig.rootGroup) {
+            if (cur.userData?.uniInteract) {
+              foundInteract = true;
+              break;
+            }
+            cur = cur.parent;
+          }
+          if (foundInteract) break;
+        }
+        renderer.domElement.style.cursor = foundInteract ? 'pointer' : '';
+        return;
+      }
+
       if (sim.phase !== 'CHESS_VIEW' || sim.validMoves.length === 0) return;
       const coord = getBoardCoordsFromEvent(ev);
       if (!coord) {
@@ -3425,8 +4322,75 @@ export default function App() {
     };
 
     const onPointerUp = (ev: PointerEvent) => {
-      if (sim.phase !== 'CHESS_VIEW') return;
+      sim.mouseLook.isDragging = false;
       const dragDist = Math.hypot(ev.clientX - pointerDownPos.x, ev.clientY - pointerDownPos.y);
+
+      // In ACADEMIC_SIMULATOR, clicking on a 3D prop/NPC interacts with it directly, or clicking the floor walks Dr. Pawn there!
+      if (
+        sim.phase === 'ACADEMIC_SIMULATOR' &&
+        sim.academicColloquium?.stage === 'UNIVERSITY_SIMULATOR' &&
+        sim.academicColloquium.activeDrawerTab === 'NONE' &&
+        dragDist <= 7
+      ) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+
+        const sceneHits = raycaster.intersectObject(universityOfficeRig.rootGroup, true);
+        for (const hit of sceneHits) {
+          let cur: THREE.Object3D | null = hit.object;
+          while (cur && cur !== universityOfficeRig.rootGroup) {
+            const actionTag = cur.userData?.uniInteract as string | undefined;
+            if (actionTag) {
+              if (typeof cur.userData.interactX === 'number' && typeof cur.userData.interactZ === 'number') {
+                sim.uniPlayer.targetX = cur.userData.interactX;
+                sim.uniPlayer.targetZ = cur.userData.interactZ;
+              }
+              if (actionTag === 'OPEN_CHALKBOARD') {
+                handleSetDrawerTab('CHALKBOARD_PROOF');
+              } else if (actionTag === 'OPEN_PINE_MAIL') {
+                handleSetDrawerTab('PINE_MAIL');
+              } else if (actionTag === 'OPEN_FINANCE_LEDGER') {
+                handleSetDrawerTab('FINANCE_LEDGER');
+              } else if (actionTag === 'KICK_COFFEE_MACHINE') {
+                handleKickCoffeeMachine();
+              } else if (actionTag === 'TALK_TOBY') {
+                handleTalkToNpcInRoom('TOBY');
+              } else if (actionTag === 'TALK_BISHOP') {
+                handleTalkToNpcInRoom('BISHOP');
+              } else if (actionTag === 'TALK_QUEEN') {
+                handleTalkToNpcInRoom('QUEEN');
+              } else if (actionTag === 'TALK_ROOK') {
+                handleTalkToNpcInRoom('ROOK');
+              } else if (actionTag === 'JOIN_CAFETERIA_QUEUE') {
+                handleJoinOrLeaveCafeteriaQueue();
+              } else if (actionTag === 'CLEANER_COUNTER') {
+                const col = sim.academicColloquium;
+                if (col.shirtState === 'COFFEE_STAINED') {
+                  handleDropOffShirtAtCleaner('EXPRESS_75_MIN');
+                } else if (col.activeDryCleaningTicket && !col.activeDryCleaningTicket.collected) {
+                  handlePickUpCleanedShirt();
+                } else {
+                  handleBuyNewShirtAtHaberdashery();
+                }
+              }
+              return;
+            }
+            cur = cur.parent;
+          }
+        }
+
+        const floorHits = raycaster.intersectObject(universityOfficeRig.walkableFloorMesh, false);
+        if (floorHits.length > 0) {
+          const pt = floorHits[0].point;
+          sim.uniPlayer.targetX = THREE.MathUtils.clamp(pt.x, -14.2, 15.2);
+          sim.uniPlayer.targetZ = THREE.MathUtils.clamp(pt.z, -6.4, 9.2);
+        }
+        return;
+      }
+
+      if (sim.phase !== 'CHESS_VIEW') return;
       if (dragDist > 8) return;
 
       if (sim.gameMode === 'vs_ai' && sim.turnFaction === 'b') return;
@@ -3491,20 +4455,116 @@ export default function App() {
       }
     };
 
+    const onPointerLeave = () => {
+      sim.mouseLook.isDragging = false;
+    };
+
+    const onWheel = (ev: WheelEvent) => {
+      if (sim.phase === 'CHESS_VIEW') return; // OrbitControls handles wheel in CHESS_VIEW
+      const ml = sim.mouseLook;
+      const zoomStep = ev.deltaY * 0.0055;
+      if (sim.phase === 'ACADEMIC_SIMULATOR') {
+        if (ml.uniFirstPerson && zoomStep > 0) {
+          ml.uniFirstPerson = false;
+          ml.uniCamDistance = 1.8;
+          setUniFirstPerson(false);
+        } else {
+          ml.uniCamDistance = THREE.MathUtils.clamp(ml.uniCamDistance + zoomStep, 0.7, 14.5);
+          if (ml.uniCamDistance <= 0.85 && !ml.uniFirstPerson) {
+            ml.uniFirstPerson = true;
+            setUniFirstPerson(true);
+          }
+        }
+      } else if (sim.phase === 'REALM_EXPLORATION') {
+        ml.realmCamDistance = THREE.MathUtils.clamp(ml.realmCamDistance + zoomStep, 1.6, 13.5);
+      } else if (sim.phase === 'FIGHT_ACTIVE') {
+        ml.fightCamDistOffset = THREE.MathUtils.clamp(ml.fightCamDistOffset + zoomStep, -2.2, 4.5);
+      }
+    };
+
+    const onDoubleClick = () => {
+      if (sim.phase === 'CHESS_VIEW') return;
+      sim.mouseLook.uniCamYaw = 0;
+      sim.mouseLook.uniCamPitch = 0.42;
+      sim.mouseLook.fightLookYaw = 0;
+      sim.mouseLook.fightLookPitch = 0;
+      sim.mouseLook.realmCamYawOffset = 0;
+      sim.mouseLook.realmCamPitch = 0.42;
+    };
+
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     renderer.domElement.addEventListener('pointermove', onPointerMove);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('pointerleave', onPointerLeave);
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: true });
+    renderer.domElement.addEventListener('dblclick', onDoubleClick);
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!soundEngine.muted) {
         soundEngine.startMusic();
+      }
+      if (sim.phase === 'ACADEMIC_SIMULATOR' && sim.academicColloquium) {
+        if (e.key === 'Escape' && sim.academicColloquium.activeDrawerTab !== 'NONE') {
+          handleSetDrawerTab('NONE');
+          return;
+        } else if (e.key === '1') {
+          handleSetDrawerTab(
+            sim.academicColloquium.activeDrawerTab === 'CHALKBOARD_PROOF'
+              ? 'NONE'
+              : 'CHALKBOARD_PROOF'
+          );
+          return;
+        } else if (e.key === '2') {
+          handleSetDrawerTab(
+            sim.academicColloquium.activeDrawerTab === 'FINANCE_LEDGER'
+              ? 'NONE'
+              : 'FINANCE_LEDGER'
+          );
+          return;
+        } else if (e.key === '3') {
+          handleSetDrawerTab(
+            sim.academicColloquium.activeDrawerTab === 'CALENDAR_NPCS'
+              ? 'NONE'
+              : 'CALENDAR_NPCS'
+          );
+          return;
+        } else if (e.key === '4') {
+          handleSetDrawerTab(
+            sim.academicColloquium.activeDrawerTab === 'PINE_MAIL' ? 'NONE' : 'PINE_MAIL'
+          );
+          return;
+        }
       }
       if (e.key === 'h' || e.key === 'H') {
         setDockCollapsed((prev) => !prev);
       } else if (e.key === 'm' || e.key === 'M') {
         setMultiverseModalOpen((prev) => !prev);
         return;
+      } else if (e.key === 'f' || e.key === 'F') {
+        const nextFree = !sim.mouseLook.freeLookActive;
+        sim.mouseLook.freeLookActive = nextFree;
+        setFreeMouseLook(nextFree);
+        return;
+      } else if (e.key === 'r' || e.key === 'R') {
+        sim.mouseLook.uniCamYaw = 0;
+        sim.mouseLook.uniCamPitch = 0.42;
+        sim.mouseLook.uniCamDistance = 6.2;
+        sim.mouseLook.fightLookYaw = 0;
+        sim.mouseLook.fightLookPitch = 0;
+        sim.mouseLook.fightCamDistOffset = 0;
+        sim.mouseLook.realmCamYawOffset = 0;
+        sim.mouseLook.realmCamPitch = 0.42;
+        return;
       } else if (e.key === 'v' || e.key === 'V') {
+        if (sim.phase === 'ACADEMIC_SIMULATOR') {
+          const nextFp = !sim.mouseLook.uniFirstPerson;
+          sim.mouseLook.uniFirstPerson = nextFp;
+          if (!nextFp && sim.mouseLook.uniCamDistance < 1.8) {
+            sim.mouseLook.uniCamDistance = 5.6;
+          }
+          setUniFirstPerson(nextFp);
+          return;
+        }
         const next = sim.combatCameraMode === 'first_person' ? 'side_arena' : 'first_person';
         sim.combatCameraMode = next;
         setCombatCameraMode(next);
@@ -3686,100 +4746,295 @@ export default function App() {
       // Update Phase Machine
       if (sim.phase === 'ACADEMIC_SIMULATOR' && sim.academicColloquium) {
         // ============================================================================
-        // STANDALONE UNIVERSITY OF GREATER ANDROMEDA — 3D MODEST RAINY OFFICE SCENE
-        // The chess game is GONE: hide the chessboard, pocket watch, and realms completely!
+        // STANDALONE UNIVERSITY OF GREATER ANDROMEDA — 5-ROOM 3D CAMPUS & HUMAN RIGS
+        // The chess game is GONE: hide the chessboard, pocket watch, realms, AND all 32 armored chess rigs!
         // ============================================================================
+        const col = sim.academicColloquium;
+        const shatterSec = col.realityShatterProgressSec ?? 0;
+
         arenaRig.group.visible = false;
-        pocketWatchRig.rootGroup.visible = false;
+        pocketWatchRig.rootGroup.visible =
+          col.stage === 'REALITY_SHATTER_TRANSITION' && shatterSec > 2.5;
         realmsRig.rootGroup.visible = false;
         realmsRig.boardGatewaysGroup.visible = false;
         temporalEchoMesh.visible = false;
         if (sim.firstPersonRig) {
           sim.firstPersonRig.root.visible = false;
         }
+        // Hide all 32 armored chess piece rigs during the University Simulator — human academic rigs are used instead!
+        for (const r of sim.pieceRigs.values()) {
+          r.root.visible = false;
+        }
         universityOfficeRig.rootGroup.visible = true;
 
-        keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.15, 8, rawDelta);
-        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.22, 8, rawDelta);
-        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.35, 8, rawDelta);
-        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.12, 8, rawDelta);
+        keyLight.intensity = THREE.MathUtils.damp(keyLight.intensity, 0.24, 8, rawDelta);
+        hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, 0.32, 8, rawDelta);
+        rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, 0.38, 8, rawDelta);
+        warmFill.intensity = THREE.MathUtils.damp(warmFill.intensity, 0.16, 8, rawDelta);
 
-        updateUniversityOfficeScene(universityOfficeRig, elapsed, rawDelta, {
-          year: sim.academicColloquium.academicYear,
-          semesterLabel: sim.academicColloquium.semester,
-          lemmaIntegrity: sim.academicColloquium.centralLemmaIntegrity,
-          journalRejections: sim.academicColloquium.journalRejections,
-          hIndex: sim.academicColloquium.hIndex,
-          equipmentSold: sim.academicColloquium.equipmentSoldForFee,
-          publishedAccepted: sim.academicColloquium.stage === 'ACCEPTANCE_LETTER',
-        });
+        let playerIsMoving = false;
+        const up = sim.uniPlayer;
 
-        // Only show Dr. Pawn (at his oak desk/chalkboard) and grad student Toby (by the chalkboard) in Room 4B!
-        const drPawnId = sim.academicColloquium.candidatePieceId;
-        const gradTobyPiece = sim.pieces.find((p) => p.faction === 'w' && p.type === 'n');
-        for (const p of sim.pieces) {
-          const r = sim.pieceRigs.get(p.id);
-          if (!r) continue;
-          if (p.id === drPawnId) {
-            r.root.visible = true;
-            if (!r.isProfessorModeActive) {
-              setPieceProfessorMode(r, true, p.faction);
+        // 1. REAL-TIME WASD / ARROW-KEY / CLICK NAVIGATION & CONTINUOUS UNIVERSITY CLOCK
+        if (col.stage === 'UNIVERSITY_SIMULATOR') {
+          if (col.activeDrawerTab === 'NONE') {
+            col.timeOfDayMinutes = Math.min(22 * 60 + 30, col.timeOfDayMinutes + rawDelta * 1.6);
+            syncAppointmentsWithClock(col, false);
+          }
+
+          // Step Live Cafeteria Coffee Queue (Finite Cashier Service Rate!)
+          if (col.cafeteriaQueuePosition !== null && col.currentRoom === 'CAFETERIA') {
+            const targetQueueX = 11.4 - col.cafeteriaQueuePosition * 1.25;
+            const targetQueueZ = -3.2;
+            up.worldX = THREE.MathUtils.damp(up.worldX, targetQueueX, 8, rawDelta);
+            up.worldZ = THREE.MathUtils.damp(up.worldZ, targetQueueZ, 8, rawDelta);
+            up.yaw = Math.PI;
+
+            col.cafeteriaServiceProgress += rawDelta * 36; // ~2.8 real seconds per patron
+            col.timeOfDayMinutes += rawDelta * 1.4;
+            syncAppointmentsWithClock(col, false);
+
+            if (col.cafeteriaServiceProgress >= 100) {
+              col.cafeteriaServiceProgress = 0;
+              if (col.cafeteriaQueuePosition > 0) {
+                col.cafeteriaQueuePosition -= 1;
+                soundEngine.playOfficeKeyboardClack();
+                if (col.cafeteriaQueuePosition === 0) {
+                  col.colloquiumLog = [
+                    `☕ [${formatSimClock(col.timeOfDayMinutes)}] You reached the front of the Lagrange Point Cafeteria queue. The cashier is pouring your 12oz filter coffee ($4.50)...`,
+                    ...col.colloquiumLog.slice(0, 9),
+                  ];
+                }
+                hudSyncAccumulator = 1.0;
+              } else {
+                // Cashier finishes serving Dr. Pawn!
+                col.cafeteriaQueuePosition = null;
+                if (col.checkingBalance >= 4.5) {
+                  recordPersonalTransaction(
+                    col,
+                    'Lagrange Point Cafeteria — 12oz Hot Filter Coffee',
+                    'CAFETERIA',
+                    -4.5
+                  );
+                  col.carryingHotCoffee = true;
+                  col.energyLevel = Math.min(100, col.energyLevel + 18);
+                  soundEngine.playSynodResonance(false);
+                  col.colloquiumLog = [
+                    `☕ [${formatSimClock(col.timeOfDayMinutes)}] Paid $4.50 for a piping-hot cup of filter coffee! Watch out for the distracted student pacing near the cafeteria doorway...`,
+                    ...col.colloquiumLog.slice(0, 9),
+                  ];
+                } else {
+                  soundEngine.playRejectionStamp();
+                  col.colloquiumLog = [
+                    `💳 [${formatSimClock(col.timeOfDayMinutes)}] Card declined at the Cafeteria register! You don't even have $4.50 in Personal Checking.`,
+                    ...col.colloquiumLog.slice(0, 9),
+                  ];
+                }
+                hudSyncAccumulator = 1.0;
+              }
             }
-            r.root.position.set(-0.35, 0.02, -1.25);
-            r.root.scale.setScalar(1.18);
-            r.root.rotation.y = Math.sin(elapsed * 0.65) * 0.25;
-            r.vitalityHaloMesh.visible = false;
-            r.hpRingMesh.visible = false;
-            r.tesseractBadge.visible = false;
-            r.quantumWaveGroup.visible = false;
-            r.headGroup.rotation.set(
-              0.08 + Math.sin(elapsed * 2.1) * 0.05,
-              Math.sin(elapsed * 0.9) * 0.18,
-              0
+          } else if (col.activeDrawerTab === 'NONE') {
+            // Camera-Relative 3rd/1st-Person WASD / Arrow Key walking (or smooth steering toward clicked floor/room!)
+            let inputFwd = 0;
+            let inputRight = 0;
+            if (sim.keysHeld['KeyW'] || sim.keysHeld['ArrowUp']) inputFwd += 1;
+            if (sim.keysHeld['KeyS'] || sim.keysHeld['ArrowDown']) inputFwd -= 1;
+            if (sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft']) inputRight -= 1;
+            if (sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight']) inputRight += 1;
+
+            let moveX = 0;
+            let moveZ = 0;
+            if (Math.hypot(inputFwd, inputRight) > 0.05) {
+              up.targetX = null;
+              up.targetZ = null;
+              // Transform WASD relative to current mouse-look camera yaw!
+              const camYaw = sim.mouseLook.uniCamYaw;
+              const fwdX = -Math.sin(camYaw);
+              const fwdZ = -Math.cos(camYaw);
+              const rightX = Math.cos(camYaw);
+              const rightZ = -Math.sin(camYaw);
+              moveX = inputFwd * fwdX + inputRight * rightX;
+              moveZ = inputFwd * fwdZ + inputRight * rightZ;
+            } else if (up.targetX !== null && up.targetZ !== null) {
+              const dx = up.targetX - up.worldX;
+              const dz = up.targetZ - up.worldZ;
+              const dist = Math.hypot(dx, dz);
+              if (dist > 0.35) {
+                moveX = dx / dist;
+                moveZ = dz / dist;
+              } else {
+                up.targetX = null;
+                up.targetZ = null;
+              }
+            }
+
+            const len = Math.hypot(moveX, moveZ);
+            if (len > 0.01) {
+              playerIsMoving = true;
+              moveX /= len;
+              moveZ /= len;
+              const walkSpeed = 5.4;
+              up.worldX = THREE.MathUtils.clamp(up.worldX + moveX * walkSpeed * rawDelta, -14.2, 15.2);
+              up.worldZ = THREE.MathUtils.clamp(up.worldZ + moveZ * walkSpeed * rawDelta, -6.4, 9.2);
+              up.yaw = Math.atan2(moveX, moveZ);
+
+              const detectedRoom = getRoomAtWorldPos(up.worldX, up.worldZ);
+              if (detectedRoom !== col.currentRoom) {
+                col.currentRoom = detectedRoom;
+                hudSyncAccumulator = 1.0;
+              }
+
+              // Check physical collision with the distracted undergraduate student pacing near the Cafeteria doorway!
+              if (
+                col.carryingHotCoffee &&
+                !col.coffeeSpillIncidentTriggered &&
+                universityOfficeRig.distractedStudentRig
+              ) {
+                const stuPos = universityOfficeRig.distractedStudentRig.root.position;
+                const distToStudent = Math.hypot(up.worldX - stuPos.x, up.worldZ - stuPos.z);
+                if (distToStudent < 2.25) {
+                  triggerCafeteriaCollisionSpill(col);
+                  hudSyncAccumulator = 1.0;
+                }
+              }
+            } else if (sim.mouseLook.uniFirstPerson) {
+              // In 1st-Person Researcher POV, turn Dr. Pawn's body to match the mouse-look direction!
+              up.yaw = Math.PI + sim.mouseLook.uniCamYaw;
+            }
+          }
+        } else if (col.stage === 'REALITY_SHATTER_TRANSITION') {
+          // 2. MULTI-STAGE 3D REALITY SHATTER SEQUENCE (University Fractures -> Cosmic Chessboard Reawakens)
+          col.realityShatterProgressSec = (col.realityShatterProgressSec ?? 0) + rawDelta;
+          const curShatter = col.realityShatterProgressSec;
+          sim.cameraShake = Math.max(sim.cameraShake, Math.min(0.38, curShatter * 0.08));
+
+          if (Math.random() < rawDelta * 20) {
+            spawnHitSparks(
+              vfxPool,
+              up.worldX + (Math.random() - 0.5) * 9.5,
+              1.2 + Math.random() * 3.2,
+              up.worldZ + (Math.random() - 0.5) * 6.5,
+              curShatter > 2.2 ? 0x38bdf8 : 0xfbbf24,
+              14
             );
-            const gesture = Math.sin(elapsed * 2.8) * 0.14;
-            r.rightArmPivot.rotation.set(-0.62 + gesture, 0, -0.18);
-            r.rightElbowPivot.rotation.set(-1.12 - gesture * 0.5, 0, 0);
-            r.leftArmPivot.rotation.set(-0.32, 0, 0.14);
-            r.leftElbowPivot.rotation.set(-0.78, 0, 0);
-          } else if (gradTobyPiece && p.id === gradTobyPiece.id) {
-            r.root.visible = true;
-            if (!r.isProfessorModeActive) {
-              setPieceProfessorMode(r, true, p.faction);
-            }
-            r.root.position.set(-4.35, 0.02, -0.85);
-            r.root.scale.setScalar(1.05);
-            r.root.rotation.y = Math.PI * 0.35;
-            r.vitalityHaloMesh.visible = false;
-            r.hpRingMesh.visible = false;
-            r.tesseractBadge.visible = false;
-            r.quantumWaveGroup.visible = false;
-          } else {
-            r.root.visible = false;
+          }
+
+          if (curShatter > 2.5 && pocketWatchRig.rootGroup.visible) {
+            pocketWatchRig.rootGroup.position.set(
+              up.worldX,
+              11.5 - Math.min(4.0, (curShatter - 2.5) * 1.6),
+              up.worldZ - 9.0
+            );
+            updateMultiversalPocketWatch(
+              pocketWatchRig,
+              sim.multiverse,
+              elapsed,
+              rawDelta,
+              false,
+              false
+            );
+          }
+
+          hudSyncAccumulator = 1.0;
+          if (curShatter >= 5.2) {
+            pocketWatchRig.rootGroup.position.set(0, 0, 0);
+            handleConcludePublicationAndRestorePieces();
           }
         }
 
-        // Frame Room 4B, Peano Hall: rainy window at back, chalkboard on left, 1987 coffee machine on right, oak desk in center
+        updateUniversityOfficeScene(universityOfficeRig, elapsed, rawDelta, {
+          year: col.academicYear,
+          semesterLabel: col.semester,
+          dayIndex: col.dayIndex,
+          dayName: DAY_NAMES_LIST[col.dayIndex % 5] || 'Tuesday',
+          timeOfDayMinutes: col.timeOfDayMinutes,
+          timeFormatted: formatSimClock(col.timeOfDayMinutes),
+          playerWorldX: up.worldX,
+          playerWorldZ: up.worldZ,
+          playerYaw: up.yaw,
+          playerIsMoving,
+          shirtState: col.shirtState,
+          carryingHotCoffee: col.carryingHotCoffee,
+          cafeteriaQueuePosition: col.cafeteriaQueuePosition,
+          cafeteriaServiceProgress: col.cafeteriaServiceProgress,
+          activeDryCleaningTicket: col.activeDryCleaningTicket,
+          lemmaIntegrity: col.centralLemmaIntegrity,
+          boundaryGaugeVerified: col.proofWorkbench.boundaryGaugeVerified,
+          jacobianSignFlipped: col.proofWorkbench.jacobianSignFlipped,
+          chiralLabDataAttached: col.proofWorkbench.chiralLabDataAttached,
+          journalRejections: col.journalRejections,
+          hIndex: col.hIndex,
+          personalBalance: col.checkingBalance,
+          departmentalBalance: col.departmentalBudget,
+          equipmentSold: col.equipmentSoldForFee,
+          publishedAccepted: col.stage === 'ACCEPTANCE_LETTER',
+          realityShatterProgressSec: col.realityShatterProgressSec ?? 0,
+        });
+
+        // Hide Dr. Pawn's head mesh in First-Person POV so spectacles/hair never clip the camera lens, and keep Dr. Pawn's self-label hidden!
+        const ml = sim.mouseLook;
+        universityOfficeRig.drPawnRig.headGroup.visible = !ml.uniFirstPerson;
+        universityOfficeRig.drPawnRig.labelSprite.visible = false;
+
+        // Sync React HUD periodically so the live clock, queue progress, and shatter sequence stay responsive
+        hudSyncAccumulator += rawDelta;
+        if (hudSyncAccumulator >= 0.25) {
+          hudSyncAccumulator = 0;
+          setAcademicColloquium({ ...col });
+        }
+
+        // Smooth 360° Mouse-Look Camera (Supports both 1st-Person Researcher Eye-Level POV & 3rd-Person Orbit + Scroll Zoom!)
         const shakeX =
           sim.cameraShake > 0.01 ? (Math.random() - 0.5) * sim.cameraShake * 0.35 : 0;
         const shakeY =
           sim.cameraShake > 0.01 ? (Math.random() - 0.5) * sim.cameraShake * 0.35 : 0;
         sim.cameraShake = Math.max(0, sim.cameraShake - rawDelta * 1.8);
 
-        _camTargetPos.set(
-          Math.sin(elapsed * 0.22) * 0.38 + shakeX,
-          2.35 + Math.cos(elapsed * 0.18) * 0.06 + shakeY,
-          3.95
-        );
-        _camLookTarget.set(
-          Math.sin(elapsed * 0.15) * 0.25,
-          1.85,
-          -2.4
-        );
-        camera.position.lerp(_camTargetPos, 1 - Math.exp(-6 * rawDelta));
-        sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-8 * rawDelta));
+        if (ml.uniFirstPerson && col.stage !== 'REALITY_SHATTER_TRANSITION') {
+          const walkBob = playerIsMoving
+            ? Math.sin(elapsed * 11) * 0.028
+            : Math.sin(elapsed * 2.2) * 0.006;
+          const eyeY = 1.62 + walkBob + shakeY;
+          _camTargetPos.set(up.worldX + shakeX, eyeY, up.worldZ);
+          const lookDist = 6.0;
+          const horizLook = Math.cos(ml.uniCamPitch) * lookDist;
+          _camLookTarget.set(
+            up.worldX - Math.sin(ml.uniCamYaw) * horizLook,
+            eyeY - Math.sin(ml.uniCamPitch) * lookDist,
+            up.worldZ - Math.cos(ml.uniCamYaw) * horizLook
+          );
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-22 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-26 * rawDelta));
+        } else {
+          const dist = ml.uniCamDistance;
+          const pitch = THREE.MathUtils.clamp(ml.uniCamPitch, -0.25, 1.22);
+          const horizDist = Math.cos(pitch) * dist;
+          const camHeight = Math.max(0.55, 1.38 + Math.sin(pitch) * dist);
+          _camTargetPos.set(
+            up.worldX + Math.sin(ml.uniCamYaw) * horizDist + shakeX,
+            camHeight + shakeY,
+            up.worldZ + Math.cos(ml.uniCamYaw) * horizDist
+          );
+          _camLookTarget.set(
+            up.worldX - Math.sin(ml.uniCamYaw) * 0.85,
+            1.35 + (col.stage === 'REALITY_SHATTER_TRANSITION' ? Math.min(1.8, shatterSec * 0.35) : 0),
+            up.worldZ - Math.cos(ml.uniCamYaw) * 0.85
+          );
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-12 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-15 * rawDelta));
+        }
+
         camera.lookAt(sim.currentLookAt);
-        camera.fov = THREE.MathUtils.damp(camera.fov, 46, 8, rawDelta);
+        camera.fov = THREE.MathUtils.damp(
+          camera.fov,
+          col.stage === 'REALITY_SHATTER_TRANSITION'
+            ? 54
+            : ml.uniFirstPerson
+            ? 58
+            : 46,
+          10,
+          rawDelta
+        );
         camera.updateProjectionMatrix();
       } else if (sim.phase === 'CHESS_VIEW') {
         universityOfficeRig.rootGroup.visible = false;
@@ -5488,8 +6743,7 @@ export default function App() {
             targetDutchRoll = winnerIsAtk ? 0.045 : -0.045;
             camLerpSpeed = 12;
           } else if (sim.combatCameraMode === 'first_person') {
-            // FIRST-PERSON VISOR COMBAT MODE (Default after the Western Crash Zooms!)
-            // Offset camera slightly back (-human.facing * 0.26) so opponent never clips into the near plane at point-blank range!
+            // FIRST-PERSON VISOR COMBAT MODE (with Free Mouse-Look Pitch/Yaw Offset!)
             const hWorldX = sim.duelCenterWorld.x + human.x * 0.72 - human.facing * 0.26;
             const hWorldY = baseStageY + human.y * 0.72;
             const hPhaseZ = human.wPhaseTimerMs > 0 ? human.wPhaseOffset * 0.65 : 0;
@@ -5507,8 +6761,24 @@ export default function App() {
                 ? Math.sin(elapsed * 14) * 0.035
                 : Math.sin(elapsed * 2.5) * 0.008;
 
-            _camTargetPos.set(hWorldX, hWorldY + hEyeH + walkBob, hWorldZ);
-            _camLookTarget.set(oWorldX, oWorldY + oEyeH * 0.78, oWorldZ);
+            const camPosX = hWorldX;
+            const camPosY = hWorldY + hEyeH + walkBob;
+            const camPosZ = hWorldZ;
+            _camTargetPos.set(camPosX, camPosY, camPosZ);
+
+            // Base vector toward opponent + user mouse-look yaw/pitch rotation!
+            const baseDX = oWorldX - camPosX;
+            const baseDY = oWorldY + oEyeH * 0.78 - camPosY;
+            const baseDZ = oWorldZ - camPosZ;
+            const baseDist = Math.max(1.5, Math.hypot(baseDX, baseDZ));
+            const baseYaw = Math.atan2(baseDX, baseDZ) + sim.mouseLook.fightLookYaw;
+            const basePitch = Math.atan2(baseDY, baseDist) - sim.mouseLook.fightLookPitch;
+
+            _camLookTarget.set(
+              camPosX + Math.sin(baseYaw) * Math.cos(basePitch) * baseDist,
+              camPosY + Math.sin(basePitch) * baseDist,
+              camPosZ + Math.cos(baseYaw) * Math.cos(basePitch) * baseDist
+            );
             targetFov = sim.activeIntervention
               ? 68
               : human.action === 'special'
@@ -5525,9 +6795,20 @@ export default function App() {
                 : 0;
             camLerpSpeed = 28;
           } else {
-            // Optional Side Arena Camera (Toggled via 'V' key or HUD button)
-            const camDistZ = THREE.MathUtils.clamp(4.45 + sep * 0.45, 4.5, 7.2);
-            _camTargetPos.set(midX, baseStageY + 1.62 + Math.max(atk.y, def.y) * 0.18, midZ + camDistZ);
+            // Optional Side Arena Camera (Toggled via 'V' key or HUD button, with full 360° Mouse Orbit & Scroll Zoom!)
+            const baseDist = THREE.MathUtils.clamp(
+              4.45 + sep * 0.45 + sim.mouseLook.fightCamDistOffset,
+              2.2,
+              11.5
+            );
+            const orbitYaw = sim.mouseLook.fightLookYaw;
+            const orbitPitch = THREE.MathUtils.clamp(0.22 + sim.mouseLook.fightLookPitch, -0.15, 1.15);
+            const horizDist = Math.cos(orbitPitch) * baseDist;
+            _camTargetPos.set(
+              midX + Math.sin(orbitYaw) * horizDist,
+              baseStageY + Math.max(0.45, 1.1 + Math.sin(orbitPitch) * baseDist),
+              midZ + Math.cos(orbitYaw) * horizDist
+            );
             _camLookTarget.set(midX, midY, midZ);
             targetFov = 38;
             fovDampSpeed = 12;
@@ -6204,22 +7485,26 @@ export default function App() {
               exploringPiece.meter >= ARCHETYPES[exploringPiece.type].special.meterCost ? 1.0 : 0.0;
           }
 
-          // 7. THIRD-PERSON FOLLOW CAMERA INSIDE THE SUBTERRANEAN REALM
-          const camBackX = -Math.sin(rm.yaw) * 5.6;
-          const camBackZ = -Math.cos(rm.yaw) * 5.6;
+          // 7. THIRD-PERSON FOLLOW & 360° MOUSE-LOOK CAMERA INSIDE THE SUBTERRANEAN REALM
+          const totalRealmYaw = rm.yaw + sim.mouseLook.realmCamYawOffset;
+          const rDist = sim.mouseLook.realmCamDistance;
+          const rPitch = THREE.MathUtils.clamp(sim.mouseLook.realmCamPitch, -0.2, 1.15);
+          const rHoriz = Math.cos(rPitch) * rDist;
+          const camBackX = -Math.sin(totalRealmYaw) * rHoriz;
+          const camBackZ = -Math.cos(totalRealmYaw) * rHoriz;
           _camTargetPos.set(
             realmCenter.x + rm.localPos.x + camBackX,
-            realmCenter.y + rm.localPos.y + 3.25,
+            realmCenter.y + rm.localPos.y + Math.max(0.6, 1.1 + Math.sin(rPitch) * rDist),
             realmCenter.z + rm.localPos.z + camBackZ
           );
           _camLookTarget.set(
-            realmCenter.x + rm.localPos.x + Math.sin(rm.yaw) * 2.4,
+            realmCenter.x + rm.localPos.x + Math.sin(totalRealmYaw) * 2.2,
             realmCenter.y + rm.localPos.y + 1.15,
-            realmCenter.z + rm.localPos.z + Math.cos(rm.yaw) * 2.4
+            realmCenter.z + rm.localPos.z + Math.cos(totalRealmYaw) * 2.2
           );
 
-          camera.position.lerp(_camTargetPos, 1 - Math.exp(-10 * rawDelta));
-          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-14 * rawDelta));
+          camera.position.lerp(_camTargetPos, 1 - Math.exp(-12 * rawDelta));
+          sim.currentLookAt.lerp(_camLookTarget, 1 - Math.exp(-16 * rawDelta));
           camera.lookAt(sim.currentLookAt);
           camera.fov = THREE.MathUtils.damp(
             camera.fov,
@@ -6344,6 +7629,12 @@ export default function App() {
         battleWornPass.uniforms.uTime.value = elapsed;
         battleWornPass.uniforms.uIntensity.value = battleWornIntensity;
         battleWornPass.uniforms.uCriticalPulse.value = battleWornPulse;
+      }
+
+      if (bloomPass) {
+        const isUni = sim.phase === 'ACADEMIC_SIMULATOR';
+        bloomPass.strength = isUni ? 0.06 : 0.18;
+        bloomPass.threshold = isUni ? 0.94 : 0.88;
       }
 
       if (composer) {
@@ -7054,24 +8345,57 @@ export default function App() {
         </div>
       )}
 
-      {/* 3B. Standalone University of Greater Andromeda 6-Year Academic Life Simulator (The chess game is GONE!) */}
+      {/* 3B. Standalone University of Greater Andromeda Playable Week & 6-Year Academic Life Simulator */}
       {phase === 'ACADEMIC_SIMULATOR' && academicColloquium?.active && (
         <AcademicColloquiumOverlay
           colloquium={academicColloquium}
-          allPieces={simRef.current.pieces}
-          selectedPiece={selectedPiece}
           onEnterUniversityOffice={handleEnterUniversityOffice}
+          onWalkToRoom={handleWalkToRoom}
+          onSetDrawerTab={handleSetDrawerTab}
           onSelectEmail={handleSelectAcademicEmail}
           onKickCoffeeMachine={handleKickCoffeeMachine}
-          onWorkOnCentralLemma={handleWorkOnCentralLemma}
-          onConfrontBishopForLab={handleConfrontBishopForLab}
-          onApplyForGrantAndPayMortgage={handleApplyForGrantAndPayMortgage}
-          onAttendConferenceAndDebateRook={handleAttendConferenceAndDebateRook}
+          onJoinOrLeaveCafeteriaQueue={handleJoinOrLeaveCafeteriaQueue}
+          onDropOffShirtAtCleaner={handleDropOffShirtAtCleaner}
+          onPickUpCleanedShirt={handlePickUpCleanedShirt}
+          onBuyNewShirtAtHaberdashery={handleBuyNewShirtAtHaberdashery}
+          onCommuteHomeForSpareShirt={handleCommuteHomeForSpareShirt}
+          onAttendScheduledMeetingInRoom={handleAttendScheduledMeetingInRoom}
+          onTalkToNpcInRoom={handleTalkToNpcInRoom}
+          onSelectBoundaryGauge={handleSelectBoundaryGauge}
+          onToggleJacobianSign={handleToggleJacobianSign}
+          onRunChiralLabExperiment={handleRunChiralLabExperiment}
+          onToggleRookCitations={handleToggleRookCitations}
+          onToggleGrantLineItem={handleToggleGrantLineItem}
+          onSubmitGrantBudgetProposal={handleSubmitGrantBudgetProposal}
+          onPayMonthlyMortgage={handlePayMonthlyMortgage}
+          onAttemptIllegalDepartmentalReimbursement={handleAttemptIllegalDepartmentalReimbursement}
+          onAdvanceTimeMinutes={handleAdvanceTimeMinutes}
+          onSleepUntilNextMorning={handleSleepUntilNextMorning}
           onSubmitToJournalOfTransfiniteCausality={handleSubmitToJournalOfTransfiniteCausality}
-          onFastForwardToYear6Desperation={handleFastForwardToYear6Desperation}
           onSellEquipmentForPerseusFee={handleSellEquipmentForPerseusFee}
           onOpenAcceptanceLetter={handleOpenAcceptanceLetter}
+          onBeginRealityShatter={handleBeginRealityShatter}
           onConcludePublicationAndRestorePieces={handleConcludePublicationAndRestorePieces}
+          uniFirstPerson={uniFirstPerson}
+          freeMouseLook={freeMouseLook}
+          onToggleUniFirstPerson={() => {
+            const nextFp = !simRef.current.mouseLook.uniFirstPerson;
+            simRef.current.mouseLook.uniFirstPerson = nextFp;
+            if (!nextFp && simRef.current.mouseLook.uniCamDistance < 1.8) {
+              simRef.current.mouseLook.uniCamDistance = 5.6;
+            }
+            setUniFirstPerson(nextFp);
+          }}
+          onToggleFreeMouseLook={() => {
+            const nextFree = !simRef.current.mouseLook.freeLookActive;
+            simRef.current.mouseLook.freeLookActive = nextFree;
+            setFreeMouseLook(nextFree);
+          }}
+          onResetUniCamera={() => {
+            simRef.current.mouseLook.uniCamYaw = 0;
+            simRef.current.mouseLook.uniCamPitch = 0.42;
+            simRef.current.mouseLook.uniCamDistance = 6.2;
+          }}
         />
       )}
 

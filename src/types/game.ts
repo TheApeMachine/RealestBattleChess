@@ -133,11 +133,86 @@ export type AcademicColloquiumStage =
   | 'UNIVERSITY_SIMULATOR'
   | 'PERSEUS_ARM_OFFER'
   | 'ACCEPTANCE_LETTER'
+  | 'REALITY_SHATTER_TRANSITION'
   | 'PREPRINT_SUBMISSION'
   | 'PEER_REVIEW_ROUND_1'
   | 'MAJOR_REVISIONS'
   | 'ORAL_DEFENSE_DEBATE'
   | 'PUBLISHED_QED';
+
+export type UniversityRoomId =
+  | 'OFFICE_4B'
+  | 'FACULTY_CORRIDOR'
+  | 'SEMINAR_ROOM_204'
+  | 'CAFETERIA'
+  | 'DRY_CLEANER';
+
+export type AcademicShirtState =
+  | 'CLEAN'
+  | 'COFFEE_STAINED'
+  | 'AT_CLEANERS_WEARING_SWEATER';
+
+export interface DryCleaningTicket {
+  ticketNumber: string;
+  serviceName: 'STANDARD_NEXT_DAY' | 'EXPRESS_75_MIN';
+  feePaid: number;
+  droppedOffDayIndex: number; // 0=Mon .. 4=Fri
+  droppedOffMinutes: number;
+  readyDayIndex: number;
+  readyMinutes: number; // Minutes from midnight (e.g., 14*60 + 20 = 860 for 14:20)
+  collected: boolean;
+}
+
+export interface FinancialLedgerEntry {
+  id: string;
+  account: 'PERSONAL' | 'DEPARTMENTAL';
+  dayLabel: string;
+  timeLabel: string;
+  description: string;
+  category:
+    | 'OPENING'
+    | 'SALARY'
+    | 'MORTGAGE'
+    | 'CAFETERIA'
+    | 'DRY_CLEANING'
+    | 'CLOTHING'
+    | 'GRANT_AWARD'
+    | 'LAB_EQUIPMENT'
+    | 'PUBLICATION_FEE';
+  amount: number; // Positive for credit, negative for debit
+  runningBalance: number;
+}
+
+export interface GrantBudgetLineItem {
+  id: string;
+  label: string;
+  category: 'CRYO_CONSUMABLES' | 'INTERFEROMETER_CALIBRATION' | 'GRAD_STIPEND' | 'PERSONAL_PROHIBITED';
+  directCost: number;
+  selected: boolean;
+  isProhibitedPersonalExpense?: boolean;
+  justificationNote: string;
+}
+
+export interface UniversityAppointment {
+  id: string;
+  dayIndex: number; // 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri
+  startMinutes: number; // e.g., 14*60 + 30 = 870 (14:30)
+  endMinutes: number; // e.g., 15*60 + 15 = 915 (15:15)
+  title: string;
+  locationRoom: UniversityRoomId;
+  withNpcName: string;
+  status: 'UPCOMING' | 'IN_WINDOW' | 'ATTENDED_CLEAN' | 'ATTENDED_STAINED' | 'ATTENDED_SWEATER' | 'MISSED';
+  outcomeNote?: string;
+}
+
+export interface LemmaProofWorkbenchState {
+  boundaryGaugeChoice: 'UNSELECTED' | 'DIRICHLET_CLAMP' | 'CHIRAL_ANTIPERIODIC' | 'TRUNCATED_PERTURBATIVE';
+  boundaryGaugeVerified: boolean;
+  jacobianSignFlipped: boolean; // False = defective -kappa, True = corrected +kappa anti-Hermitian adjoint
+  chiralLabDataAttached: boolean;
+  rookCitationsAttached: boolean;
+  lastVerificationMessage: string;
+}
 
 export interface AcademicReviewer {
   id: 'REVIEWER_1' | 'REVIEWER_2' | 'REVIEWER_3';
@@ -186,28 +261,59 @@ export interface AcademicColloquiumState {
   colloquiumLog: string[];
   publishedDoi?: string;
 
-  // University of Greater Andromeda — 6-Year Academic Life Simulator State
+  // University of Greater Andromeda — Playable 5-Day Week & 6-Year Career State
   academicYear: number; // 1 to 6
   semester: 'Fall' | 'Spring';
+  dayIndex: number; // 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday
+  timeOfDayMinutes: number; // Minutes since midnight (e.g., 510 = 08:30, 870 = 14:30)
+  energyLevel: number; // 0 to 100 (affected by sleep vs late-night chalkboard sessions)
+  currentRoom: UniversityRoomId;
+  activeDrawerTab: 'NONE' | 'CHALKBOARD_PROOF' | 'FINANCE_LEDGER' | 'PINE_MAIL' | 'CALENDAR_NPCS';
+
+  // Clothing, Cafeteria Queue & Dry-Cleaner State
+  shirtState: AcademicShirtState;
+  hasSpareCleanShirtAtHome: boolean;
+  carryingHotCoffee: boolean;
+  cafeteriaQueuePosition: number | null; // null = not queuing, 3 -> 2 -> 1 -> 0 (at register)
+  cafeteriaServiceProgress: number; // 0 to 100% for current customer in line
+  coffeeSpillIncidentTriggered: boolean;
+  activeDryCleaningTicket: DryCleaningTicket | null;
+
+  // Real Personal & Departmental Accounting
   annualSalary: number;
-  checkingBalance: number;
+  checkingBalance: number; // Always equals opening + sum(personalLedger)
   monthlyMortgage: number;
+  mortgagePaidThisWeek: boolean;
   mortgageMonthsBehind: number;
-  departmentalBudget: number;
+  departmentalBudget: number; // Always equals opening + sum(departmentalLedger)
+  personalLedger: FinancialLedgerEntry[];
+  departmentalLedger: FinancialLedgerEntry[];
+  grantBudgetLines: GrantBudgetLineItem[];
+  grantSubmittedAndApproved: boolean;
+
+  // NPC Relationships, Memories & Schedules
   hIndex: number;
   rookHIndex: number;
   adminProductivityScore: number;
   chairRelationship: number; // 0 to 100 ("Strained")
-  centralLemmaIntegrity: number; // Starts at 18% ("Grad student found central lemma may be incorrect!")
+  tobyRelationship: number; // 0 to 100 (Grad student trust/morale)
+  bishopRelationship: number; // 0 to 100 (Quantum Lab Director disposition)
+  npcMemoryNotes: string[];
+  appointments: UniversityAppointment[];
+
+  // Real Mathematical Proof Workbench & Journal Submissions
+  centralLemmaIntegrity: number; // Computed from proofWorkbench progress (18% -> 48% -> 78% -> 100%)
+  proofWorkbench: LemmaProofWorkbenchState;
   bishopLabAccessGranted: boolean;
   bishopSuspectedWithholding: boolean;
-  rookIdenticalPapersCount: number; // 3 identical papers, yet received full tenure!
-  reviewer2RivalryLevel: number; // 0 to 100
+  rookIdenticalPapersCount: number;
+  reviewer2RivalryLevel: number;
   journalRejections: number; // 0, 1, 2, 3 rejections from Journal of Transfinite Causality
   equipmentSoldForFee: boolean;
   coffeeMachineKickCount: number;
   selectedEmailId: string;
   inbox: AcademicEmailItem[];
+  realityShatterProgressSec?: number;
 }
 
 export interface CounterpartManifestationSummary {
