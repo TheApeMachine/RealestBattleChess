@@ -95,12 +95,26 @@ export interface UniversityOfficeRig {
   spareShirtHangerMesh: THREE.Object3D;
   trafficCars: {
     group: THREE.Group;
-    axis: 'X' | 'Z';
-    dir: number;
-    laneCoord: number;
-    minCoord: number;
-    maxCoord: number;
+    wheels: THREE.Group[];
+    laneZ: number;
     speed: number;
+    x: number;
+  }[];
+
+  // Procedural Retrocausal Tram / Metro Transit Network
+  tramGroup: THREE.Group;
+  tramWheels: THREE.Group[];
+  tramHeadlight: THREE.PointLight;
+  tramInteriorLight: THREE.PointLight;
+  tramTrackCurve: THREE.CatmullRomCurve3;
+  tramStations: {
+    id: string;
+    name: string;
+    shortLabel: string;
+    x: number;
+    z: number;
+    platformAngle: number;
+    description: string;
   }[];
 
   // Coffee spill particle burst
@@ -116,6 +130,10 @@ export interface UniversityOfficeRig {
   lastCleanerSignature: string;
   lastSeminarSignature: string;
   lastHouseSignature: string;
+  tramProgress: number;
+  tramSpeed: number;
+  tramDwellTimer: number;
+  tramCurrentStation: string | null;
 }
 
 export const UNIVERSITY_ROOM_CENTERS: Record<
@@ -171,6 +189,55 @@ export const UNIVERSITY_ROOM_CENTERS: Record<
     subtitle: 'Mortgaged Suburban Residence · Wardrobe Closet (Spare Clean Shirt) & Bedroom',
   },
 };
+
+export interface TramStationInfo {
+  id: string;
+  name: string;
+  shortLabel: string;
+  x: number;
+  z: number;
+  platformAngle: number;
+  description: string;
+}
+
+export const TRAM_STATIONS: TramStationInfo[] = [
+  {
+    id: 'PEANO_QUAD',
+    name: 'Peano Quad Station',
+    shortLabel: 'Peano Quad (Campus)',
+    x: 0.0,
+    z: 13.5,
+    platformAngle: 0,
+    description: 'Central Campus · Direct Access to Peano Hall, Office 4B & Cafeteria',
+  },
+  {
+    id: 'DOWNTOWN_PERSEUS',
+    name: 'Perseus Downtown Transit Center',
+    shortLabel: 'Downtown Cleaners',
+    x: 58.0,
+    z: 66.0,
+    platformAngle: Math.PI * 0.25,
+    description: 'Commercial District · Downtown Perseus Dry Cleaners & Haberdashery',
+  },
+  {
+    id: 'KEPLER_SUBURBS',
+    name: 'Kepler Suburbs Station',
+    shortLabel: 'Kepler Suburbs (Home)',
+    x: -58.0,
+    z: 66.0,
+    platformAngle: -Math.PI * 0.25,
+    description: 'Residential Sector · 742 Retrocausal Terrace (Dr. Pawn’s House)',
+  },
+  {
+    id: 'OBSERVATORY_TERMINUS',
+    name: 'North Observatory Station',
+    shortLabel: 'North Observatory',
+    x: 0.0,
+    z: -32.0,
+    platformAngle: Math.PI,
+    description: 'North Campus Terminus · Chiral Quantum Interferometer & Radio Dishes',
+  },
+];
 
 export function getRoomAtWorldPos(x: number, z: number): UniversityRoomId {
   // 1. Inside Peano Hall (University Building)
@@ -2421,6 +2488,183 @@ function createProceduralStationWagon(options: {
   return { group: g, wheels, headlight };
 }
 
+// Procedural GAMTA Retrocausal Tram / Metro Vehicle Builder
+function createProceduralTramVehicle(): {
+  group: THREE.Group;
+  wheels: THREE.Group[];
+  headlight: THREE.PointLight;
+  interiorLight: THREE.PointLight;
+} {
+  const g = new THREE.Group();
+  g.userData = {
+    uniInteract: 'BOARD_TRAM',
+    interactLabel: 'Board GAMTA Retrocausal Tram ($1.75)',
+  };
+
+  const tealBodyMat = new THREE.MeshStandardMaterial({
+    color: 0x0f766e,
+    roughness: 0.28,
+    metalness: 0.52,
+  });
+  const creamMat = new THREE.MeshStandardMaterial({
+    color: 0xf8fafc,
+    roughness: 0.32,
+    metalness: 0.18,
+  });
+  const darkMetalMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.72,
+    metalness: 0.45,
+  });
+  const chromeMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.15,
+    metalness: 0.9,
+  });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x93c5fd,
+    transparent: true,
+    opacity: 0.42,
+    roughness: 0.08,
+    metalness: 0.3,
+  });
+  const signMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    emissive: 0xf59e0b,
+    emissiveIntensity: 1.4,
+  });
+  const headlightMat = new THREE.MeshStandardMaterial({
+    color: 0xfef9c3,
+    emissive: 0xfef08a,
+    emissiveIntensity: 1.8,
+  });
+  const tailLightMat = new THREE.MeshStandardMaterial({
+    color: 0xef4444,
+    emissive: 0xdc2626,
+    emissiveIntensity: 1.2,
+  });
+
+  // Main Car Body (Length 11.2m, Width 2.44m, Height 3.2m)
+  const lowerChassis = new THREE.Mesh(new THREE.BoxGeometry(2.44, 1.15, 10.6), tealBodyMat);
+  lowerChassis.position.set(0, 0.85, 0);
+  lowerChassis.castShadow = true;
+  lowerChassis.receiveShadow = true;
+  g.add(lowerChassis);
+
+  // Rounded aerodynamic nose cones (Front +Z, Rear -Z)
+  [1, -1].forEach((dir) => {
+    const nose = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.22, 1.22, 1.15, 16, 1, false, 0, Math.PI),
+      tealBodyMat
+    );
+    nose.position.set(0, 0.85, dir * 5.3);
+    nose.rotation.y = dir === 1 ? -Math.PI / 2 : Math.PI / 2;
+    g.add(nose);
+  });
+
+  // Upper Passenger Cabin (Cream color with roof)
+  const cabinRoof = new THREE.Mesh(new THREE.BoxGeometry(2.36, 0.22, 10.8), creamMat);
+  cabinRoof.position.set(0, 2.75, 0);
+  cabinRoof.castShadow = true;
+  g.add(cabinRoof);
+
+  // Roof Equipment: HVAC Pods & Pantograph
+  const hvac1 = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.32, 2.2), darkMetalMat);
+  hvac1.position.set(0, 2.98, -2.4);
+  const hvac2 = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.32, 2.2), darkMetalMat);
+  hvac2.position.set(0, 2.98, 2.4);
+  g.add(hvac1, hvac2);
+
+  // Pantograph on Roof
+  const pantoBase = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.12, 0.8), darkMetalMat);
+  pantoBase.position.set(0, 2.92, 0);
+  const pantoArm1 = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.95, 8), chromeMat);
+  pantoArm1.position.set(0, 3.32, -0.22);
+  pantoArm1.rotation.x = 0.58;
+  const pantoArm2 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.95, 8), chromeMat);
+  pantoArm2.position.set(0, 3.82, 0.18);
+  pantoArm2.rotation.x = -0.52;
+  const pantoHead = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.035, 0.12), chromeMat);
+  pantoHead.position.set(0, 4.18, 0.42);
+  g.add(pantoBase, pantoArm1, pantoArm2, pantoHead);
+
+  // Panoramic Windows on East and West sides
+  [-1.23, 1.23].forEach((wx) => {
+    for (let zi = -4.2; zi <= 4.2; zi += 1.4) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1.12, 1.05), glassMat);
+      win.position.set(wx, 2.05, zi);
+      g.add(win);
+    }
+  });
+
+  // Front & Rear Panoramic Windshields
+  const frontWindshield = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.1, 0.05), glassMat);
+  frontWindshield.position.set(0, 2.05, 5.48);
+  frontWindshield.rotation.x = -0.22;
+  const rearWindshield = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.1, 0.05), glassMat);
+  rearWindshield.position.set(0, 2.05, -5.48);
+  rearWindshield.rotation.x = 0.22;
+  g.add(frontWindshield, rearWindshield);
+
+  // Illuminated Rollsigns (Front & Rear)
+  const frontSign = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.24, 0.06), signMat);
+  frontSign.position.set(0, 2.72, 5.45);
+  const rearSign = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.24, 0.06), signMat);
+  rearSign.position.set(0, 2.72, -5.45);
+  g.add(frontSign, rearSign);
+
+  // Dual Headlights & Tail Lights
+  [-0.68, 0.68].forEach((lx) => {
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.05), headlightMat);
+    head.position.set(lx, 1.02, 5.52);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.05), tailLightMat);
+    tail.position.set(lx, 1.02, -5.52);
+    g.add(head, tail);
+  });
+
+  // Interior Seating & Warm Ambient Glow
+  for (let sz = -3.8; sz <= 3.8; sz += 1.4) {
+    [-0.72, 0.72].forEach((sx) => {
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.48, 0.46), tealBodyMat);
+      seat.position.set(sx, 1.62, sz);
+      g.add(seat);
+    });
+  }
+
+  // Steel Wheel Bogeys / Trucks (front truck at z: +3.2, rear truck at z: -3.2)
+  const wheels: THREE.Group[] = [];
+  [3.2, -3.2].forEach((truckZ) => {
+    const truckFrame = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.18, 2.1), darkMetalMat);
+    truckFrame.position.set(0, 0.32, truckZ);
+    g.add(truckFrame);
+
+    [-0.92, 0.92].forEach((wx) => {
+      [-0.65, 0.65].forEach((wz) => {
+        const wg = new THREE.Group();
+        wg.position.set(wx, 0.28, truckZ + wz);
+        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.12, 18), chromeMat);
+        wheel.rotation.z = Math.PI / 2;
+        wheel.castShadow = true;
+        wg.add(wheel);
+        g.add(wg);
+        wheels.push(wg);
+      });
+    });
+  });
+
+  // Headlight illumination forward
+  const headlight = new THREE.PointLight(0xfef08a, 4.5, 32);
+  headlight.position.set(0, 1.15, 6.2);
+  g.add(headlight);
+
+  // Interior passenger cabin light
+  const interiorLight = new THREE.PointLight(0xfef08a, 2.8, 12);
+  interiorLight.position.set(0, 2.4, 0);
+  g.add(interiorLight);
+
+  return { group: g, wheels, headlight, interiorLight };
+}
+
 export function createUniversityOfficeRig(): UniversityOfficeRig {
   const rootGroup = new THREE.Group();
   rootGroup.position.set(0, 0, 0);
@@ -3902,6 +4146,233 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
   cleanerLight.position.set(71.2, 3.8, 72.8);
   rootGroup.add(cleanerLight);
 
+  // ============================================================================
+  // 9. PROCEDURAL TRAM / METRO TRANSIT NETWORK (GAMTA RETROCAUSAL LINE 1)
+  // ============================================================================
+  const tramCurvePoints = [
+    new THREE.Vector3(0, 0.25, 13.5),     // Station 1: Peano Quad (Campus Center)
+    new THREE.Vector3(26, 0.25, 18.0),    // East along University Ave
+    new THREE.Vector3(50, 0.25, 45.0),    // Diagonal cut southeast towards downtown
+    new THREE.Vector3(58, 0.25, 66.0),    // Station 2: Perseus Downtown Transit Plaza
+    new THREE.Vector3(38, 0.25, 75.0),    // Downtown south loop
+    new THREE.Vector3(0, 0.25, 72.0),     // Central boulevard cross
+    new THREE.Vector3(-38, 0.25, 75.0),   // Suburbs transition
+    new THREE.Vector3(-58, 0.25, 66.0),   // Station 3: Kepler Suburbs Station (Home)
+    new THREE.Vector3(-50, 0.25, 42.0),   // Cut north along West Ring
+    new THREE.Vector3(-26, 0.25, 18.0),   // Approaching campus from west
+    new THREE.Vector3(-16, 0.25, -12.0),  // North transit corridor to Observatory
+    new THREE.Vector3(0, 0.25, -32.0),    // Station 4: North Observatory Terminus
+    new THREE.Vector3(16, 0.25, -12.0),   // South return corridor to Peano Quad
+  ];
+  const tramTrackCurve = new THREE.CatmullRomCurve3(tramCurvePoints, true);
+
+  const railSteelMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8,
+    metalness: 0.9,
+    roughness: 0.22,
+  });
+  const ballastMat = new THREE.MeshStandardMaterial({
+    color: 0x27272a,
+    roughness: 0.96,
+  });
+  const tieMat = new THREE.MeshStandardMaterial({
+    color: 0x3f2d21,
+    roughness: 0.88,
+  });
+  const gantryPoleMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    metalness: 0.75,
+    roughness: 0.35,
+  });
+  const catenaryWireMat = new THREE.MeshBasicMaterial({ color: 0x475569 });
+
+  // Generate Track Bed, Ties, Double Steel Rails & Overhead Catenary along the Curve
+  const trackSampleCount = 180;
+  for (let s = 0; s < trackSampleCount; s++) {
+    const t = s / trackSampleCount;
+    const pt = tramTrackCurve.getPointAt(t);
+    const tangent = tramTrackCurve.getTangentAt(t);
+    const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+    const yaw = Math.atan2(tangent.x, tangent.z);
+
+    // Ballast gravel gravel bed chunk
+    const ballastChunk = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.12, 1.4), ballastMat);
+    ballastChunk.position.set(pt.x, 0.05, pt.z);
+    ballastChunk.rotation.y = yaw;
+    ballastChunk.receiveShadow = true;
+    rootGroup.add(ballastChunk);
+
+    // Wooden Cross Sleepers / Ties (every 2 samples)
+    if (s % 2 === 0) {
+      const tie = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 0.32), tieMat);
+      tie.position.set(pt.x, 0.12, pt.z);
+      tie.rotation.y = yaw;
+      tie.receiveShadow = true;
+      rootGroup.add(tie);
+    }
+
+    // Steel Parallel Rails (Left & Right Rails at standard gauge 1.435m)
+    [-0.72, 0.72].forEach((offsetDist) => {
+      const railSegment = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 1.45), railSteelMat);
+      const railPos = pt.clone().add(normal.clone().multiplyScalar(offsetDist));
+      railSegment.position.set(railPos.x, 0.22, railPos.z);
+      railSegment.rotation.y = yaw;
+      rootGroup.add(railSegment);
+    });
+
+    // Catenary Gantries & Overhead Power Wires (every 15 samples)
+    if (s % 15 === 0) {
+      const gantryGroup = new THREE.Group();
+      gantryGroup.position.set(pt.x, 0, pt.z);
+      gantryGroup.rotation.y = yaw;
+
+      // Steel vertical support pole
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 4.8, 10), gantryPoleMat);
+      pole.position.set(2.4, 2.4, 0);
+      pole.castShadow = true;
+
+      // Horizontal cantilever arm extending over tracks
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.1, 0.12), gantryPoleMat);
+      arm.position.set(1.0, 4.4, 0);
+
+      // Contact wire insulator & wire dropper
+      const dropper = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.45, 6), gantryPoleMat);
+      dropper.position.set(0, 4.18, 0);
+
+      gantryGroup.add(pole, arm, dropper);
+      rootGroup.add(gantryGroup);
+    }
+  }
+
+  // Continuous overhead wire ring
+  const wirePoints: THREE.Vector3[] = [];
+  for (let w = 0; w <= 100; w++) {
+    const pt = tramTrackCurve.getPointAt(w / 100);
+    wirePoints.push(new THREE.Vector3(pt.x, 4.15, pt.z));
+  }
+  const wireGeo = new THREE.BufferGeometry().setFromPoints(wirePoints);
+  const overheadWire = new THREE.Line(wireGeo, catenaryWireMat);
+  rootGroup.add(overheadWire);
+
+  // 4 Full Physical Tram Station Platforms with Shelters, Signs, Kiosks & Benches
+  const platformMat = new THREE.MeshStandardMaterial({ color: 0x52525b, roughness: 0.8 });
+  const tactileMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    emissive: 0xca8a04,
+    emissiveIntensity: 0.35,
+    roughness: 0.5,
+  });
+  const canopyGlassMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.45,
+    roughness: 0.1,
+    metalness: 0.4,
+  });
+  const stationSignMat = new THREE.MeshStandardMaterial({
+    color: 0x0f172a,
+    roughness: 0.6,
+  });
+  const stationSignTextMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    emissive: 0xf59e0b,
+    emissiveIntensity: 1.6,
+  });
+
+  TRAM_STATIONS.forEach((st) => {
+    const stationGroup = new THREE.Group();
+    stationGroup.position.set(st.x, 0, st.z);
+    stationGroup.rotation.y = st.platformAngle;
+
+    // Station Interactive Boarding Kiosk Root
+    stationGroup.userData = {
+      uniInteract: 'TRAM_STATION_KIOSK',
+      stationId: st.id,
+      stationName: st.name,
+      interactX: st.x,
+      interactZ: st.z,
+      interactLabel: `Board GAMTA Retrocausal Tram at ${st.shortLabel} ($1.75)`,
+    };
+
+    // Concrete passenger waiting platform (offset to the side of track: x: +2.8, length 14m)
+    const platformDeck = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.32, 13.8), platformMat);
+    platformDeck.position.set(2.6, 0.16, 0);
+    platformDeck.receiveShadow = true;
+    platformDeck.userData = stationGroup.userData;
+    stationGroup.add(platformDeck);
+
+    // Tactile Caution Edge Stripe along trackside
+    const tactileStripe = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.02, 13.6), tactileMat);
+    tactileStripe.position.set(0.55, 0.33, 0);
+    tactileStripe.userData = stationGroup.userData;
+    stationGroup.add(tactileStripe);
+
+    // Modern Curved Glass Shelter Canopy (length 8m)
+    const shelterRoof = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.4, 2.4, 8.2, 16, 1, true, 0, Math.PI * 0.55),
+      canopyGlassMat
+    );
+    shelterRoof.position.set(2.8, 2.6, 0);
+    shelterRoof.rotation.z = Math.PI * 0.72;
+    stationGroup.add(shelterRoof);
+
+    // Stainless steel canopy support posts
+    [-3.2, 3.2].forEach((pz) => {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.8, 12), railSteelMat);
+      post.position.set(4.2, 1.4, pz);
+      post.castShadow = true;
+      stationGroup.add(post);
+    });
+
+    // Illuminated Backlit Station Name Signboard
+    const signBoard = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.55, 0.16), stationSignMat);
+    signBoard.position.set(2.8, 2.9, 0);
+    const signFace = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.42, 0.18), stationSignTextMat);
+    signFace.position.set(2.8, 2.9, 0);
+    signBoard.userData = stationGroup.userData;
+    signFace.userData = stationGroup.userData;
+    stationGroup.add(signBoard, signFace);
+
+    // Automated Fare Validator & Turnstile Kiosk
+    const kioskGroup = new THREE.Group();
+    kioskGroup.position.set(3.8, 0.32, 2.4);
+    kioskGroup.userData = stationGroup.userData;
+    const kioskPillar = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.25, 0.38), gantryPoleMat);
+    kioskPillar.position.y = 0.625;
+    kioskPillar.userData = stationGroup.userData;
+    const kioskScreen = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.28, 0.08),
+      new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 1.5 })
+    );
+    kioskScreen.position.set(0, 1.05, 0.18);
+    kioskScreen.rotation.x = -0.3;
+    kioskScreen.userData = stationGroup.userData;
+    kioskGroup.add(kioskPillar, kioskScreen);
+    stationGroup.add(kioskGroup);
+
+    // Wooden Waiting Bench
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.48, 2.6), tieMat);
+    bench.position.set(4.0, 0.56, -1.8);
+    bench.userData = stationGroup.userData;
+    stationGroup.add(bench);
+
+    // Soft warm lantern illumination on platform
+    const platformLight = new THREE.PointLight(0xfef08a, 3.2, 14);
+    platformLight.position.set(2.8, 2.8, 0);
+    stationGroup.add(platformLight);
+
+    rootGroup.add(stationGroup);
+  });
+
+  // Procedural GAMTA Retrocausal Tram Vehicle Carriage
+  const tramBuilt = createProceduralTramVehicle();
+  const tramGroup = tramBuilt.group;
+  const tramWheels = tramBuilt.wheels;
+  const tramHeadlight = tramBuilt.headlight;
+  const tramInteriorLight = tramBuilt.interiorLight;
+  tramGroup.position.copy(tramCurvePoints[0]);
+  rootGroup.add(tramGroup);
+
   return {
     rootGroup,
     walkableFloorMesh,
@@ -3930,8 +4401,14 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     playerCarHeadlight,
     houseBoardCanvas,
     houseBoardTex,
-    spareShirtHangerGroup,
+    spareShirtHangerMesh: spareShirtHangerGroup,
     trafficCars,
+    tramGroup,
+    tramWheels,
+    tramHeadlight,
+    tramInteriorLight,
+    tramTrackCurve,
+    tramStations: TRAM_STATIONS,
     deskLampLight,
     windowMoonLight,
     fluorescentLight,
@@ -3956,6 +4433,10 @@ export function createUniversityOfficeRig(): UniversityOfficeRig {
     lastCleanerSignature: '',
     lastSeminarSignature: '',
     lastHouseSignature: '',
+    tramProgress: 0.0,
+    tramSpeed: 0.018,
+    tramDwellTimer: 0.0,
+    tramCurrentStation: null,
   };
 }
 
@@ -3996,13 +4477,13 @@ export function updateUniversityOfficeScene(
     playerWorldZ: number;
     playerYaw: number;
     playerIsMoving: boolean;
-    carWorldX: number;
-    carWorldZ: number;
-    carYaw: number;
-    carSpeed: number;
-    isDrivingCar: boolean;
-    homeSpareShirts: number;
-    weeklyMortgagePayment: number;
+    carWorldX?: number;
+    carWorldZ?: number;
+    carYaw?: number;
+    carSpeed?: number;
+    isDrivingCar?: boolean;
+    homeSpareShirts?: number;
+    weeklyMortgagePayment?: number;
     shirtState: AcademicShirtState;
     carryingHotCoffee: boolean;
     cafeteriaQueuePosition: number | null;
@@ -4019,6 +4500,8 @@ export function updateUniversityOfficeScene(
     equipmentSold: boolean;
     publishedAccepted: boolean;
     realityShatterProgressSec: number;
+    isRidingTram?: boolean;
+    tramDestinationStationId?: string | null;
   }
 ) {
   const isShattering = state.realityShatterProgressSec > 0;
@@ -4064,19 +4547,62 @@ export function updateUniversityOfficeScene(
   }
 
   // 2a. Update Dr. Pawn's 1984 Station Wagon & Autonomous AI City Traffic
-  rig.playerCarGroup.position.set(state.carWorldX, 0, state.carWorldZ);
-  rig.playerCarGroup.rotation.y = state.carYaw;
-  rig.playerCarHeadlight.intensity = state.isDrivingCar ? 5.2 : 1.4;
+  const carX = typeof state.carWorldX === 'number' ? state.carWorldX : -6.0;
+  const carZ = typeof state.carWorldZ === 'number' ? state.carWorldZ : 14.5;
+  const carYaw = typeof state.carYaw === 'number' ? state.carYaw : 0;
+  const carSpeed = typeof state.carSpeed === 'number' ? state.carSpeed : 0;
+  const isDriving = Boolean(state.isDrivingCar);
 
-  const wheelSpinDelta = state.carSpeed * rawDelta * 2.4;
+  rig.playerCarGroup.position.set(carX, 0, carZ);
+  rig.playerCarGroup.rotation.y = carYaw;
+  rig.playerCarHeadlight.intensity = isDriving ? 5.2 : 1.4;
+
+  const wheelSpinDelta = carSpeed * rawDelta * 2.4;
   rig.playerCarWheels.forEach((wg, idx) => {
     wg.children.forEach((c) => {
       c.rotation.x += wheelSpinDelta;
     });
     if (idx < 2) {
-      wg.rotation.y = state.isDrivingCar ? Math.sin(elapsed * 3.0) * 0.04 : 0;
+      wg.rotation.y = isDriving ? Math.sin(elapsed * 3.0) * 0.04 : 0;
     }
   });
+
+  // 2b. Procedural GAMTA Retrocausal Tram / Metro Transit Simulation
+  if (rig.tramTrackCurve && !isShattering) {
+    if (rig.tramDwellTimer > 0) {
+      rig.tramDwellTimer -= rawDelta;
+      rig.tramSpeed = THREE.MathUtils.damp(rig.tramSpeed, 0, 4, rawDelta);
+    } else {
+      rig.tramSpeed = THREE.MathUtils.damp(rig.tramSpeed, 0.018, 2, rawDelta);
+      rig.tramProgress = (rig.tramProgress + rig.tramSpeed * rawDelta) % 1.0;
+    }
+
+    const tramPos = rig.tramTrackCurve.getPointAt(rig.tramProgress);
+    const tramTangent = rig.tramTrackCurve.getTangentAt(rig.tramProgress);
+    rig.tramGroup.position.set(tramPos.x, 0.08, tramPos.z);
+    rig.tramGroup.rotation.y = Math.atan2(tramTangent.x, tramTangent.z);
+
+    const tramWheelSpin = rig.tramSpeed * 1200 * rawDelta;
+    rig.tramWheels.forEach((wg) => {
+      wg.children.forEach((c) => {
+        c.rotation.x += tramWheelSpin;
+      });
+    });
+
+    // Check station proximity for automated dwelling
+    if (rig.tramDwellTimer <= 0) {
+      for (const st of rig.tramStations) {
+        const dist = Math.hypot(tramPos.x - st.x, tramPos.z - st.z);
+        if (dist < 3.2 && rig.tramCurrentStation !== st.id) {
+          rig.tramCurrentStation = st.id;
+          rig.tramDwellTimer = 4.2; // Dwell for 4.2 seconds at each station
+          break;
+        } else if (dist > 6.0 && rig.tramCurrentStation === st.id) {
+          rig.tramCurrentStation = null;
+        }
+      }
+    }
+  }
 
   if (!isShattering) {
     rig.trafficCars.forEach((tc) => {
@@ -4149,17 +4675,20 @@ export function updateUniversityOfficeScene(
   }
 
   // 4. Update Dr. Pawn's Human Academic Rig (Seated in Station Wagon when driving, walking on foot otherwise)
+  const cYaw = state.carYaw ?? 0;
+  const cX = state.carWorldX ?? -6.0;
+  const cZ = state.carWorldZ ?? 14.5;
   if (state.isDrivingCar) {
-    const cosY = Math.cos(state.carYaw);
-    const sinY = Math.sin(state.carYaw);
+    const cosY = Math.cos(cYaw);
+    const sinY = Math.sin(cYaw);
     const seatOffsetX = -0.42 * cosY + 0.12 * sinY;
     const seatOffsetZ = 0.42 * sinY + 0.12 * cosY;
     rig.drPawnRig.root.position.set(
-      state.carWorldX + seatOffsetX,
+      cX + seatOffsetX,
       -0.26,
-      state.carWorldZ + seatOffsetZ
+      cZ + seatOffsetZ
     );
-    rig.drPawnRig.root.rotation.y = state.carYaw;
+    rig.drPawnRig.root.rotation.y = cYaw;
     animateHumanRigWalkAndPose(rig.drPawnRig, elapsed, false, false, 0, false);
   } else {
     rig.drPawnRig.root.position.set(state.playerWorldX, 0, state.playerWorldZ);
@@ -4182,7 +4711,9 @@ export function updateUniversityOfficeScene(
   rig.drPawnRig.labelSprite.visible = false;
 
   // Update Home Wardrobe Spare Shirt visibility
-  rig.spareShirtHangerGroup.visible = state.homeSpareShirts > 0;
+  if (rig.spareShirtHangerMesh) {
+    rig.spareShirtHangerMesh.visible = (state.homeSpareShirts ?? 1) > 0;
+  }
 
   // Helper to show NPC nameplate only when Dr. Pawn is nearby
   const updateNpcLabelVisibility = (npcRig: HumanAcademicRig, maxDist: number = 7.5) => {
@@ -4387,8 +4918,10 @@ export function updateUniversityOfficeScene(
       crt.fillText('UGA PINE MAIL & LEDGER TERMINAL', 20, 38);
       crt.fillStyle = '#a7f3d0';
       crt.font = '15px monospace';
-      crt.fillText(`> Personal Checking: $${state.personalBalance.toFixed(2)}`, 20, 88);
-      crt.fillText(`> Dept. Grant Acct:  $${state.departmentalBalance.toFixed(2)}`, 20, 122);
+      const pb = typeof state.personalBalance === 'number' && !isNaN(state.personalBalance) ? state.personalBalance : 0;
+      const db = typeof state.departmentalBalance === 'number' && !isNaN(state.departmentalBalance) ? state.departmentalBalance : 0;
+      crt.fillText(`> Personal Checking: $${pb.toFixed(2)}`, 20, 88);
+      crt.fillText(`> Dept. Grant Acct:  $${db.toFixed(2)}`, 20, 122);
       crt.fillText(`> Lemma 3.2 Proof:   ${state.lemmaIntegrity}%`, 20, 156);
       crt.fillText(`> Shirt Condition:   ${state.shirtState}`, 20, 190);
       rig.crtScreenTex.needsUpdate = true;
@@ -4534,7 +5067,10 @@ export function updateUniversityOfficeScene(
   }
 
   // 10. Update Dr. Pawn's Suburban Home Notice Board (742 Retrocausal Terrace)
-  const houseSig = `${state.dayName}_${state.homeSpareShirts}_${state.weeklyMortgagePayment}_${state.personalBalance.toFixed(0)}_${state.shirtState}`;
+  const homeShirts = typeof state.homeSpareShirts === 'number' ? state.homeSpareShirts : 1;
+  const mortgageDue = typeof state.weeklyMortgagePayment === 'number' ? state.weeklyMortgagePayment : 2140;
+  const persBal = typeof state.personalBalance === 'number' && !isNaN(state.personalBalance) ? state.personalBalance : 0;
+  const houseSig = `${state.dayName}_${homeShirts}_${mortgageDue.toFixed(0)}_${persBal.toFixed(0)}_${state.shirtState}`;
   if (houseSig !== rig.lastHouseSignature) {
     rig.lastHouseSignature = houseSig;
     const ctx = rig.houseBoardCanvas.getContext('2d');
@@ -4551,12 +5087,12 @@ export function updateUniversityOfficeScene(
       ctx.fillStyle = '#e7e5e4';
       ctx.font = '25px monospace';
       ctx.fillText(
-        `• Weekly Mortgage Installment (Due Friday): $${state.weeklyMortgagePayment.toFixed(2)}`,
+        `• Weekly Mortgage Installment (Due Friday): $${mortgageDue.toFixed(2)}`,
         40,
         145
       );
       ctx.fillText(
-        `• Clean Spare Dress Shirts in Oak Wardrobe: ${state.homeSpareShirts} remaining`,
+        `• Clean Spare Dress Shirts in Oak Wardrobe: ${homeShirts} remaining`,
         40,
         195
       );

@@ -30,6 +30,7 @@ import {
   Shirt,
   Sparkles,
   Ticket,
+  Train,
   Users,
   X,
 } from 'lucide-react';
@@ -418,6 +419,9 @@ interface AcademicColloquiumOverlayProps {
   onBuyNewShirtAtHaberdashery: () => void;
   onCommuteHomeForSpareShirt: () => void;
   onToggleDriveCar?: () => void;
+  onOpenTransitModal?: () => void;
+  onCloseTransitModal?: () => void;
+  onBoardTransitToStation?: (stationId: string) => void;
   onAttendScheduledMeetingInRoom: (appointmentId: string) => void;
   onTalkToNpcInRoom: (npcId: 'TOBY' | 'BISHOP' | 'QUEEN' | 'ROOK') => void;
   onSelectBoundaryGauge: (
@@ -457,6 +461,9 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
   onBuyNewShirtAtHaberdashery,
   onCommuteHomeForSpareShirt,
   onToggleDriveCar,
+  onOpenTransitModal,
+  onCloseTransitModal,
+  onBoardTransitToStation,
   onAttendScheduledMeetingInRoom,
   onTalkToNpcInRoom,
   onSelectBoundaryGauge,
@@ -890,6 +897,21 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
               title="Enter or Exit your 1984 Andromeda Station Wagon [E]"
             >
               <span>{colloquium.isDrivingCar ? '🚗 Park [E]' : '🚗 Drive Wagon [E]'}</span>
+            </button>
+          )}
+
+          {onOpenTransitModal && (
+            <button
+              onClick={onOpenTransitModal}
+              className={`px-2.5 py-1.5 rounded-xl font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5 backdrop-blur-md transition-all ${
+                colloquium.isRidingTram
+                  ? 'bg-teal-400 text-slate-950 shadow-lg animate-pulse'
+                  : 'bg-[#060911]/78 hover:bg-slate-900 text-teal-300 border border-teal-500/40'
+              }`}
+              title="Board GAMTA Retrocausal Tram / Metro [T]"
+            >
+              <Train className="w-3.5 h-3.5" />
+              <span>{colloquium.isRidingTram ? '🚈 On Tram' : '🚈 Metro/Tram ($1.75)'}</span>
             </button>
           )}
 
@@ -1691,6 +1713,17 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
               </button>
             )}
 
+          {onOpenTransitModal && (
+            <button
+              onClick={onOpenTransitModal}
+              className="px-2.5 py-1 rounded-xl bg-teal-500/25 hover:bg-teal-500/40 border border-teal-400/60 text-teal-200 font-mono text-[11px] font-bold cursor-pointer flex items-center gap-1.5"
+              title="Board GAMTA Metro/Tram Line 1 ($1.75) [T]"
+            >
+              <Train className="w-3.5 h-3.5 text-teal-300" />
+              <span>Board GAMTA Tram ($1.75)</span>
+            </button>
+          )}
+
           {colloquium.currentRoom === 'DRY_CLEANER' && (
             <>
               {colloquium.shirtState === 'COFFEE_STAINED' && (
@@ -1795,6 +1828,140 @@ export const AcademicColloquiumOverlay: React.FC<AcademicColloquiumOverlayProps>
           </div>
         </div>
       </div>
+
+      {/* GAMTA RETROCAUSAL LINE 1 · RAPID TRANSIT BOARDING TERMINAL MODAL */}
+      {colloquium.tramTransitModalOpen && (
+        <div className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+          <div className="w-full max-w-2xl rounded-2xl border border-teal-500/40 bg-[#09151f]/95 shadow-2xl p-6 text-slate-100 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-500/20 border border-teal-400/50 flex items-center justify-center text-teal-300">
+                  <Train className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-teal-300 font-mono tracking-wide">
+                    GAMTA RETROCAUSAL LINE 1 · RAPID TRANSIT TERMINAL
+                  </h2>
+                  <p className="text-xs text-slate-400 font-mono">
+                    Greater Andromeda Metropolitan Transit Authority · Automated Boarding Kiosk
+                  </p>
+                </div>
+              </div>
+              {onCloseTransitModal && (
+                <button
+                  onClick={onCloseTransitModal}
+                  className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Strategic Transit Strategy Comparison Guide */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 p-3 rounded-xl bg-slate-900/80 border border-slate-800/80 text-[11px] font-mono">
+              <div className="p-2.5 rounded-lg bg-teal-950/40 border border-teal-500/30">
+                <div className="font-bold text-teal-300 flex items-center gap-1.5 mb-1">
+                  <Train className="w-3.5 h-3.5" />
+                  <span>GAMTA Tram ($1.75)</span>
+                </div>
+                <p className="text-slate-300 text-[10px] leading-relaxed">
+                  Fast (7m sim time), +6 Energy rest reading preprints, zero traffic delay, direct station link.
+                </p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-amber-950/30 border border-amber-500/30">
+                <div className="font-bold text-amber-300 flex items-center gap-1.5 mb-1">
+                  <span>🚗 1984 Station Wagon</span>
+                </div>
+                <p className="text-slate-300 text-[10px] leading-relaxed">
+                  Fast manual driving (up to 45 mph), door-to-door, but requires parking and manual control.
+                </p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-slate-800/40 border border-slate-700/40">
+                <div className="font-bold text-slate-300 flex items-center gap-1.5 mb-1">
+                  <Footprints className="w-3.5 h-3.5" />
+                  <span>Walking On Foot</span>
+                </div>
+                <p className="text-slate-400 text-[10px] leading-relaxed">
+                  Free, but takes 25–35 min & costs 12 Energy. High risk of missing scheduled review windows!
+                </p>
+              </div>
+            </div>
+
+            {/* Account Checking Balance Status */}
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900/90 border border-slate-800 text-xs font-mono">
+              <span className="text-slate-400">Personal Checking (#4409):</span>
+              <span className={`font-bold ${colloquium.checkingBalance >= 1.75 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                ${colloquium.checkingBalance.toFixed(2)} (Tram Fare: $1.75)
+              </span>
+            </div>
+
+            {/* Stations Selection Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {[
+                {
+                  id: 'PEANO_QUAD',
+                  name: 'Peano Quad Station',
+                  shortLabel: 'Peano Quad (Campus)',
+                  desc: 'Direct access to Peano Hall, Office 4B, Seminar 204 & Cafeteria',
+                  roomTarget: 'CAMPUS_QUAD' as UniversityRoomId,
+                  badge: '🏫 Academic Hub',
+                },
+                {
+                  id: 'DOWNTOWN_PERSEUS',
+                  name: 'Perseus Downtown Transit Plaza',
+                  shortLabel: 'Downtown Cleaners',
+                  desc: 'Commercial District · Downtown Perseus Dry Cleaners & Haberdashery',
+                  roomTarget: 'DRY_CLEANER' as UniversityRoomId,
+                  badge: '👔 Cleaners & Shops',
+                },
+                {
+                  id: 'KEPLER_SUBURBS',
+                  name: 'Kepler Suburbs Station',
+                  shortLabel: 'Kepler Suburbs (Home)',
+                  desc: '742 Retrocausal Terrace · Dr. Pawn’s House, Wardrobe (Spare Shirt) & Bed',
+                  roomTarget: 'PAWN_HOUSE' as UniversityRoomId,
+                  badge: '🏡 Dr. Pawn Residence',
+                },
+                {
+                  id: 'OBSERVATORY_TERMINUS',
+                  name: 'North Observatory Terminus',
+                  shortLabel: 'North Observatory',
+                  desc: 'High-Altitude Quantum Interferometer Bluff overlooking the city & campus',
+                  roomTarget: 'CAMPUS_QUAD' as UniversityRoomId,
+                  badge: '🔭 Quantum Terminus',
+                },
+              ].map((st) => (
+                <div
+                  key={st.id}
+                  className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/70 flex flex-col justify-between gap-2.5 hover:border-teal-500/50 transition-all"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="font-bold text-teal-200 text-sm font-mono">{st.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-950 text-teal-300 font-mono border border-teal-800/60">
+                        {st.badge}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-mono leading-relaxed">{st.desc}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (onBoardTransitToStation) {
+                        onBoardTransitToStation(st.id);
+                      }
+                    }}
+                    disabled={colloquium.checkingBalance < 1.75}
+                    className="w-full py-2 px-3 rounded-lg bg-teal-500 hover:bg-teal-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 font-mono text-xs font-bold cursor-pointer transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <Train className="w-3.5 h-3.5" />
+                    <span>Board Tram to Here ($1.75)</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -148,6 +148,7 @@ import {
 import {
   createUniversityOfficeRig,
   getRoomAtWorldPos,
+  TRAM_STATIONS,
   triggerCoffeeSpill3DSplash,
   UNIVERSITY_ROOM_CENTERS,
   UniversityOfficeRig,
@@ -368,6 +369,18 @@ export default function App() {
       targetX: number | null;
       targetZ: number | null;
     };
+    uniCar: {
+      worldX: number;
+      worldZ: number;
+      yaw: number;
+      speed: number;
+      isDriving: boolean;
+    };
+    uniTransit: {
+      isRiding: boolean;
+      destinationStationId: string | null;
+      transitTimer: number;
+    };
     mouseLook: {
       isDragging: boolean;
       freeLookActive: boolean;
@@ -446,6 +459,18 @@ export default function App() {
       yaw: 0,
       targetX: null as number | null,
       targetZ: null as number | null,
+    },
+    uniCar: {
+      worldX: -6.0,
+      worldZ: 14.5,
+      yaw: 0,
+      speed: 0,
+      isDriving: false,
+    },
+    uniTransit: {
+      isRiding: false,
+      destinationStationId: null as string | null,
+      transitTimer: 0,
     },
     mouseLook: {
       isDragging: false,
@@ -2279,6 +2304,126 @@ export default function App() {
     sim.uniPlayer.targetZ = dest.z;
     advanceSimMinutes(col, 4, `Walked to ${dest.label}`);
     soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleToggleDriveCar = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    if (sim.uniCar.isDriving) {
+      // Park car & step out
+      sim.uniCar.isDriving = false;
+      sim.uniCar.speed = 0;
+      col.isDrivingCar = false;
+      col.carSpeedMph = 0;
+      sim.uniPlayer.worldX = sim.uniCar.worldX + 2.0;
+      sim.uniPlayer.worldZ = sim.uniCar.worldZ;
+      col.colloquiumLog = [
+        `🚗 [${formatSimClock(col.timeOfDayMinutes)}] Shifted 1984 Station Wagon into PARK. Stepped out onto the pavement.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playOfficeKeyboardClack();
+    } else {
+      // Enter car & drive
+      const dist = Math.hypot(sim.uniPlayer.worldX - sim.uniCar.worldX, sim.uniPlayer.worldZ - sim.uniCar.worldZ);
+      if (dist > 15.0 && col.currentRoom !== 'CAMPUS_QUAD' && col.currentRoom !== 'CITY_STREETS') {
+        col.colloquiumLog = [
+          `🚗 [${formatSimClock(col.timeOfDayMinutes)}] Walked out to your 1984 Burgundy Station Wagon in the South Lot. Engine turns over with a familiar rumble.`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+        sim.uniPlayer.worldX = sim.uniCar.worldX;
+        sim.uniPlayer.worldZ = sim.uniCar.worldZ;
+        col.currentRoom = 'CAMPUS_QUAD';
+      } else {
+        col.colloquiumLog = [
+          `🚗 [${formatSimClock(col.timeOfDayMinutes)}] Turned the key in your 1984 Station Wagon. Headlights illuminate the road ahead! Use WASD to steer & drive.`,
+          ...col.colloquiumLog.slice(0, 9),
+        ];
+      }
+      sim.uniCar.isDriving = true;
+      col.isDrivingCar = true;
+      soundEngine.playOfficeKeyboardClack();
+    }
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleOpenTransitModal = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.tramTransitModalOpen = true;
+    soundEngine.playTramChime();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleCloseTransitModal = useCallback(() => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    col.tramTransitModalOpen = false;
+    soundEngine.playOfficeKeyboardClack();
+    setAcademicColloquium({ ...col });
+  }, []);
+
+  const handleBoardTransitToStation = useCallback((stationId: string) => {
+    const sim = simRef.current;
+    const col = sim.academicColloquium;
+    if (!col || !col.active) return;
+
+    const st = TRAM_STATIONS.find((s) => s.id === stationId);
+    if (!st) return;
+
+    if (col.checkingBalance < 1.75) {
+      col.colloquiumLog = [
+        `💳 [${formatSimClock(col.timeOfDayMinutes)}] Insufficient funds! Farecard reader declined: You need at least $1.75 in personal checking for a GAMTA tram token.`,
+        ...col.colloquiumLog.slice(0, 9),
+      ];
+      soundEngine.playRejectionStamp();
+      setAcademicColloquium({ ...col });
+      return;
+    }
+
+    recordPersonalTransaction(
+      col,
+      `GAMTA Metro Transit — Retrocausal Line 1 to ${st.name}`,
+      'CAFETERIA',
+      -1.75
+    );
+
+    advanceSimMinutes(col, 7, `Rode GAMTA Retrocausal Tram to ${st.shortLabel}`);
+    col.energyLevel = Math.min(100, col.energyLevel + 6); // Relaxing commute reading preprints!
+    col.tramTransitModalOpen = false;
+    col.isRidingTram = false;
+
+    // Relocate player to station platform
+    sim.uniPlayer.worldX = st.x + Math.sin(st.platformAngle + Math.PI / 2) * 2.8;
+    sim.uniPlayer.worldZ = st.z + Math.cos(st.platformAngle + Math.PI / 2) * 2.8;
+    sim.uniPlayer.targetX = null;
+    sim.uniPlayer.targetZ = null;
+
+    if (stationId === 'PEANO_QUAD') {
+      col.currentRoom = 'CAMPUS_QUAD';
+    } else if (stationId === 'DOWNTOWN_PERSEUS') {
+      col.currentRoom = 'DRY_CLEANER';
+    } else if (stationId === 'KEPLER_SUBURBS') {
+      col.currentRoom = 'PAWN_HOUSE';
+    } else {
+      col.currentRoom = 'CAMPUS_QUAD';
+    }
+
+    soundEngine.playTramChime();
+    soundEngine.playTramBell();
+    soundEngine.playTramMotorHum();
+
+    col.colloquiumLog = [
+      `🚈 [${formatSimClock(col.timeOfDayMinutes)}] GAMTA RETROCAUSAL LINE 1: Arrived at ${st.name} (-$1.75 fare). The 7-minute express trip gave you a few peaceful moments to review Lemma 3.2 (+6 Energy)!`,
+      ...col.colloquiumLog.slice(0, 9),
+    ];
+
     setAcademicColloquium({ ...col });
   }, []);
 
@@ -4374,6 +4519,16 @@ export default function App() {
                 } else {
                   handleBuyNewShirtAtHaberdashery();
                 }
+              } else if (actionTag === 'TOGGLE_DRIVE_CAR') {
+                handleToggleDriveCar();
+              } else if (actionTag === 'BOARD_TRAM' || actionTag === 'TRAM_STATION_KIOSK') {
+                handleOpenTransitModal();
+              } else if (actionTag === 'HOME_WARDROBE') {
+                handleCommuteHomeForSpareShirt();
+              } else if (actionTag === 'HOME_BED') {
+                handleSleepUntilNextMorning();
+              } else if (actionTag === 'BUY_HABERDASHERY_SHIRT') {
+                handleBuyNewShirtAtHaberdashery();
               }
               return;
             }
@@ -4384,8 +4539,8 @@ export default function App() {
         const floorHits = raycaster.intersectObject(universityOfficeRig.walkableFloorMesh, false);
         if (floorHits.length > 0) {
           const pt = floorHits[0].point;
-          sim.uniPlayer.targetX = THREE.MathUtils.clamp(pt.x, -14.2, 15.2);
-          sim.uniPlayer.targetZ = THREE.MathUtils.clamp(pt.z, -6.4, 9.2);
+          sim.uniPlayer.targetX = THREE.MathUtils.clamp(pt.x, -92, 92);
+          sim.uniPlayer.targetZ = THREE.MathUtils.clamp(pt.z, -36, 86);
         }
         return;
       }
@@ -4532,6 +4687,16 @@ export default function App() {
           handleSetDrawerTab(
             sim.academicColloquium.activeDrawerTab === 'PINE_MAIL' ? 'NONE' : 'PINE_MAIL'
           );
+          return;
+        } else if (e.key === 't' || e.key === 'T') {
+          if (sim.academicColloquium.tramTransitModalOpen) {
+            handleCloseTransitModal();
+          } else {
+            handleOpenTransitModal();
+          }
+          return;
+        } else if (e.key === 'e' || e.key === 'E') {
+          handleToggleDriveCar();
           return;
         }
       }
@@ -4834,72 +4999,117 @@ export default function App() {
               }
             }
           } else if (col.activeDrawerTab === 'NONE') {
-            // Camera-Relative 3rd/1st-Person WASD / Arrow Key walking (or smooth steering toward clicked floor/room!)
-            let inputFwd = 0;
-            let inputRight = 0;
-            if (sim.keysHeld['KeyW'] || sim.keysHeld['ArrowUp']) inputFwd += 1;
-            if (sim.keysHeld['KeyS'] || sim.keysHeld['ArrowDown']) inputFwd -= 1;
-            if (sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft']) inputRight -= 1;
-            if (sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight']) inputRight += 1;
+            if (sim.uniCar.isDriving) {
+              // 1a. DRIVING DR. PAWN'S 1984 STATION WAGON ACROSS OPEN-WORLD CITY ROADS
+              let throttle = 0;
+              let steer = 0;
+              if (sim.keysHeld['KeyW'] || sim.keysHeld['ArrowUp']) throttle += 1;
+              if (sim.keysHeld['KeyS'] || sim.keysHeld['ArrowDown']) throttle -= 1;
+              if (sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft']) steer += 1;
+              if (sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight']) steer -= 1;
 
-            let moveX = 0;
-            let moveZ = 0;
-            if (Math.hypot(inputFwd, inputRight) > 0.05) {
-              up.targetX = null;
-              up.targetZ = null;
-              // Transform WASD relative to current mouse-look camera yaw!
-              const camYaw = sim.mouseLook.uniCamYaw;
-              const fwdX = -Math.sin(camYaw);
-              const fwdZ = -Math.cos(camYaw);
-              const rightX = Math.cos(camYaw);
-              const rightZ = -Math.sin(camYaw);
-              moveX = inputFwd * fwdX + inputRight * rightX;
-              moveZ = inputFwd * fwdZ + inputRight * rightZ;
-            } else if (up.targetX !== null && up.targetZ !== null) {
-              const dx = up.targetX - up.worldX;
-              const dz = up.targetZ - up.worldZ;
-              const dist = Math.hypot(dx, dz);
-              if (dist > 0.35) {
-                moveX = dx / dist;
-                moveZ = dz / dist;
+              const maxSpeed = 22.0; // ~49 mph
+              if (throttle > 0) {
+                sim.uniCar.speed = THREE.MathUtils.damp(sim.uniCar.speed, maxSpeed, 2.8, rawDelta);
+              } else if (throttle < 0) {
+                sim.uniCar.speed = THREE.MathUtils.damp(sim.uniCar.speed, -7.5, 4.0, rawDelta);
               } else {
-                up.targetX = null;
-                up.targetZ = null;
+                sim.uniCar.speed = THREE.MathUtils.damp(sim.uniCar.speed, 0, 1.8, rawDelta);
               }
-            }
 
-            const len = Math.hypot(moveX, moveZ);
-            if (len > 0.01) {
-              playerIsMoving = true;
-              moveX /= len;
-              moveZ /= len;
-              const walkSpeed = 5.4;
-              up.worldX = THREE.MathUtils.clamp(up.worldX + moveX * walkSpeed * rawDelta, -14.2, 15.2);
-              up.worldZ = THREE.MathUtils.clamp(up.worldZ + moveZ * walkSpeed * rawDelta, -6.4, 9.2);
-              up.yaw = Math.atan2(moveX, moveZ);
+              if (Math.abs(sim.uniCar.speed) > 0.3) {
+                const turnFactor = (sim.uniCar.speed >= 0 ? 1 : -1) * 2.2;
+                sim.uniCar.yaw += steer * turnFactor * rawDelta;
+              }
 
-              const detectedRoom = getRoomAtWorldPos(up.worldX, up.worldZ);
+              sim.uniCar.worldX += Math.sin(sim.uniCar.yaw) * sim.uniCar.speed * rawDelta;
+              sim.uniCar.worldZ += Math.cos(sim.uniCar.yaw) * sim.uniCar.speed * rawDelta;
+
+              sim.uniCar.worldX = THREE.MathUtils.clamp(sim.uniCar.worldX, -92, 92);
+              sim.uniCar.worldZ = THREE.MathUtils.clamp(sim.uniCar.worldZ, -36, 86);
+
+              up.worldX = sim.uniCar.worldX;
+              up.worldZ = sim.uniCar.worldZ;
+              up.yaw = sim.uniCar.yaw;
+              col.carSpeedMph = Math.abs(sim.uniCar.speed) * 2.23694;
+              col.carWorldX = sim.uniCar.worldX;
+              col.carWorldZ = sim.uniCar.worldZ;
+              col.carYaw = sim.uniCar.yaw;
+              playerIsMoving = Math.abs(sim.uniCar.speed) > 0.5;
+
+              const detectedRoom = getRoomAtWorldPos(sim.uniCar.worldX, sim.uniCar.worldZ);
               if (detectedRoom !== col.currentRoom) {
                 col.currentRoom = detectedRoom;
                 hudSyncAccumulator = 1.0;
               }
+            } else {
+              // 1b. WALKING ON FOOT (Camera-Relative WASD / Arrow Keys or Click Steering)
+              let inputFwd = 0;
+              let inputRight = 0;
+              if (sim.keysHeld['KeyW'] || sim.keysHeld['ArrowUp']) inputFwd += 1;
+              if (sim.keysHeld['KeyS'] || sim.keysHeld['ArrowDown']) inputFwd -= 1;
+              if (sim.keysHeld['KeyA'] || sim.keysHeld['ArrowLeft']) inputRight -= 1;
+              if (sim.keysHeld['KeyD'] || sim.keysHeld['ArrowRight']) inputRight += 1;
 
-              // Check physical collision with the distracted undergraduate student pacing near the Cafeteria doorway!
-              if (
-                col.carryingHotCoffee &&
-                !col.coffeeSpillIncidentTriggered &&
-                universityOfficeRig.distractedStudentRig
-              ) {
-                const stuPos = universityOfficeRig.distractedStudentRig.root.position;
-                const distToStudent = Math.hypot(up.worldX - stuPos.x, up.worldZ - stuPos.z);
-                if (distToStudent < 2.25) {
-                  triggerCafeteriaCollisionSpill(col);
-                  hudSyncAccumulator = 1.0;
+              let moveX = 0;
+              let moveZ = 0;
+              if (Math.hypot(inputFwd, inputRight) > 0.05) {
+                up.targetX = null;
+                up.targetZ = null;
+                // Transform WASD relative to current mouse-look camera yaw!
+                const camYaw = sim.mouseLook.uniCamYaw;
+                const fwdX = -Math.sin(camYaw);
+                const fwdZ = -Math.cos(camYaw);
+                const rightX = Math.cos(camYaw);
+                const rightZ = -Math.sin(camYaw);
+                moveX = inputFwd * fwdX + inputRight * rightX;
+                moveZ = inputFwd * fwdZ + inputRight * rightZ;
+              } else if (up.targetX !== null && up.targetZ !== null) {
+                const dx = up.targetX - up.worldX;
+                const dz = up.targetZ - up.worldZ;
+                const dist = Math.hypot(dx, dz);
+                if (dist > 0.35) {
+                  moveX = dx / dist;
+                  moveZ = dz / dist;
+                } else {
+                  up.targetX = null;
+                  up.targetZ = null;
                 }
               }
-            } else if (sim.mouseLook.uniFirstPerson) {
-              // In 1st-Person Researcher POV, turn Dr. Pawn's body to match the mouse-look direction!
-              up.yaw = Math.PI + sim.mouseLook.uniCamYaw;
+
+              const len = Math.hypot(moveX, moveZ);
+              if (len > 0.01) {
+                playerIsMoving = true;
+                moveX /= len;
+                moveZ /= len;
+                const walkSpeed = 5.4;
+                up.worldX = THREE.MathUtils.clamp(up.worldX + moveX * walkSpeed * rawDelta, -92, 92);
+                up.worldZ = THREE.MathUtils.clamp(up.worldZ + moveZ * walkSpeed * rawDelta, -36, 86);
+                up.yaw = Math.atan2(moveX, moveZ);
+
+                const detectedRoom = getRoomAtWorldPos(up.worldX, up.worldZ);
+                if (detectedRoom !== col.currentRoom) {
+                  col.currentRoom = detectedRoom;
+                  hudSyncAccumulator = 1.0;
+                }
+
+                // Check physical collision with the distracted undergraduate student pacing near the Cafeteria doorway!
+                if (
+                  col.carryingHotCoffee &&
+                  !col.coffeeSpillIncidentTriggered &&
+                  universityOfficeRig.distractedStudentRig
+                ) {
+                  const stuPos = universityOfficeRig.distractedStudentRig.root.position;
+                  const distToStudent = Math.hypot(up.worldX - stuPos.x, up.worldZ - stuPos.z);
+                  if (distToStudent < 2.25) {
+                    triggerCafeteriaCollisionSpill(col);
+                    hudSyncAccumulator = 1.0;
+                  }
+                }
+              } else if (sim.mouseLook.uniFirstPerson) {
+                // In 1st-Person Researcher POV, turn Dr. Pawn's body to match the mouse-look direction!
+                up.yaw = Math.PI + sim.mouseLook.uniCamYaw;
+              }
             }
           }
         } else if (col.stage === 'REALITY_SHATTER_TRANSITION') {
@@ -4953,6 +5163,13 @@ export default function App() {
           playerWorldZ: up.worldZ,
           playerYaw: up.yaw,
           playerIsMoving,
+          carWorldX: sim.uniCar.worldX,
+          carWorldZ: sim.uniCar.worldZ,
+          carYaw: sim.uniCar.yaw,
+          carSpeed: sim.uniCar.speed,
+          isDrivingCar: sim.uniCar.isDriving,
+          homeSpareShirts: col.hasSpareCleanShirtAtHome ? 1 : 0,
+          weeklyMortgagePayment: col.monthlyMortgage ?? 2140,
           shirtState: col.shirtState,
           carryingHotCoffee: col.carryingHotCoffee,
           cafeteriaQueuePosition: col.cafeteriaQueuePosition,
@@ -4969,6 +5186,8 @@ export default function App() {
           equipmentSold: col.equipmentSoldForFee,
           publishedAccepted: col.stage === 'ACCEPTANCE_LETTER',
           realityShatterProgressSec: col.realityShatterProgressSec ?? 0,
+          isRidingTram: col.isRidingTram,
+          tramDestinationStationId: col.tramDestinationStationId,
         });
 
         // Hide Dr. Pawn's head mesh in First-Person POV so spectacles/hair never clip the camera lens, and keep Dr. Pawn's self-label hidden!
@@ -8359,6 +8578,10 @@ export default function App() {
           onPickUpCleanedShirt={handlePickUpCleanedShirt}
           onBuyNewShirtAtHaberdashery={handleBuyNewShirtAtHaberdashery}
           onCommuteHomeForSpareShirt={handleCommuteHomeForSpareShirt}
+          onToggleDriveCar={handleToggleDriveCar}
+          onOpenTransitModal={handleOpenTransitModal}
+          onCloseTransitModal={handleCloseTransitModal}
+          onBoardTransitToStation={handleBoardTransitToStation}
           onAttendScheduledMeetingInRoom={handleAttendScheduledMeetingInRoom}
           onTalkToNpcInRoom={handleTalkToNpcInRoom}
           onSelectBoundaryGauge={handleSelectBoundaryGauge}

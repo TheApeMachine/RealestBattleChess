@@ -273,12 +273,15 @@ export interface AcademicColloquiumState {
   currentRoom: UniversityRoomId;
   activeDrawerTab: 'NONE' | 'CHALKBOARD_PROOF' | 'FINANCE_LEDGER' | 'PINE_MAIL' | 'CALENDAR_NPCS';
 
-  // Open-World City & Drivable 1984 Station Wagon State
+  // Open-World City, Drivable 1984 Station Wagon & GAMTA Tram Transit
   isDrivingCar?: boolean;
   carSpeedMph?: number;
   carWorldX?: number;
   carWorldZ?: number;
   carYaw?: number;
+  isRidingTram?: boolean;
+  tramDestinationStationId?: string | null;
+  tramTransitModalOpen?: boolean;
 
   // Clothing, Cafeteria Queue & Dry-Cleaner State
   shirtState: AcademicShirtState;
